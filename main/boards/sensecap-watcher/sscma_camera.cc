@@ -509,6 +509,28 @@ void SscmaCamera::InitializeMcpTools() {
             int cur_en = settings.GetInt("enable", this->inference_en);
             return std::string("{\"enable\":") + std::to_string(cur_en) + "}";
         });
+
+    // Face recognition tool
+    mcp_server.AddTool("self.camera.face_rec",
+        "Perform face recognition.\n"
+        "Args:\n"
+        "  `question`: Optional question from the user (not used in face recognition).\n"
+        "Return:\n"
+        "  XML-formatted recognition result: <rec>name, confidence: 0.85</rec> or <rec>error</rec>",
+        PropertyList({
+            Property("question", kPropertyTypeString)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            // Lower the priority to do the camera capture
+            TaskPriorityReset priority_reset(1);
+
+            if (!this->Capture()) {
+                throw std::runtime_error("Failed to capture photo");
+            }
+
+            // Perform face recognition
+            return this->FaceRecognition();
+        });
 }
 
 void SscmaCamera::SetExplainUrl(const std::string& url, const std::string& token) {
@@ -687,5 +709,136 @@ std::string SscmaCamera::Explain(const std::string& question) {
     http->Close();
 
     ESP_LOGI(TAG, "Explain image size=%d, question=%s\n%s", jpeg_data_.len, question.c_str(), result.c_str());
+    return result;
+}
+
+std::string SscmaCamera::FaceRecognition() {
+    // Check if we have a captured image
+    if (jpeg_data_.len == 0) {
+        ESP_LOGE(TAG, "No image captured for face recognition");
+        return "<rec>No image captured</rec>";
+    }
+
+    // Base64 encode the JPEG data
+    size_t base64_len = 0;
+    mbedtls_base64_encode(NULL, 0, &base64_len, jpeg_data_.buf, jpeg_data_.len);
+
+    // Allocate aligned memory for base64 buffer (following latest memory management pattern)
+    uint8_t* base64_buf = (uint8_t*)heap_caps_aligned_alloc(16, base64_len + 1, MALLOC_CAP_SPIRAM);
+    if (!base64_buf) {
+        ESP_LOGE(TAG, "Failed to allocate base64 buffer (%zu bytes)", base64_len + 1);
+        return "<rec>Memory allocation failed</rec>";
+    }
+
+    if (mbedtls_base64_encode(base64_buf, base64_len + 1, &base64_len,
+                               jpeg_data_.buf, jpeg_data_.len) != 0) {
+        ESP_LOGE(TAG, "Base64 encoding failed");
+        heap_caps_free(base64_buf);
+        return "<rec>Base64 encoding failed</rec>";
+    }
+    base64_buf[base64_len] = '\0';
+
+    // Construct JSON request body
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        ESP_LOGE(TAG, "Failed to create JSON object");
+        heap_caps_free(base64_buf);
+        return "<rec>JSON creation failed</rec>";
+    }
+
+    cJSON_AddStringToObject(json, "image_base64", (const char*)base64_buf);
+    cJSON_AddNumberToObject(json, "confidence_threshold", 0.5);
+    char *json_str = cJSON_PrintUnformatted(json);
+
+    if (!json_str) {
+        ESP_LOGE(TAG, "Failed to serialize JSON");
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        return "<rec>JSON serialization failed</rec>";
+    }
+
+    // Create HTTP client and send request
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(3);
+
+    http->SetHeader("Content-Type", "application/json");
+    http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
+    http->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
+    http->SetContent(std::string(json_str));
+
+    std::string face_rec_url = "http://192.168.10.131:8001/recognize";
+
+    ESP_LOGI(TAG, "Sending face recognition request to %s (image size: %zu, base64 size: %zu)",
+             face_rec_url.c_str(), jpeg_data_.len, base64_len);
+
+    if (!http->Open("POST", face_rec_url)) {
+        ESP_LOGE(TAG, "Failed to connect to face recognition API");
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        return "<rec>Failed to connect to API</rec>";
+    }
+
+    // Check HTTP status code
+    int status_code = http->GetStatusCode();
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "Face recognition API error, status code: %d", status_code);
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        http->Close();
+        char error_msg[64];
+        snprintf(error_msg, sizeof(error_msg), "<rec>API error: %d</rec>", status_code);
+        return std::string(error_msg);
+    }
+
+    // Read response
+    std::string response_str = http->ReadAll();
+    http->Close();
+
+    // Clean up request memory
+    heap_caps_free(base64_buf);
+    cJSON_Delete(json);
+    free(json_str);
+
+    // Parse JSON response
+    cJSON *response = cJSON_Parse(response_str.c_str());
+    if (!response) {
+        ESP_LOGE(TAG, "Failed to parse JSON response: %s", response_str.c_str());
+        return "<rec>Invalid API response</rec>";
+    }
+
+    // Construct XML-formatted return value
+    std::string result;
+    cJSON *matched = cJSON_GetObjectItem(response, "matched");
+    cJSON *name = cJSON_GetObjectItem(response, "name");
+    cJSON *confidence = cJSON_GetObjectItem(response, "confidence");
+
+    // Check if we have the expected fields
+    if (!cJSON_IsBool(matched) || !cJSON_IsNumber(confidence)) {
+        ESP_LOGE(TAG, "Invalid response format - missing matched or confidence field");
+        cJSON_Delete(response);
+        return "<rec>Invalid API response format</rec>";
+    }
+
+    if (cJSON_IsTrue(matched) && cJSON_IsString(name)) {
+        // Successfully matched a face
+        char output[128];
+        snprintf(output, sizeof(output), "<rec>%s, confidence: %.2f</rec>",
+                name->valuestring, confidence->valuedouble);
+        result = std::string(output);
+        ESP_LOGI(TAG, "Face recognized: %s (confidence: %.2f)",
+                name->valuestring, confidence->valuedouble);
+    } else {
+        // No match found (confidence below threshold)
+        char output[128];
+        snprintf(output, sizeof(output), "<rec>No face detected</rec>");
+        result = std::string(output);
+        ESP_LOGI(TAG, "Face not recognized (confidence: %.2f)", confidence->valuedouble);
+    }
+
+    // Clean up response memory
+    cJSON_Delete(response);
+
     return result;
 }
