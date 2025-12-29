@@ -13,6 +13,7 @@ class Config:
     SCREEN_WIDTH = 412
     SCREEN_HEIGHT = 412
     DISPLAY_SCALE = float(os.getenv("RD_SCALE", "1.5"))
+    FULLSCREEN = os.getenv("RD_FULLSCREEN", "0") == "1"
 
     # Audio settings
     AUDIO_SAMPLE_RATE = 24000

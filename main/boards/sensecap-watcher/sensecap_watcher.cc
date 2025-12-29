@@ -37,7 +37,7 @@
 
 class CustomLcdDisplay : public SpiLcdDisplay {
     public:
-        CustomLcdDisplay(esp_lcd_panel_io_handle_t io_handle, 
+        CustomLcdDisplay(esp_lcd_panel_io_handle_t io_handle,
                         esp_lcd_panel_handle_t panel_handle,
                         int width,
                         int height,
@@ -45,9 +45,9 @@ class CustomLcdDisplay : public SpiLcdDisplay {
                         int offset_y,
                         bool mirror_x,
                         bool mirror_y,
-                        bool swap_xy) 
+                        bool swap_xy)
             : SpiLcdDisplay(io_handle, panel_handle, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {
-    
+
             DisplayLockGuard lock(this);
             auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
             auto text_font = lvgl_theme->text_font()->font();
@@ -64,7 +64,7 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             lv_obj_align(battery_label_, LV_ALIGN_TOP_MID, -2.5 * icon_font->line_height, 0);
             lv_obj_align(network_label_, LV_ALIGN_TOP_MID, -0.5 * icon_font->line_height, 0);
             lv_obj_align(mute_label_, LV_ALIGN_TOP_MID, 1.5 * icon_font->line_height, 0);
-            
+
             lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, 0);
             lv_obj_set_flex_grow(status_label_, 0);
             lv_obj_set_width(status_label_, LV_HOR_RES * 0.75);
@@ -78,6 +78,53 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             lv_obj_set_style_bg_color(low_battery_popup_, lv_color_hex(0xFF0000), 0);
             lv_obj_set_width(low_battery_label_, LV_HOR_RES * 0.75);
             lv_label_set_long_mode(low_battery_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        }
+
+        // 重写方法以支持远程显示状态同步
+        void SetEmotion(const char* emotion) override {
+            SpiLcdDisplay::SetEmotion(emotion);
+#if REMOTE_DISPLAY_ENABLED
+            auto* remote = RemoteDisplay::GetInstance();
+            if (remote->IsRunning()) {
+                remote->SendEmotion(emotion);
+            }
+#endif
+        }
+
+        void SetStatus(const char* status) override {
+            SpiLcdDisplay::SetStatus(status);
+#if REMOTE_DISPLAY_ENABLED
+            auto* remote = RemoteDisplay::GetInstance();
+            if (remote->IsRunning()) {
+                remote->SendStatus(status);
+            }
+#endif
+        }
+
+        void SetChatMessage(const char* role, const char* content) override {
+            SpiLcdDisplay::SetChatMessage(role, content);
+#if REMOTE_DISPLAY_ENABLED
+            auto* remote = RemoteDisplay::GetInstance();
+            if (remote->IsRunning()) {
+                remote->SendChatMessage(role, content);
+            }
+#endif
+        }
+
+        void SetTheme(Theme* theme) override {
+            SpiLcdDisplay::SetTheme(theme);
+#if REMOTE_DISPLAY_ENABLED
+            auto* remote = RemoteDisplay::GetInstance();
+            if (remote->IsRunning()) {
+                auto* lvgl_theme = static_cast<LvglTheme*>(theme);
+                const char* bg_name = "";
+                if (lvgl_theme->background_image()) {
+                    // 背景图名称需要从 LvglImage 获取，这里暂时留空
+                    bg_name = "";
+                }
+                remote->SendTheme(theme->name().c_str(), bg_name);
+            }
+#endif
         }
 };
 
@@ -95,7 +142,6 @@ private:
     button_driver_t* btn_driver_ = nullptr;
     static SensecapWatcher* instance_;
     SscmaCamera* camera_ = nullptr;
-    std::unique_ptr<RemoteDisplay> remote_display_;
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -566,8 +612,6 @@ private:
 #if REMOTE_DISPLAY_ENABLED
         // 启动一个任务，等待网络连接后再尝试连接远程显示服务器
         xTaskCreate([](void* arg) {
-            auto* self = static_cast<SensecapWatcher*>(arg);
-
             // 等待 WiFi 真正连接（最多等待 30 秒）
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
             auto& wifi_station = WifiStation::GetInstance();
@@ -588,35 +632,24 @@ private:
             // 再等待一小段时间确保网络稳定
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            auto* display = dynamic_cast<LvglDisplay*>(self->GetDisplay());
-            if (!display) {
-                ESP_LOGE(TAG, "Display does not support remote display");
-                vTaskDelete(nullptr);
-                return;
-            }
-
-            self->remote_display_ = std::make_unique<RemoteDisplay>(display);
-
-            if (!self->remote_display_->Start(
-                    REMOTE_DISPLAY_SERVER_URL,
-                    REMOTE_DISPLAY_FPS,
-                    REMOTE_DISPLAY_QUALITY,
-                    REMOTE_DISPLAY_TIMEOUT_MS)) {
+            // 使用单例模式启动远程显示
+            auto* remote = RemoteDisplay::GetInstance();
+            if (!remote->Start(REMOTE_DISPLAY_SERVER_URL, REMOTE_DISPLAY_TIMEOUT_MS)) {
                 ESP_LOGW(TAG, "Remote display not available, feature disabled");
-                self->remote_display_.reset();
             } else {
-                ESP_LOGI(TAG, "Remote display started successfully");
+                ESP_LOGI(TAG, "Remote display started successfully (UI state sync mode)");
                 // 注册音频转发回调
                 Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(
-                    [self](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
-                        if (self->remote_display_ && self->remote_display_->IsRunning()) {
-                            self->remote_display_->ForwardAudioPacket(data, sample_rate, frame_duration);
+                    [](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
+                        auto* remote = RemoteDisplay::GetInstance();
+                        if (remote->IsRunning()) {
+                            remote->ForwardAudioPacket(data, sample_rate, frame_duration);
                         }
                     });
             }
 
             vTaskDelete(nullptr);
-        }, "remote_disp_init", 4096, this, 1, nullptr);
+        }, "remote_disp_init", 4096, nullptr, 1, nullptr);
 #endif
     }
 

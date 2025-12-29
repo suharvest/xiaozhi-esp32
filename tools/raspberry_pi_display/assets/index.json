@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "source": "extracted_from_esp32",
+  "emojis": {
+    "neutral": {
+      "file": "emojis/neutral.png",
+      "fps": 0,
+      "loop": true
+    },
+    "happy": {
+      "file": "emojis/happy.png",
+      "fps": 0,
+      "loop": true
+    },
+    "laughing": {
+      "file": "emojis/laughing.png",
+      "fps": 0,
+      "loop": true
+    },
+    "funny": {
+      "file": "emojis/funny.png",
+      "fps": 0,
+      "loop": true
+    },
+    "sad": {
+      "file": "emojis/sad.png",
+      "fps": 0,
+      "loop": true
+    },
+    "angry": {
+      "file": "emojis/angry.png",
+      "fps": 0,
+      "loop": true
+    },
+    "crying": {
+      "file": "emojis/crying.png",
+      "fps": 0,
+      "loop": true
+    },
+    "loving": {
+      "file": "emojis/loving.png",
+      "fps": 0,
+      "loop": true
+    },
+    "embarrassed": {
+      "file": "emojis/embarrassed.png",
+      "fps": 0,
+      "loop": true
+    },
+    "surprised": {
+      "file": "emojis/surprised.png",
+      "fps": 0,
+      "loop": true
+    },
+    "shocked": {
+      "file": "emojis/shocked.png",
+      "fps": 0,
+      "loop": true
+    },
+    "thinking": {
+      "file": "emojis/thinking.png",
+      "fps": 0,
+      "loop": true
+    },
+    "winking": {
+      "file": "emojis/winking.png",
+      "fps": 0,
+      "loop": true
+    },
+    "cool": {
+      "file": "emojis/cool.png",
+      "fps": 0,
+      "loop": true
+    },
+    "relaxed": {
+      "file": "emojis/relaxed.png",
+      "fps": 0,
+      "loop": true
+    },
+    "delicious": {
+      "file": "emojis/delicious.png",
+      "fps": 0,
+      "loop": true
+    },
+    "kissy": {
+      "file": "emojis/kissy.png",
+      "fps": 0,
+      "loop": true
+    },
+    "confident": {
+      "file": "emojis/confident.png",
+      "fps": 0,
+      "loop": true
+    },
+    "sleepy": {
+      "file": "emojis/sleepy.png",
+      "fps": 0,
+      "loop": true
+    },
+    "silly": {
+      "file": "emojis/silly.png",
+      "fps": 0,
+      "loop": true
+    },
+    "confused": {
+      "file": "emojis/confused.png",
+      "fps": 0,
+      "loop": true
+    }
+  },
+  "backgrounds": {},
+  "icons": {},
+  "theme": {
+    "light": {
+      "text_color": "#000000",
+      "background_color": "#ffffff",
+      "background_image": "backgrounds/bg_light.bin"
+    },
+    "dark": {
+      "text_color": "#ffffff",
+      "background_color": "#121212",
+      "background_image": null
+    }
+  }
+}

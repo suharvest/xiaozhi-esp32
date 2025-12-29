@@ -1,52 +1,38 @@
 #include "remote_display.h"
-#include "display/lvgl_display/lvgl_display.h"
 #include "board.h"
 
 #include <esp_log.h>
-#include <esp_timer.h>
 #include <web_socket.h>
 #include <cstring>
 #include <arpa/inet.h>
+#include <cJSON.h>
 
 #define TAG "RemoteDisplay"
 
-// 消息头结构 (网络字节序)
-struct __attribute__((packed)) MessageHeader {
+// 音频帧头结构 (网络字节序)
+struct __attribute__((packed)) AudioFrameHeader {
     uint8_t type;
     uint8_t flags;
     uint16_t payload_size;
-};
-
-struct __attribute__((packed)) ScreenFrameHeader {
-    MessageHeader base;
-    uint16_t width;
-    uint16_t height;
-    uint32_t timestamp;
-};
-
-struct __attribute__((packed)) AudioFrameHeader {
-    MessageHeader base;
     uint16_t sample_rate;
     uint8_t frame_duration;
     uint8_t reserved;
 };
 
-RemoteDisplay::RemoteDisplay(LvglDisplay* display)
-    : display_(display) {
+RemoteDisplay* RemoteDisplay::GetInstance() {
+    static RemoteDisplay instance;
+    return &instance;
 }
 
 RemoteDisplay::~RemoteDisplay() {
     Stop();
 }
 
-bool RemoteDisplay::Start(const std::string& server_url, int fps, int quality, int timeout_ms) {
+bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     if (running_) {
         ESP_LOGW(TAG, "Already running");
         return true;
     }
-
-    fps_ = fps;
-    quality_ = quality;
 
     // 获取网络接口并创建 WebSocket
     auto network = Board::GetInstance().GetNetwork();
@@ -101,14 +87,7 @@ bool RemoteDisplay::Start(const std::string& server_url, int fps, int quality, i
     }
 
     running_ = true;
-
-    // 启动屏幕捕获任务 (使用较小的栈)
-    xTaskCreate([](void* arg) {
-        static_cast<RemoteDisplay*>(arg)->ScreenCaptureTask();
-        vTaskDelete(nullptr);
-    }, "remote_disp", 4096, this, 1, &task_handle_);  // 降低优先级和栈大小
-
-    ESP_LOGI(TAG, "Remote display started (fps=%d, quality=%d)", fps_, quality_);
+    ESP_LOGI(TAG, "Remote display started (UI state sync mode)");
     return true;
 }
 
@@ -119,12 +98,6 @@ void RemoteDisplay::Stop() {
 
     running_ = false;
 
-    // 等待任务结束
-    if (task_handle_) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        task_handle_ = nullptr;
-    }
-
     if (websocket_) {
         websocket_->Close();
         websocket_.reset();
@@ -134,75 +107,98 @@ void RemoteDisplay::Stop() {
     ESP_LOGI(TAG, "Remote display stopped");
 }
 
-void RemoteDisplay::ScreenCaptureTask() {
-    ESP_LOGI(TAG, "Screen capture task started");
+void RemoteDisplay::SendEmotion(const char* emotion) {
+    if (!running_ || !connected_) return;
 
-    TickType_t frame_interval = pdMS_TO_TICKS(1000 / fps_);
-    uint32_t frame_count = 0;
-    uint32_t fail_count = 0;
-
-    while (running_ && connected_) {
-        TickType_t start_tick = xTaskGetTickCount();
-        std::string jpeg_data;
-
-        // 截图
-        if (display_->SnapshotToJpeg(jpeg_data, quality_)) {
-            if (SendScreenFrame(jpeg_data)) {
-                frame_count++;
-                fail_count = 0;
-                if (frame_count % 50 == 0) {
-                    ESP_LOGI(TAG, "Sent %lu frames, jpeg size: %zu", frame_count, jpeg_data.size());
-                }
-            } else {
-                fail_count++;
-                ESP_LOGW(TAG, "Failed to send screen frame (fail_count=%lu)", fail_count);
-                // 连续失败多次，可能连接已断开
-                if (fail_count >= 5) {
-                    ESP_LOGE(TAG, "Too many send failures, stopping");
-                    connected_ = false;
-                    break;
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "Failed to capture screen");
-        }
-
-        // 计算剩余等待时间，避免累积延迟
-        TickType_t elapsed = xTaskGetTickCount() - start_tick;
-        if (elapsed < frame_interval) {
-            vTaskDelay(frame_interval - elapsed);
-        }
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (current_emotion_ == emotion) return;  // 无变化
+        current_emotion_ = emotion;
     }
 
-    ESP_LOGI(TAG, "Screen capture task ended (total frames: %lu)", frame_count);
+    SendUIState();
 }
 
-bool RemoteDisplay::SendScreenFrame(const std::string& jpeg_data) {
-    if (!connected_ || !websocket_) {
-        return false;
+void RemoteDisplay::SendStatus(const char* status) {
+    if (!running_ || !connected_) return;
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (current_status_ == status) return;  // 无变化
+        current_status_ = status;
     }
 
-    // 尝试获取锁，如果被音频占用则跳过本帧
-    std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        return true;  // 返回 true 避免计入失败，只是跳过
+    SendUIState();
+}
+
+void RemoteDisplay::SendChatMessage(const char* role, const char* content) {
+    if (!running_ || !connected_) return;
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_chat_role_ = role ? role : "";
+        current_chat_text_ = content ? content : "";
     }
 
-    // 构造消息
-    size_t total_size = sizeof(ScreenFrameHeader) + jpeg_data.size();
-    std::vector<uint8_t> buffer(total_size);
+    SendUIState();
+}
 
-    auto* header = reinterpret_cast<ScreenFrameHeader*>(buffer.data());
-    header->base.type = MSG_TYPE_SCREEN_FRAME;
-    header->base.flags = 0;
-    header->base.payload_size = htons(sizeof(ScreenFrameHeader) - sizeof(MessageHeader) + jpeg_data.size());
-    header->width = htons(display_->width());
-    header->height = htons(display_->height());
-    header->timestamp = htonl(esp_timer_get_time() / 1000);
+void RemoteDisplay::SendTheme(const char* theme_name, const char* background_image) {
+    if (!running_ || !connected_) return;
 
-    memcpy(buffer.data() + sizeof(ScreenFrameHeader), jpeg_data.data(), jpeg_data.size());
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_theme_ = theme_name ? theme_name : "";
+        current_background_ = background_image ? background_image : "";
+    }
 
-    return websocket_->Send(buffer.data(), buffer.size(), true);
+    SendUIState();
+}
+
+void RemoteDisplay::SendVolume(int volume, bool muted) {
+    if (!running_ || !connected_) return;
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (current_volume_ == volume && current_muted_ == muted) return;
+        current_volume_ = volume;
+        current_muted_ = muted;
+    }
+
+    SendUIState();
+}
+
+void RemoteDisplay::SendUIState() {
+    if (!connected_ || !websocket_) return;
+
+    // 构造 JSON
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ui_state");
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        cJSON_AddStringToObject(root, "emotion", current_emotion_.c_str());
+        cJSON_AddStringToObject(root, "status", current_status_.c_str());
+
+        cJSON* chat = cJSON_CreateObject();
+        cJSON_AddStringToObject(chat, "role", current_chat_role_.c_str());
+        cJSON_AddStringToObject(chat, "text", current_chat_text_.c_str());
+        cJSON_AddItemToObject(root, "chat", chat);
+
+        cJSON_AddStringToObject(root, "theme", current_theme_.c_str());
+        cJSON_AddStringToObject(root, "background", current_background_.c_str());
+        cJSON_AddNumberToObject(root, "volume", current_volume_);
+        cJSON_AddBoolToObject(root, "muted", current_muted_);
+    }
+
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (json_str) {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        websocket_->Send(json_str);
+        free(json_str);
+    }
 }
 
 void RemoteDisplay::ForwardAudioPacket(const std::vector<uint8_t>& opus_data,
@@ -220,7 +216,7 @@ bool RemoteDisplay::SendAudioFrame(const std::vector<uint8_t>& opus_data,
         return false;
     }
 
-    // 尝试获取锁，如果被屏幕帧占用则跳过
+    // 尝试获取锁，如果被占用则跳过
     std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
     if (!lock.owns_lock()) {
         return true;  // 跳过本包，但不计入失败
@@ -231,9 +227,9 @@ bool RemoteDisplay::SendAudioFrame(const std::vector<uint8_t>& opus_data,
     std::vector<uint8_t> buffer(total_size);
 
     auto* header = reinterpret_cast<AudioFrameHeader*>(buffer.data());
-    header->base.type = MSG_TYPE_AUDIO_FRAME;
-    header->base.flags = 0;
-    header->base.payload_size = htons(sizeof(AudioFrameHeader) - sizeof(MessageHeader) + opus_data.size());
+    header->type = MSG_TYPE_AUDIO_FRAME;
+    header->flags = 0;
+    header->payload_size = htons(sizeof(AudioFrameHeader) - 4 + opus_data.size());
     header->sample_rate = htons(sample_rate);
     header->frame_duration = frame_duration;
     header->reserved = 0;
@@ -244,15 +240,23 @@ bool RemoteDisplay::SendAudioFrame(const std::vector<uint8_t>& opus_data,
 }
 
 void RemoteDisplay::SendHello() {
-    // 发送简单的 JSON hello 消息
-    char hello[256];
-    snprintf(hello, sizeof(hello),
-        "{\"type\":\"hello\",\"client\":\"sensecap-watcher\","
-        "\"screen\":{\"width\":%d,\"height\":%d,\"fps\":%d},"
-        "\"audio\":{\"format\":\"opus\"}}",
-        display_->width(), display_->height(), fps_);
+    // 发送 hello 消息
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "hello");
+    cJSON_AddStringToObject(root, "client", "sensecap-watcher");
+    cJSON_AddStringToObject(root, "mode", "ui_state");
 
-    std::lock_guard<std::mutex> lock(send_mutex_);
-    websocket_->Send(hello);
-    ESP_LOGI(TAG, "Sent hello: %s", hello);
+    cJSON* audio = cJSON_CreateObject();
+    cJSON_AddStringToObject(audio, "format", "opus");
+    cJSON_AddItemToObject(root, "audio", audio);
+
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (json_str) {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        websocket_->Send(json_str);
+        ESP_LOGI(TAG, "Sent hello: %s", json_str);
+        free(json_str);
+    }
 }

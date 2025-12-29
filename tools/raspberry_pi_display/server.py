@@ -1,70 +1,54 @@
-#!/usr/bin/env python3
 """
-Xiaozhi ESP32 Remote Display Server
-
-Receives screen frames and audio from SenseCAP Watcher via WebSocket
-and displays/plays them on Raspberry Pi.
-
-Usage:
-    python3 server.py
-
-Environment variables:
-    RD_HOST   - Server host (default: 0.0.0.0)
-    RD_PORT   - Server port (default: 8765)
-    RD_SCALE  - Display scale (default: 1.5)
-    RD_DEBUG  - Enable debug logging (default: 0)
+Remote Display Server - WebSocket server for receiving UI state and audio
+Uses Pygame for UI rendering (UI state sync mode)
 """
 
 import asyncio
-import struct
 import json
-import logging
+import struct
 import signal
 import sys
+import logging
+import threading
 from typing import Optional
 
-try:
-    import websockets
-    from websockets.server import WebSocketServerProtocol
-except ImportError:
-    print("Error: websockets not installed. Run: pip install websockets")
-    sys.exit(1)
+import websockets
+from websockets.server import WebSocketServerProtocol
 
 from config import Config
-from screen_renderer import ScreenRenderer
+from ui_renderer import UIRenderer
 from audio_player import AudioPlayer
-
-# Message types (must match ESP32 side)
-MSG_TYPE_SCREEN_FRAME = 0x01
-MSG_TYPE_AUDIO_FRAME = 0x02
-MSG_TYPE_HEARTBEAT = 0x04
 
 # Setup logging
 logging.basicConfig(
-    level=logging.DEBUG if Config.DEBUG else logging.INFO,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Message types
+MSG_TYPE_UI_STATE = 0x10
+MSG_TYPE_AUDIO_FRAME = 0x02
+MSG_TYPE_HEARTBEAT = 0x04
+
 
 class RemoteDisplayServer:
     def __init__(self):
-        self.config = Config
-        self.screen_renderer: Optional[ScreenRenderer] = None
+        self.config = Config()
+        self.ui_renderer: Optional[UIRenderer] = None
         self.audio_player: Optional[AudioPlayer] = None
         self.connected_client: Optional[WebSocketServerProtocol] = None
         self.running = True
-        self.frame_count = 0
+        self.ui_state_count = 0
         self.audio_count = 0
-
 
     def cleanup(self):
         """Cleanup resources"""
-        if self.screen_renderer:
-            self.screen_renderer.close()
+        if self.ui_renderer:
+            self.ui_renderer.close()
         if self.audio_player:
             self.audio_player.close()
-        logger.info(f"Server stopped. Total frames: {self.frame_count}, audio packets: {self.audio_count}")
+        logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
 
     async def handle_client(self, websocket: WebSocketServerProtocol):
         """Handle client connection"""
@@ -85,15 +69,21 @@ class RemoteDisplayServer:
                 else:
                     await self.handle_text_message(message, websocket)
         except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"Client disconnected: {e}")
+            logger.info(f"Client disconnected (ConnectionClosed): code={e.code}, reason={e.reason}")
+        except websockets.exceptions.ConnectionClosedError as e:
+            logger.info(f"Client disconnected (ConnectionClosedError): code={e.code}, reason={e.reason}")
+        except websockets.exceptions.ConnectionClosedOK as e:
+            logger.info(f"Client disconnected (ConnectionClosedOK): code={e.code}, reason={e.reason}")
         except Exception as e:
             logger.error(f"Error handling client: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.connected_client = None
-            logger.info(f"Client connection closed: {client_addr}")
+            logger.info(f"Client connection handler finished: {client_addr}")
 
     async def handle_binary_message(self, data: bytes):
-        """Handle binary message"""
+        """Handle binary message (audio frame)"""
         if len(data) < 4:
             logger.warning("Message too short")
             return
@@ -102,29 +92,10 @@ class RemoteDisplayServer:
         msg_type, flags, payload_size = struct.unpack(">BBH", data[:4])
         payload = data[4:]
 
-        if msg_type == MSG_TYPE_SCREEN_FRAME:
-            await self.handle_screen_frame(payload)
-        elif msg_type == MSG_TYPE_AUDIO_FRAME:
+        if msg_type == MSG_TYPE_AUDIO_FRAME:
             await self.handle_audio_frame(payload)
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
-
-    async def handle_screen_frame(self, payload: bytes):
-        """Handle screen frame"""
-        if len(payload) < 8:
-            return
-
-        # Parse screen frame header: width(2) + height(2) + timestamp(4)
-        width, height, timestamp = struct.unpack(">HHI", payload[:8])
-        jpeg_data = payload[8:]
-
-        # Update display
-        if self.screen_renderer:
-            self.screen_renderer.update(jpeg_data)
-            self.frame_count += 1
-
-            if self.frame_count % 50 == 0:
-                logger.debug(f"Received {self.frame_count} frames, size: {len(jpeg_data)} bytes")
 
     async def handle_audio_frame(self, payload: bytes):
         """Handle audio frame"""
@@ -152,85 +123,164 @@ class RemoteDisplayServer:
                 response = {
                     "type": "hello_ack",
                     "status": "ok",
-                    "config": {
-                        "display_scale": self.config.DISPLAY_SCALE
-                    }
+                    "mode": "ui_state"
                 }
                 await websocket.send(json.dumps(response))
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON: {message}")
+                logger.info("Sent hello_ack to client")
+
+            elif msg_type == "ui_state":
+                # Update UI state
+                if self.ui_renderer:
+                    try:
+                        self.ui_renderer.update_state(data)
+                        self.ui_state_count += 1
+
+                        if self.ui_state_count == 1:
+                            logger.info("Received first UI state update")
+                        elif self.ui_state_count % 100 == 0:
+                            logger.info(f"Received {self.ui_state_count} UI state updates")
+                    except Exception as e:
+                        logger.error(f"Error updating UI state: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error handling text message: {e}")
+            import traceback
+            traceback.print_exc()
 
 
-def signal_handler(sig, frame):
-    """Handle Ctrl+C"""
+# Global server instance for signal handler
+server_instance: Optional[RemoteDisplayServer] = None
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    global server_instance
     logger.info("Shutting down...")
+    if server_instance:
+        server_instance.running = False
     sys.exit(0)
 
 
 def main():
-    """Main function - runs OpenCV in main thread, WebSocket in background"""
+    """Main function - runs Pygame in main thread, WebSocket in background"""
+    global server_instance
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("""
-╔═══════════════════════════════════════════════════════════╗
-║         Xiaozhi ESP32 Remote Display Server               ║
-║                                                           ║
-║  Waiting for connection from SenseCAP Watcher...          ║
-║  Press Ctrl+C to stop, or 'q' in the display window       ║
-╚═══════════════════════════════════════════════════════════╝
++-----------------------------------------------------------+
+|         Xiaozhi ESP32 Remote Display Server               |
+|              (UI State Sync Mode)                         |
+|                                                           |
+|  Waiting for connection from SenseCAP Watcher...          |
+|  Press 'F' or F11 to toggle fullscreen                    |
+|  Press 'q' or ESC to quit                                 |
++-----------------------------------------------------------+
     """)
 
     server = RemoteDisplayServer()
+    server_instance = server
+
+    # Initialize components with error handling
+    try:
+        logger.info("Initializing UI Renderer...")
+        server.ui_renderer = UIRenderer(
+            width=server.config.SCREEN_WIDTH,
+            height=server.config.SCREEN_HEIGHT,
+            scale=server.config.DISPLAY_SCALE,
+            fullscreen=server.config.FULLSCREEN
+        )
+        logger.info("UI Renderer initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize UI Renderer: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    try:
+        logger.info("Initializing Audio Player...")
+        server.audio_player = AudioPlayer(
+            sample_rate=server.config.AUDIO_SAMPLE_RATE,
+            channels=server.config.AUDIO_CHANNELS,
+            frame_duration=server.config.AUDIO_FRAME_DURATION
+        )
+        logger.info("Audio Player initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Audio Player: {e}")
+        server.audio_player = None
 
     # Create event loop for background WebSocket server
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # Initialize components
-    server.screen_renderer = ScreenRenderer(
-        width=server.config.SCREEN_WIDTH,
-        height=server.config.SCREEN_HEIGHT,
-        scale=server.config.DISPLAY_SCALE
-    )
-    server.audio_player = AudioPlayer(
-        sample_rate=server.config.AUDIO_SAMPLE_RATE,
-        channels=server.config.AUDIO_CHANNELS,
-        frame_duration=server.config.AUDIO_FRAME_DURATION
-    )
 
     async def run_websocket_server():
         """Run WebSocket server as async task"""
         logger.info(f"Starting server on ws://{server.config.HOST}:{server.config.PORT}")
-        async with websockets.serve(
-            server.handle_client,
-            server.config.HOST,
-            server.config.PORT,
-            max_size=1024 * 1024,
-            ping_interval=30,
-            ping_timeout=10
-        ):
-            logger.info("Server started, waiting for connection...")
-            while server.running and server.screen_renderer.running:
-                await asyncio.sleep(0.1)
+        try:
+            async with websockets.serve(
+                server.handle_client,
+                server.config.HOST,
+                server.config.PORT,
+                max_size=1024 * 1024,
+                ping_interval=30,
+                ping_timeout=10
+            ):
+                logger.info("Server started, waiting for connection...")
+                while server.running and server.ui_renderer.running:
+                    await asyncio.sleep(0.1)
+                logger.info(f"WebSocket server loop ended (running={server.running}, ui_running={server.ui_renderer.running})")
+        except Exception as e:
+            logger.error(f"WebSocket server error: {e}")
+            import traceback
+            traceback.print_exc()
 
     # Start WebSocket server in background thread
-    import threading
-
     def run_loop():
+        asyncio.set_event_loop(loop)
         loop.run_until_complete(run_websocket_server())
+        logger.info("WebSocket thread finished")
 
     ws_thread = threading.Thread(target=run_loop, daemon=True)
     ws_thread.start()
+    logger.info("WebSocket thread started")
 
-    # Main thread: handle OpenCV rendering
+    # Main thread: handle Pygame rendering
     try:
-        while server.running and server.screen_renderer.running:
-            if not server.screen_renderer.render_once():
+        logger.info("Starting main render loop...")
+        frame_count = 0
+        while server.running and server.ui_renderer.running:
+            # Handle Pygame events
+            if not server.ui_renderer.handle_events():
+                logger.info("UI renderer requested exit")
                 break
+
+            # Render UI
+            try:
+                server.ui_renderer.render()
+            except Exception as e:
+                logger.error(f"Render error: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Limit frame rate
+            server.ui_renderer.tick(30)
+
+            frame_count += 1
+            if frame_count == 1:
+                logger.info("First frame rendered successfully")
+
     except KeyboardInterrupt:
-        pass
+        logger.info("Keyboard interrupt received")
+    except Exception as e:
+        logger.error(f"Main loop error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
+        logger.info("Cleaning up...")
         server.running = False
         server.cleanup()
 

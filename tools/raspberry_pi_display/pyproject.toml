@@ -9,5 +9,6 @@ dependencies = [
     "opencv-python>=4.8.0",
     "opuslib>=3.0.1",
     "pyaudio>=0.2.13",
+    "pygame>=2.6.1",
     "websockets>=12.0",
 ]

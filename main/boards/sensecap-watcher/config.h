@@ -149,11 +149,9 @@
 #define BSP_SSCMA_FLASHER_UART_RX        (GPIO_NUM_18)
 #define BSP_SSCMA_FLASHER_UART_BAUD_RATE (921600)
 
-/* Remote Display (树莓派远程显示) */
+/* Remote Display (树莓派远程显示 - UI 状态同步模式) */
 #define REMOTE_DISPLAY_ENABLED      true
 #define REMOTE_DISPLAY_SERVER_URL   "ws://192.168.10.213:8765"
-#define REMOTE_DISPLAY_FPS          5       // 降低帧率减少内存压力
-#define REMOTE_DISPLAY_QUALITY      30      // 降低质量减少 JPEG 大小
 #define REMOTE_DISPLAY_TIMEOUT_MS   3000
 
 #endif // _BOARD_CONFIG_H_
