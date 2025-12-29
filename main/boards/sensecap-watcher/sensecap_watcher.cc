@@ -10,6 +10,7 @@
 #include "power_save_timer.h"
 #include "sscma_camera.h"
 #include "lvgl_theme.h"
+#include "remote_display.h"
 
 #include <esp_log.h>
 #include <esp_check.h>
@@ -94,6 +95,7 @@ private:
     button_driver_t* btn_driver_ = nullptr;
     static SensecapWatcher* instance_;
     SscmaCamera* camera_ = nullptr;
+    std::unique_ptr<RemoteDisplay> remote_display_;
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -560,6 +562,64 @@ private:
         camera_ = new SscmaCamera(io_exp_handle);
     }
 
+    void InitializeRemoteDisplay() {
+#if REMOTE_DISPLAY_ENABLED
+        // 启动一个任务，等待网络连接后再尝试连接远程显示服务器
+        xTaskCreate([](void* arg) {
+            auto* self = static_cast<SensecapWatcher*>(arg);
+
+            // 等待 WiFi 真正连接（最多等待 30 秒）
+            ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
+            auto& wifi_station = WifiStation::GetInstance();
+            for (int i = 0; i < 300; i++) {
+                if (wifi_station.IsConnected()) {
+                    ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi_station.GetIpAddress().c_str());
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+
+            if (!wifi_station.IsConnected()) {
+                ESP_LOGW(TAG, "WiFi not connected after 30s, remote display disabled");
+                vTaskDelete(nullptr);
+                return;
+            }
+
+            // 再等待一小段时间确保网络稳定
+            vTaskDelay(pdMS_TO_TICKS(1000));
+
+            auto* display = dynamic_cast<LvglDisplay*>(self->GetDisplay());
+            if (!display) {
+                ESP_LOGE(TAG, "Display does not support remote display");
+                vTaskDelete(nullptr);
+                return;
+            }
+
+            self->remote_display_ = std::make_unique<RemoteDisplay>(display);
+
+            if (!self->remote_display_->Start(
+                    REMOTE_DISPLAY_SERVER_URL,
+                    REMOTE_DISPLAY_FPS,
+                    REMOTE_DISPLAY_QUALITY,
+                    REMOTE_DISPLAY_TIMEOUT_MS)) {
+                ESP_LOGW(TAG, "Remote display not available, feature disabled");
+                self->remote_display_.reset();
+            } else {
+                ESP_LOGI(TAG, "Remote display started successfully");
+                // 注册音频转发回调
+                Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(
+                    [self](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
+                        if (self->remote_display_ && self->remote_display_->IsRunning()) {
+                            self->remote_display_->ForwardAudioPacket(data, sample_rate, frame_duration);
+                        }
+                    });
+            }
+
+            vTaskDelete(nullptr);
+        }, "remote_disp_init", 4096, this, 1, nullptr);
+#endif
+    }
+
 public:
     SensecapWatcher() {
         ESP_LOGI(TAG, "Initialize Sensecap Watcher");
@@ -573,6 +633,7 @@ public:
         Initializespd2010Display();
         GetBacklight()->RestoreBrightness();  // 对于不带摄像头的版本，InitializeCamera需要3s, 所以先恢复背光亮度
         InitializeCamera();
+        InitializeRemoteDisplay();
     }
 
     virtual AudioCodec* GetAudioCodec() override {

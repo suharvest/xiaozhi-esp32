@@ -57,6 +57,8 @@ struct AudioServiceCallbacks {
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
+    // 音频输出转发回调（用于远程显示等功能）
+    std::function<void(const std::vector<uint8_t>&, int, int)> on_audio_output_forward;
 };
 
 
@@ -102,6 +104,7 @@ public:
     void EnableDeviceAec(bool enable);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
+    void SetAudioOutputForwardCallback(std::function<void(const std::vector<uint8_t>&, int, int)> callback);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();

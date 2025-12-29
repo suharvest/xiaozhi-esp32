@@ -766,7 +766,7 @@ std::string SscmaCamera::FaceRecognition() {
     http->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
     http->SetContent(std::string(json_str));
 
-    std::string face_rec_url = "http://192.168.10.131:8001/recognize";
+    std::string face_rec_url = "http://192.168.10.181:8001/recognize";
 
     ESP_LOGI(TAG, "Sending face recognition request to %s (image size: %zu, base64 size: %zu)",
              face_rec_url.c_str(), jpeg_data_.len, base64_len);
