@@ -16,26 +16,36 @@
 
 ## 安装
 
-### 依赖
+### 1. 系统依赖（树莓派/Linux）
+
+**必须先安装系统依赖**，否则 Python 包编译会失败：
 
 ```bash
-# 使用 uv (推荐)
+# SDL2（pygame 编译需要）
+sudo apt install libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
+
+# 音频库（pyaudio 编译需要）
+sudo apt install portaudio19-dev libopus-dev
+
+# 中文字体
+sudo apt install fonts-wqy-zenhei fonts-wqy-microhei
+```
+
+或一行安装所有依赖：
+```bash
+sudo apt install libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev portaudio19-dev libopus-dev fonts-wqy-zenhei fonts-wqy-microhei
+```
+
+### 2. Python 依赖
+
+```bash
 cd tools/raspberry_pi_display
+
+# 使用 uv (推荐)
 uv sync
 
 # 或使用 pip
 pip install -r requirements.txt
-```
-
-### 树莓派额外依赖
-
-```bash
-# 安装中文字体
-sudo apt install fonts-wqy-zenhei fonts-wqy-microhei
-
-# 安装音频依赖 (可选，用于播放音频)
-sudo apt install portaudio19-dev libopus-dev
-pip install pyaudio opuslib
 ```
 
 ## 使用方法
@@ -68,6 +78,7 @@ uv run python server.py
 |------|------|
 | `F` / `F11` | 切换全屏/窗口模式 |
 | `q` / `ESC` | 退出 |
+| 拖拽窗口边缘 | 调整窗口大小（保持 1:1 比例） |
 
 ## 环境变量配置
 
@@ -75,8 +86,10 @@ uv run python server.py
 |------|--------|------|
 | `RD_HOST` | `0.0.0.0` | 监听地址 |
 | `RD_PORT` | `8765` | 监听端口 |
-| `RD_SCALE` | `1.5` | 窗口缩放比例 |
+| `RD_SCALE` | `1.5` | 窗口初始缩放比例 |
 | `RD_FULLSCREEN` | `0` | 启动时全屏 (`1` 启用) |
+
+> 注意：全屏模式下 `RD_SCALE` 无效，会自动计算最佳缩放比例。窗口模式可通过拖拽边缘调整大小。
 
 示例：
 ```bash
@@ -92,19 +105,35 @@ raspberry_pi_display/
 ├── audio_player.py  # Opus 音频解码播放
 ├── config.py        # 配置管理
 ├── assets/          # UI 资源文件 (表情、背景图)
-│   ├── emojis/      # 表情图片 (PNG)
+│   ├── emojis/      # 表情图片 (PNG/GIF)
 │   └── backgrounds/ # 背景图片 (PNG)
 └── requirements.txt
 ```
 
 ## 自定义资源
 
+### 表情图片
+
 将表情图片放入 `assets/emojis/` 目录，文件名对应表情名称：
-- `neutral.png` - 中性表情
-- `happy.png` - 开心
-- `sad.png` - 悲伤
+- `neutral.png` 或 `neutral.gif` - 中性表情
+- `happy.png` 或 `happy.gif` - 开心
+- `sad.png` 或 `sad.gif` - 悲伤
 - 等等...
 
-背景图片放入 `assets/backgrounds/` 目录。
+**支持 GIF 动画**：如果使用 GIF 格式，会自动按帧播放动画（使用 GIF 内置帧延迟）。
 
-如果没有对应的资源文件，会使用程序绘制的简易表情作为替代。
+> 注意：GIF 动画需要安装 Pillow (`pip install Pillow`)
+
+**建议分辨率**：256×256 或更高（会自动缩放，高分辨率更清晰）
+
+### 背景图片
+
+背景图片放入 `assets/backgrounds/` 目录，命名规则：
+- `bg_light.png` - 亮色主题背景
+- `bg_dark.png` - 暗色主题背景
+
+背景会根据当前主题自动切换。
+
+**建议分辨率**：412×412 或更高（1:1 正方形）
+
+如果没有对应的资源文件，会使用纯色背景和程序绘制的简易表情作为替代。

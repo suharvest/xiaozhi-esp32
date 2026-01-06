@@ -9,9 +9,48 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 logger = logging.getLogger(__name__)
+
+
+class AnimatedSprite:
+    """Handles animated GIF sprites with per-frame timing"""
+
+    def __init__(self, frames: List[pygame.Surface], durations: List[int]):
+        """
+        Args:
+            frames: List of pygame Surfaces, one per frame
+            durations: List of frame durations in milliseconds
+        """
+        self.frames = frames
+        self.durations = durations
+        self.current_frame = 0
+        self.last_update = 0
+
+    def get_current_frame(self, current_time: int) -> pygame.Surface:
+        """Get the current frame based on elapsed time"""
+        if not self.frames:
+            return None
+
+        # Check if it's time to advance to next frame
+        elapsed = current_time - self.last_update
+        if elapsed >= self.durations[self.current_frame]:
+            self.current_frame = (self.current_frame + 1) % len(self.frames)
+            self.last_update = current_time
+
+        return self.frames[self.current_frame]
+
+    def reset(self):
+        """Reset animation to first frame"""
+        self.current_frame = 0
+        self.last_update = 0
 
 # Colors
 COLORS = {
@@ -63,13 +102,13 @@ class UIRenderer:
         self.chat_role = ""
         self.chat_text = ""
         self.theme = "light"
-        self.background_image = None
         self.volume = 70
         self.muted = False
 
         # Assets
         self.assets_dir = Path(__file__).parent / "assets"
         self.emoji_images: Dict[str, pygame.Surface] = {}
+        self.emoji_animations: Dict[str, AnimatedSprite] = {}
         self.background_surfaces: Dict[str, pygame.Surface] = {}
         self.font: Optional[pygame.font.Font] = None
         self.font_large: Optional[pygame.font.Font] = None
@@ -109,7 +148,7 @@ class UIRenderer:
             self.content_offset_y = (screen_h - self.content_height) // 2
             logger.info(f"Fullscreen: {screen_w}x{screen_h}, content: {self.content_width}x{self.content_height}, offset: ({self.content_offset_x}, {self.content_offset_y})")
         else:
-            self.screen = pygame.display.set_mode((self.width, self.height))
+            self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
             self.content_width = self.width
             self.content_height = self.height
             self.content_offset_x = 0
@@ -208,29 +247,66 @@ class UIRenderer:
             except Exception as e:
                 logger.error(f"Failed to load index.json: {e}")
 
-        # Load emoji images
+        # Load emoji images (PNG and GIF)
         emojis_dir = self.assets_dir / "emojis"
+        emoji_size = int(64 * self.scale)
         if emojis_dir.exists():
+            # Load static PNG emojis
             for img_file in emojis_dir.glob("*.png"):
                 try:
                     name = img_file.stem
                     img = pygame.image.load(str(img_file))
-                    # Scale to fit
-                    emoji_size = int(150 * self.scale)
                     img = pygame.transform.smoothscale(img, (emoji_size, emoji_size))
                     self.emoji_images[name] = img
                     logger.debug(f"Loaded emoji: {name}")
                 except Exception as e:
                     logger.error(f"Failed to load emoji {img_file}: {e}")
 
-        # Load background images
+            # Load animated GIF emojis
+            if HAS_PIL:
+                for gif_file in emojis_dir.glob("*.gif"):
+                    try:
+                        name = gif_file.stem
+                        gif = Image.open(gif_file)
+
+                        frames = []
+                        durations = []
+
+                        # Extract all frames from GIF
+                        for frame_num in range(gif.n_frames):
+                            gif.seek(frame_num)
+                            # Convert to RGBA for transparency support
+                            frame = gif.convert('RGBA')
+                            frame = frame.resize((emoji_size, emoji_size), Image.LANCZOS)
+
+                            # PIL Image -> Pygame Surface
+                            pygame_surface = pygame.image.fromstring(
+                                frame.tobytes(), frame.size, frame.mode
+                            )
+                            frames.append(pygame_surface)
+
+                            # Get frame duration (default 100ms if not specified)
+                            duration = gif.info.get('duration', 100)
+                            if duration == 0:
+                                duration = 100  # Some GIFs have 0 duration
+                            durations.append(duration)
+
+                        if frames:
+                            self.emoji_animations[name] = AnimatedSprite(frames, durations)
+                            logger.debug(f"Loaded animated emoji: {name} ({len(frames)} frames)")
+                    except Exception as e:
+                        logger.error(f"Failed to load GIF emoji {gif_file}: {e}")
+            else:
+                logger.warning("PIL not available, GIF animations disabled")
+
+        # Load background images (scale to content area, not full window)
         bg_dir = self.assets_dir / "backgrounds"
         if bg_dir.exists():
             for img_file in bg_dir.glob("*.png"):
                 try:
                     name = img_file.stem
                     img = pygame.image.load(str(img_file))
-                    img = pygame.transform.smoothscale(img, (self.width, self.height))
+                    img = pygame.transform.smoothscale(img, (self.content_width, self.content_height))
                     self.background_surfaces[name] = img
                     logger.debug(f"Loaded background: {name}")
                 except Exception as e:
@@ -254,8 +330,6 @@ class UIRenderer:
                     changed.append(f"chat={self.chat_role}:{self.chat_text[:20]}...")
             if "theme" in state:
                 self.theme = state["theme"] if state["theme"] in COLORS else "light"
-            if "background" in state:
-                self.background_image = state["background"]
             if "volume" in state:
                 self.volume = state["volume"]
             if "muted" in state:
@@ -395,7 +469,6 @@ class UIRenderer:
         # Copy state under lock to avoid race conditions
         with self.state_lock:
             theme = self.theme
-            background_image = self.background_image
             status = self.status
             emotion = self.emotion
             chat_text = self.chat_text
@@ -403,16 +476,17 @@ class UIRenderer:
 
         colors = COLORS[theme]
 
-        # Fill entire screen with background color first (for fullscreen black bars)
-        self.screen.fill((0, 0, 0) if self.fullscreen else colors["background"])
+        # Fill entire screen with background color (including fullscreen padding)
+        self.screen.fill(colors["background"])
 
         # Content area offset for centering
         ox, oy = self.content_offset_x, self.content_offset_y
         cw, ch = self.content_width, self.content_height
 
-        # Draw content background
-        if background_image and background_image in self.background_surfaces:
-            self.screen.blit(self.background_surfaces[background_image], (ox, oy))
+        # Draw content background - derive from theme
+        background_key = f"bg_{theme}"  # "bg_light" or "bg_dark"
+        if background_key in self.background_surfaces:
+            self.screen.blit(self.background_surfaces[background_key], (ox, oy))
         else:
             content_rect = pygame.Rect(ox, oy, cw, ch)
             pygame.draw.rect(self.screen, colors["background"], content_rect)
@@ -420,7 +494,7 @@ class UIRenderer:
         # Layout calculations
         padding = int(20 * self.scale)
         status_height = int(50 * self.scale)
-        emoji_size = int(150 * self.scale)
+        emoji_size = int(64 * self.scale)
         chat_height = int(120 * self.scale)
 
         # Draw status bar at top
@@ -437,8 +511,15 @@ class UIRenderer:
         emoji_center_x = ox + cw // 2
         emoji_center_y = oy + ch // 2 - int(30 * self.scale)
 
-        if emotion in self.emoji_images:
-            # Use loaded image
+        if emotion in self.emoji_animations:
+            # Use animated GIF
+            current_time = pygame.time.get_ticks()
+            img = self.emoji_animations[emotion].get_current_frame(current_time)
+            if img:
+                img_rect = img.get_rect(center=(emoji_center_x, emoji_center_y))
+                self.screen.blit(img, img_rect)
+        elif emotion in self.emoji_images:
+            # Use static image
             img = self.emoji_images[emotion]
             img_rect = img.get_rect(center=(emoji_center_x, emoji_center_y))
             self.screen.blit(img, img_rect)
@@ -510,7 +591,7 @@ class UIRenderer:
             self.scale = 1.5  # Reset to default scale
             self.width = int(self.base_width * self.scale)
             self.height = int(self.base_height * self.scale)
-            self.screen = pygame.display.set_mode((self.width, self.height))
+            self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
             self.content_width = self.width
             self.content_height = self.height
             self.content_offset_x = 0
@@ -538,6 +619,28 @@ class UIRenderer:
                     return False
                 elif event.key == pygame.K_f or event.key == pygame.K_F11:
                     self.toggle_fullscreen()
+            elif event.type == pygame.VIDEORESIZE and not self.fullscreen:
+                # Handle window resize (only in windowed mode)
+                self.width, self.height = event.w, event.h
+
+                # Recalculate scale to fit new window while maintaining aspect ratio
+                scale_w = self.width / self.base_width
+                scale_h = self.height / self.base_height
+                self.scale = min(scale_w, scale_h)
+
+                # Calculate content area (centered if aspect ratio doesn't match)
+                self.content_width = int(self.base_width * self.scale)
+                self.content_height = int(self.base_height * self.scale)
+                self.content_offset_x = (self.width - self.content_width) // 2
+                self.content_offset_y = (self.height - self.content_height) // 2
+
+                self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
+
+                # Reload fonts and assets with new scale
+                self._load_fonts()
+                self._load_assets()
+
+                logger.info(f"Window resized: {self.width}x{self.height}, scale: {self.scale:.2f}, content: {self.content_width}x{self.content_height}")
         return True
 
     def tick(self, fps: int = 30):

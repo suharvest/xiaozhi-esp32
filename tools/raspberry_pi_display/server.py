@@ -3,6 +3,19 @@ Remote Display Server - WebSocket server for receiving UI state and audio
 Uses Pygame for UI rendering (UI state sync mode)
 """
 
+import os
+import sys
+import platform
+
+# macOS: Set library path for Opus (Homebrew installation)
+if platform.system() == "Darwin":
+    brew_prefix = os.popen("brew --prefix opus 2>/dev/null").read().strip()
+    if brew_prefix:
+        lib_path = os.path.join(brew_prefix, "lib")
+        current_path = os.environ.get("DYLD_LIBRARY_PATH", "")
+        if lib_path not in current_path:
+            os.environ["DYLD_LIBRARY_PATH"] = f"{lib_path}:{current_path}" if current_path else lib_path
+
 import asyncio
 import json
 import struct

@@ -18,6 +18,54 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+try:
+    from PIL import Image
+    import numpy as np
+    HAS_IMAGE_LIBS = True
+except ImportError:
+    HAS_IMAGE_LIBS = False
+
+
+def convert_rgb565_to_png(raw_data: bytes, width: int, height: int, output_path: Path) -> bool:
+    """Convert RGB565 raw data to PNG image"""
+    if not HAS_IMAGE_LIBS:
+        print("  Warning: PIL/numpy not available, skipping PNG conversion")
+        return False
+
+    try:
+        # RGB565: 2 bytes per pixel (little-endian)
+        expected_size = width * height * 2
+        actual_size = len(raw_data)
+
+        # Determine data offset (some raw files have headers)
+        if actual_size == expected_size:
+            data_offset = 0
+        elif actual_size > expected_size:
+            # Try to detect header size
+            header_size = actual_size - expected_size
+            print(f"  Note: Detected {header_size}-byte header in RGB565 data, skipping")
+            data_offset = header_size
+        else:
+            print(f"  Warning: RGB565 data too small (expected {expected_size}, got {actual_size})")
+            return False
+
+        # Extract pixel data (skip header if present)
+        pixel_data = raw_data[data_offset:data_offset + expected_size]
+        pixels = np.frombuffer(pixel_data, dtype=np.uint16).reshape((height, width))
+
+        # Extract RGB components from RGB565
+        r = ((pixels >> 11) & 0x1F) << 3  # 5 bits -> 8 bits
+        g = ((pixels >> 5) & 0x3F) << 2   # 6 bits -> 8 bits
+        b = (pixels & 0x1F) << 3          # 5 bits -> 8 bits
+
+        rgb = np.stack([r, g, b], axis=-1).astype(np.uint8)
+        img = Image.fromarray(rgb, 'RGB')
+        img.save(output_path)
+        return True
+    except Exception as e:
+        print(f"  Warning: Failed to convert RGB565 to PNG: {e}")
+        return False
+
 
 class AssetEntry:
     """Asset index entry"""
@@ -175,6 +223,11 @@ def organize_assets(output_path: Path, index_json: dict, assets: Dict[str, Asset
 
     raw_dir = output_path / "raw"
 
+    # Get display config for background conversion
+    display_config = index_json.get("display_config", {})
+    display_width = display_config.get("width", 412)
+    display_height = display_config.get("height", 412)
+
     # Process emoji collection
     emoji_collection = index_json.get("emoji_collection", [])
     for emoji in emoji_collection:
@@ -198,11 +251,27 @@ def organize_assets(output_path: Path, index_json: dict, assets: Dict[str, Asset
         bg_file = theme.get("background_image", "")
         if bg_file and (raw_dir / bg_file).exists():
             src = raw_dir / bg_file
-            ext = Path(bg_file).suffix or ".bin"
-            dst = output_path / "backgrounds" / f"bg_{theme_name}{ext}"
-            if verbose:
-                print(f"  Background: {theme_name} -> {dst.name}")
-            dst.write_bytes(src.read_bytes())
+            raw_data = src.read_bytes()
+
+            # Convert RGB565 .raw to PNG
+            if bg_file.endswith('.raw'):
+                dst = output_path / "backgrounds" / f"bg_{theme_name}.png"
+                if convert_rgb565_to_png(raw_data, display_width, display_height, dst):
+                    if verbose:
+                        print(f"  Background: {theme_name} -> {dst.name} (converted from RGB565)")
+                else:
+                    # Fallback: save as raw
+                    dst = output_path / "backgrounds" / f"bg_{theme_name}.raw"
+                    dst.write_bytes(raw_data)
+                    if verbose:
+                        print(f"  Background: {theme_name} -> {dst.name} (raw)")
+            else:
+                # Non-raw file, just copy
+                ext = Path(bg_file).suffix or ".bin"
+                dst = output_path / "backgrounds" / f"bg_{theme_name}{ext}"
+                dst.write_bytes(raw_data)
+                if verbose:
+                    print(f"  Background: {theme_name} -> {dst.name}")
 
     # Process icon collection
     icon_collection = index_json.get("icon_collection", [])
@@ -253,10 +322,16 @@ def create_pygame_index(output_path: Path, index_json: Optional[dict], assets: D
         skin = index_json.get("skin", {})
         for theme_name in ["light", "dark"]:
             theme = skin.get(theme_name, {})
+            # Check if PNG background exists (converted from RGB565)
+            bg_png = output_path / "backgrounds" / f"bg_{theme_name}.png"
+            if theme.get("background_image"):
+                bg_path = f"backgrounds/bg_{theme_name}.png" if bg_png.exists() else f"backgrounds/bg_{theme_name}.raw"
+            else:
+                bg_path = None
             pygame_index["theme"][theme_name] = {
                 "text_color": theme.get("text_color", "#000000" if theme_name == "light" else "#FFFFFF"),
                 "background_color": theme.get("background_color", "#FFFFFF" if theme_name == "light" else "#1E1E1E"),
-                "background_image": f"backgrounds/bg_{theme_name}.bin" if theme.get("background_image") else None
+                "background_image": bg_path
             }
 
         # Process icon collection

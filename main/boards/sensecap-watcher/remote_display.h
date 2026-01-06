@@ -33,7 +33,7 @@ public:
     void SendEmotion(const char* emotion);
     void SendStatus(const char* status);
     void SendChatMessage(const char* role, const char* content);
-    void SendTheme(const char* theme_name, const char* background_image);
+    void SendTheme(const char* theme_name);
     void SendVolume(int volume, bool muted);
 
     // 音频转发 - 由 AudioService 回调调用
@@ -60,7 +60,6 @@ private:
     std::string current_chat_role_;
     std::string current_chat_text_;
     std::string current_theme_;
-    std::string current_background_;
     int current_volume_ = 70;
     bool current_muted_ = false;
 

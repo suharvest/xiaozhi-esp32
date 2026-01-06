@@ -116,13 +116,7 @@ class CustomLcdDisplay : public SpiLcdDisplay {
 #if REMOTE_DISPLAY_ENABLED
             auto* remote = RemoteDisplay::GetInstance();
             if (remote->IsRunning()) {
-                auto* lvgl_theme = static_cast<LvglTheme*>(theme);
-                const char* bg_name = "";
-                if (lvgl_theme->background_image()) {
-                    // 背景图名称需要从 LvglImage 获取，这里暂时留空
-                    bg_name = "";
-                }
-                remote->SendTheme(theme->name().c_str(), bg_name);
+                remote->SendTheme(theme->name().c_str());
             }
 #endif
         }

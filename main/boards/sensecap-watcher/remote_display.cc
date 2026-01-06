@@ -143,13 +143,12 @@ void RemoteDisplay::SendChatMessage(const char* role, const char* content) {
     SendUIState();
 }
 
-void RemoteDisplay::SendTheme(const char* theme_name, const char* background_image) {
+void RemoteDisplay::SendTheme(const char* theme_name) {
     if (!running_ || !connected_) return;
 
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         current_theme_ = theme_name ? theme_name : "";
-        current_background_ = background_image ? background_image : "";
     }
 
     SendUIState();
@@ -186,7 +185,6 @@ void RemoteDisplay::SendUIState() {
         cJSON_AddItemToObject(root, "chat", chat);
 
         cJSON_AddStringToObject(root, "theme", current_theme_.c_str());
-        cJSON_AddStringToObject(root, "background", current_background_.c_str());
         cJSON_AddNumberToObject(root, "volume", current_volume_);
         cJSON_AddBoolToObject(root, "muted", current_muted_);
     }
