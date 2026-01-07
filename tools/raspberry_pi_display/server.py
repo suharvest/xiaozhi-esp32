@@ -172,6 +172,14 @@ class RemoteDisplayServer:
                 # Broadcast to all browser clients
                 await self._broadcast_to_browsers(msg)
 
+            elif msg_type == "preview_image":
+                # Preview image from camera - forward to browsers
+                image_size = msg.get("size", 0)
+                logger.info(f"Received preview image: {image_size} bytes")
+
+                # Broadcast to all browser clients
+                await self._broadcast_to_browsers(msg)
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON: {e}")
         except Exception as e:

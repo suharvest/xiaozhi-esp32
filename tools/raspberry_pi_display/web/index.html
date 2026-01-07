@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xiaozhi Remote Display</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 412px;
+            height: 412px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            transition: transform 0.3s ease, width 0.3s ease, height 0.3s ease;
+            /* Scale support via CSS variable */
+            --scale: 1;
+        }
+
+        body.fullscreen #container {
+            width: 100vmin;
+            height: 100vmin;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        /* Resize handle */
+        #resize-handle {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 20px;
+            height: 20px;
+            cursor: se-resize;
+            z-index: 10;
+        }
+
+        #resize-handle::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            width: 10px;
+            height: 10px;
+            border-right: 2px solid rgba(0,0,0,0.3);
+            border-bottom: 2px solid rgba(0,0,0,0.3);
+        }
+
+        body.fullscreen #resize-handle {
+            display: none;
+        }
+
+        #display {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 5%;
+            box-sizing: border-box;
+            transition: background-color 0.3s ease;
+            /* Font size scales with container */
+            font-size: calc(16px * var(--scale, 1));
+            overflow: hidden;
+        }
+
+        /* Light theme */
+        #display.light {
+            background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+            color: #212529;
+        }
+
+        /* Dark theme */
+        #display.dark {
+            background: linear-gradient(180deg, #2d2d3a 0%, #1a1a2e 100%);
+            color: #f8f9fa;
+        }
+
+        /* Status area */
+        #status {
+            text-align: center;
+            font-size: 1em;
+            min-height: 1.5em;
+            opacity: 0.7;
+            transition: opacity 0.3s ease;
+        }
+
+        /* Emoji area */
+        #emoji-container {
+            flex: 1;
+            min-height: 20%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        #emoji {
+            width: 30%;
+            height: 30%;
+            object-fit: contain;
+            transition: transform 0.2s ease;
+        }
+
+        #emoji:not([src]) {
+            display: none;
+        }
+
+        /* Preview image (camera capture) */
+        #preview-image {
+            max-width: 70%;
+            max-height: 70%;
+            object-fit: contain;
+            border-radius: 8px;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        #preview-image.show {
+            display: block;
+        }
+
+        /* Hide emoji when preview is shown */
+        #emoji-container.preview-mode #emoji,
+        #emoji-container.preview-mode #emoji-fallback {
+            display: none !important;
+        }
+
+        /* Fallback emoji (drawn with CSS) */
+        #emoji-fallback {
+            width: 30%;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            background: #ffd93d;
+            position: relative;
+            display: none;
+        }
+
+        #emoji-fallback.show {
+            display: block;
+        }
+
+        #emoji-fallback::before,
+        #emoji-fallback::after {
+            content: '';
+            position: absolute;
+            width: 10%;
+            height: 10%;
+            background: #333;
+            border-radius: 50%;
+            top: 33%;
+        }
+
+        #emoji-fallback::before {
+            left: 28%;
+        }
+
+        #emoji-fallback::after {
+            right: 28%;
+        }
+
+        #emoji-fallback .mouth {
+            position: absolute;
+            bottom: 25%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 33%;
+            height: 16%;
+            border: 2px solid #333;
+            border-top: none;
+            border-radius: 0 0 50% 50%;
+            background: transparent;
+        }
+
+        /* Neutral: straight line */
+        #emoji-fallback.show.neutral .mouth {
+            height: 6%;
+            width: 25%;
+            border: none;
+            border-radius: 3px;
+            background: #333;
+            bottom: 28%;
+        }
+
+        /* Happy: smile (default) */
+        #emoji-fallback.show.happy .mouth {
+            border: 2px solid #333;
+            border-top: none;
+            border-radius: 0 0 50% 50%;
+            background: transparent;
+        }
+
+        /* Sad: frown */
+        #emoji-fallback.show.sad .mouth {
+            border: 2px solid #333;
+            border-bottom: none;
+            border-top: 2px solid #333;
+            border-radius: 50% 50% 0 0;
+            bottom: 22%;
+            height: 12%;
+            background: transparent;
+        }
+
+        /* Chat area */
+        #chat-container {
+            flex: 0 0 auto;
+            max-height: 35%;
+            display: flex;
+            align-items: flex-end;
+        }
+
+        #chat-bubble {
+            width: 100%;
+            padding: 3% 4%;
+            border-radius: 12px;
+            font-size: 0.9em;
+            line-height: 1.4;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.3s ease, transform 0.3s ease, background-color 0.3s ease;
+            overflow-y: auto;
+            text-align: center;
+            word-break: break-word;
+        }
+
+        #chat-bubble.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* User bubble */
+        .light #chat-bubble.user {
+            background: #dcf8c6;
+        }
+
+        .dark #chat-bubble.user {
+            background: #265734;
+        }
+
+        /* Assistant bubble */
+        .light #chat-bubble.assistant {
+            background: #f0f0f0;
+        }
+
+        .dark #chat-bubble.assistant {
+            background: #3c3c4c;
+        }
+
+        /* Connection status indicator */
+        #connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: white;
+            transition: background-color 0.3s ease, opacity 0.3s ease;
+            z-index: 100;
+        }
+
+        #connection-status.connected {
+            background: #28a745;
+        }
+
+        #connection-status.disconnected {
+            background: #dc3545;
+        }
+
+        #connection-status.connecting {
+            background: #ffc107;
+            color: #333;
+        }
+
+        /* Fullscreen hint */
+        #hint {
+            position: fixed;
+            bottom: 20px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+        }
+
+        body.fullscreen #hint {
+            display: none;
+        }
+
+        /* Click to start overlay */
+        #start-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            cursor: pointer;
+        }
+
+        #start-overlay.hidden {
+            display: none;
+        }
+
+        #start-overlay .content {
+            text-align: center;
+            color: white;
+        }
+
+        #start-overlay h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        #start-overlay p {
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <!-- Click to start (for audio) -->
+    <div id="start-overlay">
+        <div class="content">
+            <h2>Xiaozhi Remote Display</h2>
+            <p>Click to start</p>
+        </div>
+    </div>
+
+    <!-- Connection status -->
+    <div id="connection-status" class="disconnected">Disconnected</div>
+
+    <!-- Main display -->
+    <div id="container">
+        <div id="display" class="light">
+            <!-- Status -->
+            <div id="status"></div>
+
+            <!-- Emoji / Preview Image -->
+            <div id="emoji-container">
+                <img id="emoji" alt="emoji">
+                <div id="emoji-fallback">
+                    <div class="mouth"></div>
+                </div>
+                <img id="preview-image" alt="preview">
+            </div>
+
+            <!-- Chat -->
+            <div id="chat-container">
+                <div id="chat-bubble"></div>
+            </div>
+        </div>
+        <!-- Resize handle -->
+        <div id="resize-handle"></div>
+    </div>
+
+    <!-- Hint -->
+    <div id="hint">F/F11: fullscreen | Scroll: zoom | Drag corner: resize</div>
+
+    <script>
+        // Elements
+        const container = document.getElementById('container');
+        const display = document.getElementById('display');
+        const statusEl = document.getElementById('status');
+        const emojiImg = document.getElementById('emoji');
+        const emojiFallback = document.getElementById('emoji-fallback');
+        const emojiContainer = document.getElementById('emoji-container');
+        const previewImage = document.getElementById('preview-image');
+        const chatBubble = document.getElementById('chat-bubble');
+        const connectionStatus = document.getElementById('connection-status');
+        const startOverlay = document.getElementById('start-overlay');
+        const resizeHandle = document.getElementById('resize-handle');
+
+        // State
+        let ws = null;
+        let currentEmotion = 'neutral';
+        let audioStarted = false;
+        let previewTimer = null;
+        const PREVIEW_DURATION_MS = 5000; // Match device's PREVIEW_IMAGE_DURATION_MS
+
+        // Base size
+        const BASE_SIZE = 412;
+        let currentScale = 1.5;
+
+        // Emoji cache
+        const emojiCache = {};
+        const availableEmojis = new Set();
+
+        // Apply scale from URL parameter or default
+        function initScale() {
+            const params = new URLSearchParams(window.location.search);
+            const scale = parseFloat(params.get('scale')) || 1.5;
+            setScale(scale);
+        }
+
+        function setScale(scale) {
+            scale = Math.max(0.5, Math.min(3, scale)); // Clamp between 0.5 and 3
+            currentScale = scale;
+            const size = Math.round(BASE_SIZE * scale);
+            container.style.width = size + 'px';
+            container.style.height = size + 'px';
+            // Update CSS variable for font scaling
+            display.style.setProperty('--scale', scale);
+        }
+
+        // Resize by dragging
+        let isResizing = false;
+        let startX, startY, startSize;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            if (document.fullscreenElement) return;
+            isResizing = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            startSize = container.offsetWidth;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            const delta = Math.max(dx, dy); // Keep 1:1 ratio
+            const newSize = Math.max(206, Math.min(1236, startSize + delta));
+            container.style.width = newSize + 'px';
+            container.style.height = newSize + 'px';
+            currentScale = newSize / BASE_SIZE;
+            // Update CSS variable for font scaling
+            display.style.setProperty('--scale', currentScale);
+        });
+
+        document.addEventListener('mouseup', () => {
+            isResizing = false;
+        });
+
+        // Scroll wheel zoom
+        container.addEventListener('wheel', (e) => {
+            if (document.fullscreenElement) return;
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            setScale(currentScale + delta);
+        }, { passive: false });
+
+        // WebSocket connection
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            connectionStatus.textContent = 'Connecting...';
+            connectionStatus.className = 'connecting';
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                connectionStatus.textContent = 'Connected';
+                connectionStatus.className = 'connected';
+
+                // Fade out status after 2s
+                setTimeout(() => {
+                    connectionStatus.style.opacity = '0.3';
+                }, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                connectionStatus.textContent = 'Disconnected';
+                connectionStatus.className = 'disconnected';
+                connectionStatus.style.opacity = '1';
+
+                // Reconnect after 3s
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        // Handle incoming messages
+        function handleMessage(data) {
+            if (data.type === 'ui_state') {
+                updateUI(data);
+            } else if (data.type === 'preview_image') {
+                showPreviewImage(data);
+            } else if (data.type === 'emoji_list') {
+                // Server sends list of available emojis
+                data.emojis.forEach(name => availableEmojis.add(name));
+            }
+        }
+
+        // Show preview image from camera
+        function showPreviewImage(data) {
+            if (!data.data || !data.format) {
+                console.error('Invalid preview image data');
+                return;
+            }
+
+            // Clear any existing timer
+            if (previewTimer) {
+                clearTimeout(previewTimer);
+                previewTimer = null;
+            }
+
+            // Set image source (base64 JPEG)
+            previewImage.src = `data:image/${data.format};base64,${data.data}`;
+            previewImage.className = 'show';
+            emojiContainer.classList.add('preview-mode');
+
+            console.log(`Preview image received: ${data.size} bytes`);
+
+            // Auto-hide after duration
+            previewTimer = setTimeout(() => {
+                hidePreviewImage();
+            }, PREVIEW_DURATION_MS);
+        }
+
+        // Hide preview image and show emoji again
+        function hidePreviewImage() {
+            previewImage.className = '';
+            previewImage.src = '';
+            emojiContainer.classList.remove('preview-mode');
+            previewTimer = null;
+        }
+
+        // Update UI based on state
+        function updateUI(state) {
+            // Theme
+            if (state.theme) {
+                display.className = state.theme;
+            }
+
+            // Status
+            if (state.status !== undefined) {
+                statusEl.textContent = state.status;
+            }
+
+            // Emotion/Emoji
+            if (state.emotion && state.emotion !== currentEmotion) {
+                currentEmotion = state.emotion;
+                loadEmoji(state.emotion);
+            }
+
+            // Chat
+            if (state.chat) {
+                const { role, text } = state.chat;
+                if (text) {
+                    chatBubble.textContent = text;
+                    chatBubble.className = `show ${role || 'assistant'}`;
+                } else {
+                    chatBubble.className = '';
+                    chatBubble.textContent = '';
+                }
+            }
+        }
+
+        // Load emoji image
+        function loadEmoji(emotion) {
+            // Try to load from assets
+            const basePath = '/assets/emojis/';
+
+            // Try GIF first, then PNG
+            const tryLoad = (ext) => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img.src);
+                    img.onerror = () => reject();
+                    img.src = `${basePath}${emotion}.${ext}`;
+                });
+            };
+
+            // Check cache first
+            if (emojiCache[emotion]) {
+                emojiImg.src = emojiCache[emotion];
+                emojiImg.style.display = 'block';
+                emojiFallback.className = '';
+                return;
+            }
+
+            // Try loading
+            tryLoad('gif')
+                .catch(() => tryLoad('png'))
+                .then(src => {
+                    emojiCache[emotion] = src;
+                    emojiImg.src = src;
+                    emojiImg.style.display = 'block';
+                    emojiFallback.className = '';
+                })
+                .catch(() => {
+                    // Show fallback
+                    emojiImg.style.display = 'none';
+                    emojiFallback.className = `show ${emotion}`;
+                });
+        }
+
+        // Fullscreen toggle
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+                document.body.classList.add('fullscreen');
+            } else {
+                document.exitFullscreen();
+                document.body.classList.remove('fullscreen');
+            }
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'f' || e.key === 'F' || e.key === 'F11') {
+                e.preventDefault();
+                toggleFullscreen();
+            } else if (e.key === 'q' || e.key === 'Q' || e.key === 'Escape') {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                    document.body.classList.remove('fullscreen');
+                }
+            }
+        });
+
+        // Handle fullscreen change
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement) {
+                document.body.classList.remove('fullscreen');
+            }
+        });
+
+        // Start overlay click
+        startOverlay.addEventListener('click', () => {
+            audioStarted = true;
+            startOverlay.classList.add('hidden');
+            connect();
+        });
+
+        // Initialize
+        initScale();
+        loadEmoji('neutral');
+    </script>
+</body>
+</html>

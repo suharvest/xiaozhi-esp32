@@ -144,6 +144,7 @@ private:
     LcdDisplay* display_;
     std::unique_ptr<Knob> knob_;
     esp_io_expander_handle_t io_exp_handle;
+    SemaphoreHandle_t io_exp_mutex_ = nullptr;  // I2C 操作互斥锁
     button_handle_t btns;
     PowerSaveTimer* power_save_timer_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -227,12 +228,24 @@ private:
     }
 
     esp_err_t IoExpanderSetLevel(uint16_t pin_mask, uint8_t level) {
-        return esp_io_expander_set_level(io_exp_handle, pin_mask, level);
+        esp_err_t ret = ESP_ERR_TIMEOUT;
+        if (xSemaphoreTake(io_exp_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            ret = esp_io_expander_set_level(io_exp_handle, pin_mask, level);
+            xSemaphoreGive(io_exp_mutex_);
+        } else {
+            ESP_LOGW(TAG, "IoExpanderSetLevel: mutex timeout");
+        }
+        return ret;
     }
 
     uint8_t IoExpanderGetLevel(uint16_t pin_mask) {
         uint32_t pin_val = 0;
-        esp_io_expander_get_level(io_exp_handle, DRV_IO_EXP_INPUT_MASK, &pin_val);
+        if (xSemaphoreTake(io_exp_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            esp_io_expander_get_level(io_exp_handle, DRV_IO_EXP_INPUT_MASK, &pin_val);
+            xSemaphoreGive(io_exp_mutex_);
+        } else {
+            ESP_LOGW(TAG, "IoExpanderGetLevel: mutex timeout");
+        }
         pin_mask &= DRV_IO_EXP_INPUT_MASK;
         return (uint8_t)((pin_val & pin_mask) ? 1 : 0);
     }
@@ -678,6 +691,10 @@ private:
 public:
     SensecapWatcher() {
         ESP_LOGI(TAG, "Initialize Sensecap Watcher");
+        // 创建 I2C 操作互斥锁（必须在 InitializeExpander 之前）
+        io_exp_mutex_ = xSemaphoreCreateMutex();
+        assert(io_exp_mutex_ != nullptr);
+
         InitializePowerSaveTimer();
         InitializeI2c();
         InitializeSpi();
