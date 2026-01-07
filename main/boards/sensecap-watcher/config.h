@@ -151,7 +151,7 @@
 
 /* Remote Display (树莓派远程显示 - UI 状态同步模式) */
 #define REMOTE_DISPLAY_ENABLED      true
-#define REMOTE_DISPLAY_SERVER_URL   "ws://192.168.10.213:8765"
+#define REMOTE_DISPLAY_SERVER_URL   "ws://192.168.10.162:8765"
 #define REMOTE_DISPLAY_TIMEOUT_MS   3000
 
 #endif // _BOARD_CONFIG_H_

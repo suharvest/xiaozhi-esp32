@@ -36,6 +36,9 @@ public:
     void SendTheme(const char* theme_name);
     void SendVolume(int volume, bool muted);
 
+    // 图像发送接口
+    void SendPreviewImage(const uint8_t* jpeg_data, size_t size);
+
     // 音频转发 - 由 AudioService 回调调用
     void ForwardAudioPacket(const std::vector<uint8_t>& opus_data,
                             int sample_rate, int frame_duration);

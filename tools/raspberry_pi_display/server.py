@@ -1,6 +1,6 @@
 """
-Remote Display Server - WebSocket server for receiving UI state and audio
-Uses Pygame for UI rendering (UI state sync mode)
+Remote Display Server - Web-based UI rendering with aiohttp
+Receives UI state from ESP32 device and broadcasts to browser clients
 """
 
 import os
@@ -20,16 +20,13 @@ import asyncio
 import json
 import struct
 import signal
-import sys
 import logging
-import threading
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Set
 
-import websockets
-from websockets.server import WebSocketServerProtocol
+from aiohttp import web, WSMsgType
 
 from config import Config
-from ui_renderer import UIRenderer
 from audio_player import AudioPlayer
 
 # Setup logging
@@ -39,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Message types
+# Message types (binary protocol from ESP32)
 MSG_TYPE_UI_STATE = 0x10
 MSG_TYPE_AUDIO_FRAME = 0x02
 MSG_TYPE_HEARTBEAT = 0x04
@@ -48,54 +45,139 @@ MSG_TYPE_HEARTBEAT = 0x04
 class RemoteDisplayServer:
     def __init__(self):
         self.config = Config()
-        self.ui_renderer: Optional[UIRenderer] = None
         self.audio_player: Optional[AudioPlayer] = None
-        self.connected_client: Optional[WebSocketServerProtocol] = None
-        self.running = True
+
+        # WebSocket clients
+        self.device_ws: Optional[web.WebSocketResponse] = None  # ESP32 device
+        self.browser_clients: Set[web.WebSocketResponse] = set()  # Browser clients
+
+        # Stats
         self.ui_state_count = 0
         self.audio_count = 0
 
-    def cleanup(self):
-        """Cleanup resources"""
-        if self.ui_renderer:
-            self.ui_renderer.close()
-        if self.audio_player:
-            self.audio_player.close()
-        logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
+        # Current UI state (for new browser connections)
+        self.current_ui_state: Optional[dict] = None
 
-    async def handle_client(self, websocket: WebSocketServerProtocol):
-        """Handle client connection"""
-        client_addr = websocket.remote_address
-        logger.info(f"Client connected: {client_addr}")
+        # Paths
+        self.base_dir = Path(__file__).parent
+        self.web_dir = self.base_dir / "web"
+        self.assets_dir = self.base_dir / "assets"
 
-        if self.connected_client is not None:
-            logger.warning("Rejecting new client, already have a connection")
-            await websocket.close(1013, "Only one client allowed")
-            return
+    async def handle_root(self, request: web.Request) -> web.Response:
+        """Handle root path - WebSocket for device, HTML for browser"""
+        # Check if this is a WebSocket upgrade request
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            return await self.handle_device_ws(request)
 
-        self.connected_client = websocket
+        # Otherwise serve index.html
+        index_path = self.web_dir / "index.html"
+        if index_path.exists():
+            return web.FileResponse(index_path)
+        return web.Response(text="index.html not found", status=404)
+
+    async def handle_device_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """Handle ESP32 device WebSocket connection (path: /)"""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        client_addr = request.remote
+        logger.info(f"New WebSocket connection from {client_addr}")
+
+        # Check if this is a device connection (will be confirmed by hello message)
+        # For now, treat root path connections as potential device connections
 
         try:
-            async for message in websocket:
-                if isinstance(message, bytes):
-                    await self.handle_binary_message(message)
-                else:
-                    await self.handle_text_message(message, websocket)
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"Client disconnected (ConnectionClosed): code={e.code}, reason={e.reason}")
-        except websockets.exceptions.ConnectionClosedError as e:
-            logger.info(f"Client disconnected (ConnectionClosedError): code={e.code}, reason={e.reason}")
-        except websockets.exceptions.ConnectionClosedOK as e:
-            logger.info(f"Client disconnected (ConnectionClosedOK): code={e.code}, reason={e.reason}")
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    await self._handle_text_message(ws, msg.data, client_addr)
+                elif msg.type == WSMsgType.BINARY:
+                    await self._handle_binary_message(msg.data)
+                elif msg.type == WSMsgType.ERROR:
+                    logger.error(f"WebSocket error: {ws.exception()}")
         except Exception as e:
-            logger.error(f"Error handling client: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error handling WebSocket: {e}")
         finally:
-            self.connected_client = None
-            logger.info(f"Client connection handler finished: {client_addr}")
+            # Clean up
+            if self.device_ws == ws:
+                self.device_ws = None
+                logger.info(f"Device disconnected: {client_addr}")
+            elif ws in self.browser_clients:
+                self.browser_clients.discard(ws)
+                logger.info(f"Browser client disconnected: {client_addr}")
 
-    async def handle_binary_message(self, data: bytes):
+        return ws
+
+    async def handle_browser_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """Handle browser WebSocket connection (path: /ws)"""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        client_addr = request.remote
+        logger.info(f"Browser client connected: {client_addr}")
+
+        self.browser_clients.add(ws)
+
+        # Send current UI state to new client
+        if self.current_ui_state:
+            try:
+                await ws.send_json(self.current_ui_state)
+            except Exception as e:
+                logger.error(f"Failed to send initial state: {e}")
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    # Browser clients don't send meaningful messages, just keep alive
+                    pass
+                elif msg.type == WSMsgType.ERROR:
+                    logger.error(f"Browser WebSocket error: {ws.exception()}")
+        except Exception as e:
+            logger.error(f"Error handling browser WebSocket: {e}")
+        finally:
+            self.browser_clients.discard(ws)
+            logger.info(f"Browser client disconnected: {client_addr}")
+
+        return ws
+
+    async def _handle_text_message(self, ws: web.WebSocketResponse, data: str, client_addr: str):
+        """Handle text (JSON) message"""
+        try:
+            msg = json.loads(data)
+            msg_type = msg.get("type")
+
+            if msg_type == "hello":
+                # Device hello message
+                logger.info(f"Device hello: {msg}")
+                self.device_ws = ws
+
+                # Send acknowledgment
+                response = {
+                    "type": "hello_ack",
+                    "status": "ok",
+                    "mode": "ui_state"
+                }
+                await ws.send_json(response)
+                logger.info("Sent hello_ack to device")
+
+            elif msg_type == "ui_state":
+                # UI state update from device
+                self.current_ui_state = msg
+                self.ui_state_count += 1
+
+                if self.ui_state_count == 1:
+                    logger.info("Received first UI state update")
+                elif self.ui_state_count % 100 == 0:
+                    logger.info(f"Received {self.ui_state_count} UI state updates")
+
+                # Broadcast to all browser clients
+                await self._broadcast_to_browsers(msg)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error handling text message: {e}")
+
+    async def _handle_binary_message(self, data: bytes):
         """Handle binary message (audio frame)"""
         if len(data) < 4:
             logger.warning("Message too short")
@@ -106,11 +188,11 @@ class RemoteDisplayServer:
         payload = data[4:]
 
         if msg_type == MSG_TYPE_AUDIO_FRAME:
-            await self.handle_audio_frame(payload)
+            await self._handle_audio_frame(payload)
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
 
-    async def handle_audio_frame(self, payload: bytes):
+    async def _handle_audio_frame(self, payload: bytes):
         """Handle audio frame"""
         if len(payload) < 4:
             return
@@ -124,179 +206,103 @@ class RemoteDisplayServer:
             self.audio_player.play(opus_data, sample_rate, frame_duration)
             self.audio_count += 1
 
-    async def handle_text_message(self, message: str, websocket: WebSocketServerProtocol):
-        """Handle text message (JSON)"""
-        try:
-            data = json.loads(message)
-            msg_type = data.get("type")
+    async def _broadcast_to_browsers(self, msg: dict):
+        """Broadcast message to all connected browser clients"""
+        if not self.browser_clients:
+            return
 
-            if msg_type == "hello":
-                logger.info(f"Client hello: {data}")
-                # Send acknowledgment
-                response = {
-                    "type": "hello_ack",
-                    "status": "ok",
-                    "mode": "ui_state"
-                }
-                await websocket.send(json.dumps(response))
-                logger.info("Sent hello_ack to client")
+        # Send to all clients, remove disconnected ones
+        disconnected = set()
+        for client in self.browser_clients:
+            try:
+                await client.send_json(msg)
+            except Exception as e:
+                logger.debug(f"Failed to send to browser client: {e}")
+                disconnected.add(client)
 
-            elif msg_type == "ui_state":
-                # Update UI state
-                if self.ui_renderer:
-                    try:
-                        self.ui_renderer.update_state(data)
-                        self.ui_state_count += 1
+        # Remove disconnected clients
+        self.browser_clients -= disconnected
 
-                        if self.ui_state_count == 1:
-                            logger.info("Received first UI state update")
-                        elif self.ui_state_count % 100 == 0:
-                            logger.info(f"Received {self.ui_state_count} UI state updates")
-                    except Exception as e:
-                        logger.error(f"Error updating UI state: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON: {e}")
-        except Exception as e:
-            logger.error(f"Error handling text message: {e}")
-            import traceback
-            traceback.print_exc()
+    def cleanup(self):
+        """Cleanup resources"""
+        if self.audio_player:
+            self.audio_player.close()
+        logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
 
 
-# Global server instance for signal handler
-server_instance: Optional[RemoteDisplayServer] = None
-
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    global server_instance
-    logger.info("Shutting down...")
-    if server_instance:
-        server_instance.running = False
-    sys.exit(0)
-
-
-def main():
-    """Main function - runs Pygame in main thread, WebSocket in background"""
-    global server_instance
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+async def main():
+    """Main entry point"""
     print("""
 +-----------------------------------------------------------+
 |         Xiaozhi ESP32 Remote Display Server               |
-|              (UI State Sync Mode)                         |
+|              (Web UI Mode)                                |
 |                                                           |
+|  Open http://localhost:8765 in your browser               |
 |  Waiting for connection from SenseCAP Watcher...          |
-|  Press 'F' or F11 to toggle fullscreen                    |
-|  Press 'q' or ESC to quit                                 |
 +-----------------------------------------------------------+
     """)
 
     server = RemoteDisplayServer()
-    server_instance = server
 
-    # Initialize components with error handling
-    try:
-        logger.info("Initializing UI Renderer...")
-        server.ui_renderer = UIRenderer(
-            width=server.config.SCREEN_WIDTH,
-            height=server.config.SCREEN_HEIGHT,
-            scale=server.config.DISPLAY_SCALE,
-            fullscreen=server.config.FULLSCREEN
-        )
-        logger.info("UI Renderer initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize UI Renderer: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-
-    try:
-        logger.info("Initializing Audio Player...")
-        server.audio_player = AudioPlayer(
-            sample_rate=server.config.AUDIO_SAMPLE_RATE,
-            channels=server.config.AUDIO_CHANNELS,
-            frame_duration=server.config.AUDIO_FRAME_DURATION
-        )
-        logger.info("Audio Player initialized successfully")
-    except Exception as e:
-        logger.warning(f"Failed to initialize Audio Player: {e}")
+    # Initialize audio player (skip if RD_NO_AUDIO=1)
+    if os.getenv("RD_NO_AUDIO", "0") == "1":
+        logger.info("Audio disabled (RD_NO_AUDIO=1)")
         server.audio_player = None
-
-    # Create event loop for background WebSocket server
-    loop = asyncio.new_event_loop()
-
-    async def run_websocket_server():
-        """Run WebSocket server as async task"""
-        logger.info(f"Starting server on ws://{server.config.HOST}:{server.config.PORT}")
+    else:
         try:
-            async with websockets.serve(
-                server.handle_client,
-                server.config.HOST,
-                server.config.PORT,
-                max_size=1024 * 1024,
-                ping_interval=30,
-                ping_timeout=10
-            ):
-                logger.info("Server started, waiting for connection...")
-                while server.running and server.ui_renderer.running:
-                    await asyncio.sleep(0.1)
-                logger.info(f"WebSocket server loop ended (running={server.running}, ui_running={server.ui_renderer.running})")
+            logger.info("Initializing Audio Player...")
+            server.audio_player = AudioPlayer(
+                sample_rate=server.config.AUDIO_SAMPLE_RATE,
+                channels=server.config.AUDIO_CHANNELS,
+                frame_duration=server.config.AUDIO_FRAME_DURATION
+            )
+            logger.info("Audio Player initialized successfully")
         except Exception as e:
-            logger.error(f"WebSocket server error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.warning(f"Failed to initialize Audio Player: {e}")
+            server.audio_player = None
 
-    # Start WebSocket server in background thread
-    def run_loop():
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_websocket_server())
-        logger.info("WebSocket thread finished")
+    # Create aiohttp app
+    app = web.Application()
 
-    ws_thread = threading.Thread(target=run_loop, daemon=True)
-    ws_thread.start()
-    logger.info("WebSocket thread started")
+    # Routes
+    app.router.add_route("*", "/", server.handle_root)  # Handle both HTTP and WebSocket
+    app.router.add_get("/ws", server.handle_browser_ws)
+    app.router.add_get("/device", server.handle_device_ws)  # Alternative device endpoint
 
-    # Main thread: handle Pygame rendering
-    try:
-        logger.info("Starting main render loop...")
-        frame_count = 0
-        while server.running and server.ui_renderer.running:
-            # Handle Pygame events
-            if not server.ui_renderer.handle_events():
-                logger.info("UI renderer requested exit")
-                break
+    # Static files
+    if server.web_dir.exists():
+        app.router.add_static("/web/", server.web_dir)
+    if server.assets_dir.exists():
+        app.router.add_static("/assets/", server.assets_dir)
 
-            # Render UI
-            try:
-                server.ui_renderer.render()
-            except Exception as e:
-                logger.error(f"Render error: {e}")
-                import traceback
-                traceback.print_exc()
-
-            # Limit frame rate
-            server.ui_renderer.tick(30)
-
-            frame_count += 1
-            if frame_count == 1:
-                logger.info("First frame rendered successfully")
-
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
-    except Exception as e:
-        logger.error(f"Main loop error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        logger.info("Cleaning up...")
-        server.running = False
+    # Setup cleanup
+    async def on_shutdown(app):
         server.cleanup()
+
+    app.on_shutdown.append(on_shutdown)
+
+    # Run server
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(runner, server.config.HOST, server.config.PORT)
+    await site.start()
+
+    logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
+    logger.info(f"Browser UI: http://localhost:{server.config.PORT}")
+    logger.info(f"Device WebSocket: ws://localhost:{server.config.PORT}/device")
+
+    # Wait forever
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")

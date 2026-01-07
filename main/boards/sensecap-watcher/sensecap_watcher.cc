@@ -11,6 +11,7 @@
 #include "sscma_camera.h"
 #include "lvgl_theme.h"
 #include "remote_display.h"
+#include <wifi_manager.h>
 
 #include <esp_log.h>
 #include <esp_check.h>
@@ -161,6 +162,16 @@ private:
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
+#if REMOTE_DISPLAY_ENABLED
+            // 唤醒时检查远程显示连接，如果断开则尝试重连
+            auto* remote = RemoteDisplay::GetInstance();
+            if (!remote->IsRunning()) {
+                ESP_LOGI(TAG, "Remote display disconnected, attempting to reconnect...");
+                if (remote->Start(REMOTE_DISPLAY_SERVER_URL, REMOTE_DISPLAY_TIMEOUT_MS)) {
+                    ESP_LOGI(TAG, "Remote display reconnected successfully");
+                }
+            }
+#endif
         });
         power_save_timer_->OnShutdownRequest([this]() {
             ESP_LOGI(TAG, "Shutting down");
@@ -625,16 +636,16 @@ private:
         xTaskCreate([](void* arg) {
             // 等待 WiFi 真正连接（最多等待 30 秒）
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
-            auto& wifi_station = WifiStation::GetInstance();
+            auto& wifi = WifiManager::GetInstance();
             for (int i = 0; i < 300; i++) {
-                if (wifi_station.IsConnected()) {
-                    ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi_station.GetIpAddress().c_str());
+                if (wifi.IsConnected()) {
+                    ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi.GetIpAddress().c_str());
                     break;
                 }
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
 
-            if (!wifi_station.IsConnected()) {
+            if (!wifi.IsConnected()) {
                 ESP_LOGW(TAG, "WiFi not connected after 30s, remote display disabled");
                 vTaskDelete(nullptr);
                 return;

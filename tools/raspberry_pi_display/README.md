@@ -4,39 +4,61 @@
 
 ## 工作原理
 
-采用 **UI 状态同步** 方式：
+采用 **UI 状态同步 + Web 渲染** 方式：
 - ESP32 设备发送 UI 状态（表情、状态文字、聊天消息等）作为 JSON 数据
-- 树莓派/电脑端使用 Pygame 根据状态重新渲染 UI
-- 同时转发音频流（Opus 编码）
+- 服务器转发状态到浏览器，浏览器渲染 UI
+- 音频由服务器端解码播放（Opus → PCM）
 
-相比截图方案，这种方式：
-- 数据量小（100-500 字节 vs 10-50KB）
-- 对设备性能压力小
-- 延迟更低
+优点：
+- **依赖少**：无需安装 SDL2/pygame 等图形库
+- **跨平台**：任何有浏览器的设备都能查看
+- **多客户端**：多个浏览器可同时查看
 
 ## 安装
 
 ### 1. 系统依赖（树莓派/Linux）
 
-**必须先安装系统依赖**，否则 Python 包编译会失败：
-
 ```bash
-# SDL2（pygame 编译需要）
-sudo apt install libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
-
-# 音频库（pyaudio 编译需要）
+# 音频库（必须）
 sudo apt install portaudio19-dev libopus-dev
 
-# 中文字体
-sudo apt install fonts-wqy-zenhei fonts-wqy-microhei
+# PipeWire ALSA 支持（如果 HDMI 音频不工作）
+sudo apt install pipewire-alsa wireplumber
 ```
 
-或一行安装所有依赖：
+### 2. HDMI 音频配置（reComputer/树莓派）
+
+如果 HDMI 没有声音，按以下步骤配置：
+
 ```bash
-sudo apt install libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev portaudio19-dev libopus-dev fonts-wqy-zenhei fonts-wqy-microhei
+# 1. 重启音频服务
+systemctl --user restart pipewire pipewire-pulse wireplumber
+
+# 2. 查看可用音频输出
+pactl list sinks short
+
+# 3. 设置 HDMI 为默认输出（名字根据你的设备可能不同）
+pactl set-default-sink alsa_output.platform-fef00700.hdmi.hdmi-stereo
+
+# 4. 测试
+paplay /usr/share/sounds/alsa/Front_Center.wav
 ```
 
-### 2. Python 依赖
+**开机自动设置 HDMI 输出**（可选）：
+
+```bash
+# 添加到 ~/.config/pipewire/pipewire.conf.d/default-sink.conf
+mkdir -p ~/.config/pipewire/pipewire.conf.d
+echo 'context.properties = { default.audio.sink = "alsa_output.platform-fef00700.hdmi.hdmi-stereo" }' > ~/.config/pipewire/pipewire.conf.d/default-sink.conf
+```
+
+**禁用音频**（如果不需要）：
+
+```bash
+RD_NO_AUDIO=1 uv run python server.py
+```
+
+### 3. Python 依赖
 
 ```bash
 cd tools/raspberry_pi_display
@@ -45,7 +67,7 @@ cd tools/raspberry_pi_display
 uv sync
 
 # 或使用 pip
-pip install -r requirements.txt
+pip install aiohttp opuslib pyaudio
 ```
 
 ## 使用方法
@@ -57,7 +79,11 @@ cd tools/raspberry_pi_display
 uv run python server.py
 ```
 
-### 2. 配置 ESP32
+### 2. 打开浏览器
+
+访问 `http://localhost:8765` 或 `http://树莓派IP:8765`
+
+### 3. 配置 ESP32
 
 编辑 `main/boards/sensecap-watcher/config.h`：
 
@@ -68,17 +94,16 @@ uv run python server.py
 
 然后重新编译烧录固件。
 
-### 3. 连接
+### 4. 连接
 
-设备启动后会自动连接到服务器，连接成功后 UI 会同步显示。
+设备启动后会自动连接到服务器，浏览器会实时显示 UI 状态。
 
-## 快捷键
+## 快捷键（浏览器中）
 
 | 按键 | 功能 |
 |------|------|
-| `F` / `F11` | 切换全屏/窗口模式 |
-| `q` / `ESC` | 退出 |
-| 拖拽窗口边缘 | 调整窗口大小（保持 1:1 比例） |
+| `F` / `F11` | 切换全屏 |
+| `q` / `ESC` | 退出全屏 |
 
 ## 环境变量配置
 
@@ -86,28 +111,26 @@ uv run python server.py
 |------|--------|------|
 | `RD_HOST` | `0.0.0.0` | 监听地址 |
 | `RD_PORT` | `8765` | 监听端口 |
-| `RD_SCALE` | `1.5` | 窗口初始缩放比例 |
-| `RD_FULLSCREEN` | `0` | 启动时全屏 (`1` 启用) |
-
-> 注意：全屏模式下 `RD_SCALE` 无效，会自动计算最佳缩放比例。窗口模式可通过拖拽边缘调整大小。
+| `RD_NO_AUDIO` | `0` | 设为 `1` 禁用音频 |
 
 示例：
 ```bash
-RD_FULLSCREEN=1 RD_SCALE=2.0 uv run python server.py
+RD_PORT=9000 uv run python server.py
+RD_NO_AUDIO=1 uv run python server.py  # 无音频模式
 ```
 
 ## 文件结构
 
 ```
 raspberry_pi_display/
-├── server.py        # WebSocket 服务器主程序
-├── ui_renderer.py   # Pygame UI 渲染器
+├── server.py        # HTTP + WebSocket 服务器
 ├── audio_player.py  # Opus 音频解码播放
 ├── config.py        # 配置管理
-├── assets/          # UI 资源文件 (表情、背景图)
-│   ├── emojis/      # 表情图片 (PNG/GIF)
-│   └── backgrounds/ # 背景图片 (PNG)
-└── requirements.txt
+├── web/             # Web 前端
+│   └── index.html   # 浏览器 UI
+└── assets/          # UI 资源文件
+    ├── emojis/      # 表情图片 (PNG/GIF)
+    └── backgrounds/ # 背景图片 (PNG)
 ```
 
 ## 自定义资源
@@ -120,11 +143,7 @@ raspberry_pi_display/
 - `sad.png` 或 `sad.gif` - 悲伤
 - 等等...
 
-**支持 GIF 动画**：如果使用 GIF 格式，会自动按帧播放动画（使用 GIF 内置帧延迟）。
-
-> 注意：GIF 动画需要安装 Pillow (`pip install Pillow`)
-
-**建议分辨率**：256×256 或更高（会自动缩放，高分辨率更清晰）
+浏览器原生支持 GIF 动画。
 
 ### 背景图片
 
@@ -132,8 +151,4 @@ raspberry_pi_display/
 - `bg_light.png` - 亮色主题背景
 - `bg_dark.png` - 暗色主题背景
 
-背景会根据当前主题自动切换。
-
-**建议分辨率**：412×412 或更高（1:1 正方形）
-
-如果没有对应的资源文件，会使用纯色背景和程序绘制的简易表情作为替代。
+如果没有对应的资源文件，会使用 CSS 渐变背景和简易表情作为替代。

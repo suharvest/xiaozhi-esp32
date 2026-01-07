@@ -6,6 +6,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <cJSON.h>
+#include <mbedtls/base64.h>
 
 #define TAG "RemoteDisplay"
 
@@ -255,6 +256,50 @@ void RemoteDisplay::SendHello() {
         std::lock_guard<std::mutex> lock(send_mutex_);
         websocket_->Send(json_str);
         ESP_LOGI(TAG, "Sent hello: %s", json_str);
+        free(json_str);
+    }
+}
+
+void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
+    if (!running_ || !connected_ || !websocket_) return;
+    if (jpeg_data == nullptr || size == 0) return;
+
+    // 计算 Base64 编码后的大小
+    size_t base64_len = 0;
+    mbedtls_base64_encode(nullptr, 0, &base64_len, jpeg_data, size);
+
+    // 分配 Base64 缓冲区
+    char* base64_buf = (char*)malloc(base64_len + 1);
+    if (base64_buf == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate memory for base64 encoding");
+        return;
+    }
+
+    // 执行 Base64 编码
+    size_t written = 0;
+    int ret = mbedtls_base64_encode((unsigned char*)base64_buf, base64_len + 1, &written, jpeg_data, size);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "Base64 encoding failed: %d", ret);
+        free(base64_buf);
+        return;
+    }
+    base64_buf[written] = '\0';
+
+    // 构造 JSON 消息
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "preview_image");
+    cJSON_AddStringToObject(root, "format", "jpeg");
+    cJSON_AddNumberToObject(root, "size", size);
+    cJSON_AddStringToObject(root, "data", base64_buf);
+
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    free(base64_buf);
+
+    if (json_str) {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        websocket_->Send(json_str);
+        ESP_LOGI(TAG, "Sent preview image: %zu bytes (base64: %zu)", size, written);
         free(json_str);
     }
 }
