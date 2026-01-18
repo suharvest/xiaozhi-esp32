@@ -631,12 +631,10 @@ bool SscmaCamera::Capture() {
     heap_caps_free(data.img);
 
     // 发送到远程显示
-#if REMOTE_DISPLAY_ENABLED
     auto* remote = RemoteDisplay::GetInstance();
     if (remote->IsRunning()) {
         remote->SendPreviewImage(jpeg_data_.buf, jpeg_data_.len);
     }
-#endif
 
     //DECODE JPEG
     if (!jpeg_dec_ || !jpeg_io_ || !jpeg_out_ || !preview_image_.data) {

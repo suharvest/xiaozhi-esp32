@@ -19,10 +19,31 @@ enum RemoteDisplayMessageType : uint8_t {
     MSG_TYPE_HEARTBEAT    = 0x04,   // 心跳
 };
 
+// 发现的显示设备信息
+struct DiscoveredDisplay {
+    std::string name;       // 设备名称（如 "客厅显示器"）
+    std::string ip;         // IP 地址
+    uint16_t port;          // 端口号
+};
+
+// 远程显示配置
+struct RemoteDisplayConfig {
+    bool enabled = false;
+    std::string server_url;
+    int timeout_ms = 3000;
+};
+
 // 远程显示服务 - 将 UI 状态同步到树莓派
 class RemoteDisplay {
 public:
     static RemoteDisplay* GetInstance();
+
+    // 配置管理 (NVS 存储)
+    static RemoteDisplayConfig LoadConfig();
+    static void SaveConfig(const RemoteDisplayConfig& config);
+
+    // 使用存储的配置启动
+    bool StartWithConfig();
 
     // 尝试连接到远程服务器，失败返回 false
     bool Start(const std::string& server_url, int timeout_ms = 3000);
@@ -42,6 +63,19 @@ public:
     // 音频转发 - 由 AudioService 回调调用
     void ForwardAudioPacket(const std::vector<uint8_t>& opus_data,
                             int sample_rate, int frame_duration);
+
+    // mDNS 发现本地网络上的投屏服务
+    // timeout_ms: 搜索超时时间
+    // 返回: 发现的设备列表
+    std::vector<DiscoveredDisplay> DiscoverDisplays(int timeout_ms = 3000);
+
+    // 使用简化 IP（最后一段）连接
+    // suffix: IP 地址最后一段 (0-255)
+    // port: 端口号，默认 8765
+    bool ConnectWithIPSuffix(int suffix, int port = 8765);
+
+    // 获取本机 IP 的网段前缀（如 192.168.1.）
+    std::string GetIPPrefix();
 
 private:
     RemoteDisplay() = default;

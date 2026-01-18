@@ -11,6 +11,7 @@
 #include "sscma_camera.h"
 #include "lvgl_theme.h"
 #include "remote_display.h"
+#include "remote_display_mcp_tool.h"
 #include <wifi_manager.h>
 
 #include <esp_log.h>
@@ -99,42 +100,34 @@ class CustomLcdDisplay : public SpiLcdDisplay {
         // 重写方法以支持远程显示状态同步
         void SetEmotion(const char* emotion) override {
             SpiLcdDisplay::SetEmotion(emotion);
-#if REMOTE_DISPLAY_ENABLED
             auto* remote = RemoteDisplay::GetInstance();
             if (remote->IsRunning()) {
                 remote->SendEmotion(emotion);
             }
-#endif
         }
 
         void SetStatus(const char* status) override {
             SpiLcdDisplay::SetStatus(status);
-#if REMOTE_DISPLAY_ENABLED
             auto* remote = RemoteDisplay::GetInstance();
             if (remote->IsRunning()) {
                 remote->SendStatus(status);
             }
-#endif
         }
 
         void SetChatMessage(const char* role, const char* content) override {
             SpiLcdDisplay::SetChatMessage(role, content);
-#if REMOTE_DISPLAY_ENABLED
             auto* remote = RemoteDisplay::GetInstance();
             if (remote->IsRunning()) {
                 remote->SendChatMessage(role, content);
             }
-#endif
         }
 
         void SetTheme(Theme* theme) override {
             SpiLcdDisplay::SetTheme(theme);
-#if REMOTE_DISPLAY_ENABLED
             auto* remote = RemoteDisplay::GetInstance();
             if (remote->IsRunning()) {
                 remote->SendTheme(theme->name().c_str());
             }
-#endif
         }
 };
 
@@ -153,6 +146,7 @@ private:
     button_driver_t* btn_driver_ = nullptr;
     static SensecapWatcher* instance_;
     SscmaCamera* camera_ = nullptr;
+    RemoteDisplayMcpTool remote_display_mcp_tool_;
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -163,16 +157,15 @@ private:
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
-#if REMOTE_DISPLAY_ENABLED
             // 唤醒时检查远程显示连接，如果断开则尝试重连
             auto* remote = RemoteDisplay::GetInstance();
-            if (!remote->IsRunning()) {
+            auto config = RemoteDisplay::LoadConfig();
+            if (config.enabled && !remote->IsRunning()) {
                 ESP_LOGI(TAG, "Remote display disconnected, attempting to reconnect...");
-                if (remote->Start(REMOTE_DISPLAY_SERVER_URL, REMOTE_DISPLAY_TIMEOUT_MS)) {
+                if (remote->StartWithConfig()) {
                     ESP_LOGI(TAG, "Remote display reconnected successfully");
                 }
             }
-#endif
         });
         power_save_timer_->OnShutdownRequest([this]() {
             ESP_LOGI(TAG, "Shutting down");
@@ -617,6 +610,78 @@ private:
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&cmd6));
 
+        // remote_display 命令 - 配置远程显示
+        const esp_console_cmd_t cmd_remote = {
+            .command = "remote_display",
+            .help = "Configure remote display. Usage:\n"
+                    "  remote_display status     - Show current config\n"
+                    "  remote_display enable     - Enable remote display\n"
+                    "  remote_display disable    - Disable remote display\n"
+                    "  remote_display url <url>  - Set server URL (e.g. ws://192.168.1.100:8765)\n"
+                    "  remote_display connect    - Connect now\n"
+                    "  remote_display disconnect - Disconnect",
+            .hint = NULL,
+            .func = NULL,
+            .argtable = NULL,
+            .func_w_context = [](void *context, int argc, char** argv) -> int {
+                if (argc < 2) {
+                    printf("Usage: remote_display <status|enable|disable|url|connect|disconnect>\n");
+                    return 1;
+                }
+
+                auto* remote = RemoteDisplay::GetInstance();
+                const char* subcmd = argv[1];
+
+                if (strcmp(subcmd, "status") == 0) {
+                    auto config = RemoteDisplay::LoadConfig();
+                    printf("Remote Display Config:\n");
+                    printf("  enabled: %s\n", config.enabled ? "true" : "false");
+                    printf("  url: %s\n", config.server_url.empty() ? "(not set)" : config.server_url.c_str());
+                    printf("  timeout: %d ms\n", config.timeout_ms);
+                    printf("  running: %s\n", remote->IsRunning() ? "true" : "false");
+                } else if (strcmp(subcmd, "enable") == 0) {
+                    auto config = RemoteDisplay::LoadConfig();
+                    config.enabled = true;
+                    RemoteDisplay::SaveConfig(config);
+                    printf("Remote display enabled. Use 'remote_display connect' to connect.\n");
+                } else if (strcmp(subcmd, "disable") == 0) {
+                    auto config = RemoteDisplay::LoadConfig();
+                    config.enabled = false;
+                    RemoteDisplay::SaveConfig(config);
+                    remote->Stop();
+                    printf("Remote display disabled.\n");
+                } else if (strcmp(subcmd, "url") == 0) {
+                    if (argc < 3) {
+                        printf("Usage: remote_display url <ws://host:port>\n");
+                        return 1;
+                    }
+                    auto config = RemoteDisplay::LoadConfig();
+                    config.server_url = argv[2];
+                    RemoteDisplay::SaveConfig(config);
+                    printf("Server URL set to: %s\n", argv[2]);
+                } else if (strcmp(subcmd, "connect") == 0) {
+                    if (remote->IsRunning()) {
+                        printf("Already connected.\n");
+                        return 0;
+                    }
+                    if (remote->StartWithConfig()) {
+                        printf("Connected to remote display server.\n");
+                    } else {
+                        printf("Failed to connect. Check URL and network.\n");
+                    }
+                } else if (strcmp(subcmd, "disconnect") == 0) {
+                    remote->Stop();
+                    printf("Disconnected.\n");
+                } else {
+                    printf("Unknown subcommand: %s\n", subcmd);
+                    return 1;
+                }
+                return 0;
+            },
+            .context = this
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_remote));
+
         esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
         ESP_ERROR_CHECK(esp_console_start_repl(repl));
@@ -644,9 +709,21 @@ private:
     }
 
     void InitializeRemoteDisplay() {
-#if REMOTE_DISPLAY_ENABLED
         // 启动一个任务，等待网络连接后再尝试连接远程显示服务器
         xTaskCreate([](void* arg) {
+            // 先检查配置是否启用
+            auto config = RemoteDisplay::LoadConfig();
+            if (!config.enabled) {
+                ESP_LOGI(TAG, "Remote display disabled in config");
+                vTaskDelete(nullptr);
+                return;
+            }
+            if (config.server_url.empty()) {
+                ESP_LOGW(TAG, "Remote display URL not configured");
+                vTaskDelete(nullptr);
+                return;
+            }
+
             // 等待 WiFi 真正连接（最多等待 30 秒）
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
             auto& wifi = WifiManager::GetInstance();
@@ -667,9 +744,9 @@ private:
             // 再等待一小段时间确保网络稳定
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            // 使用单例模式启动远程显示
+            // 使用 NVS 配置启动远程显示
             auto* remote = RemoteDisplay::GetInstance();
-            if (!remote->Start(REMOTE_DISPLAY_SERVER_URL, REMOTE_DISPLAY_TIMEOUT_MS)) {
+            if (!remote->StartWithConfig()) {
                 ESP_LOGW(TAG, "Remote display not available, feature disabled");
             } else {
                 ESP_LOGI(TAG, "Remote display started successfully (UI state sync mode)");
@@ -685,7 +762,6 @@ private:
 
             vTaskDelete(nullptr);
         }, "remote_disp_init", 4096, nullptr, 1, nullptr);
-#endif
     }
 
 public:
@@ -706,6 +782,9 @@ public:
         GetBacklight()->RestoreBrightness();  // 对于不带摄像头的版本，InitializeCamera需要3s, 所以先恢复背光亮度
         InitializeCamera();
         InitializeRemoteDisplay();
+
+        // 初始化远程显示 MCP 工具（允许通过语音/AI交互配置远程显示）
+        remote_display_mcp_tool_.Initialize();
     }
 
     virtual AudioCodec* GetAudioCodec() override {

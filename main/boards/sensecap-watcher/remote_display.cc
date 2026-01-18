@@ -1,5 +1,6 @@
 #include "remote_display.h"
 #include "board.h"
+#include "settings.h"
 
 #include <esp_log.h>
 #include <web_socket.h>
@@ -7,8 +8,16 @@
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <mbedtls/base64.h>
+#include <mdns.h>
+#include <esp_netif.h>
 
 #define TAG "RemoteDisplay"
+
+// NVS 存储 key
+#define NVS_NAMESPACE "remote_disp"
+#define NVS_KEY_ENABLED "enabled"
+#define NVS_KEY_URL "url"
+#define NVS_KEY_TIMEOUT "timeout"
 
 // 音频帧头结构 (网络字节序)
 struct __attribute__((packed)) AudioFrameHeader {
@@ -23,6 +32,37 @@ struct __attribute__((packed)) AudioFrameHeader {
 RemoteDisplay* RemoteDisplay::GetInstance() {
     static RemoteDisplay instance;
     return &instance;
+}
+
+RemoteDisplayConfig RemoteDisplay::LoadConfig() {
+    RemoteDisplayConfig config;
+    Settings settings(NVS_NAMESPACE, false);
+    config.enabled = settings.GetBool(NVS_KEY_ENABLED, false);
+    config.server_url = settings.GetString(NVS_KEY_URL, "");
+    config.timeout_ms = settings.GetInt(NVS_KEY_TIMEOUT, 3000);
+    return config;
+}
+
+void RemoteDisplay::SaveConfig(const RemoteDisplayConfig& config) {
+    Settings settings(NVS_NAMESPACE, true);
+    settings.SetBool(NVS_KEY_ENABLED, config.enabled);
+    settings.SetString(NVS_KEY_URL, config.server_url);
+    settings.SetInt(NVS_KEY_TIMEOUT, config.timeout_ms);
+    ESP_LOGI(TAG, "Config saved: enabled=%d, url=%s, timeout=%d",
+             config.enabled, config.server_url.c_str(), config.timeout_ms);
+}
+
+bool RemoteDisplay::StartWithConfig() {
+    auto config = LoadConfig();
+    if (!config.enabled) {
+        ESP_LOGI(TAG, "Remote display disabled in config");
+        return false;
+    }
+    if (config.server_url.empty()) {
+        ESP_LOGW(TAG, "Remote display URL not configured");
+        return false;
+    }
+    return Start(config.server_url, config.timeout_ms);
 }
 
 RemoteDisplay::~RemoteDisplay() {
@@ -302,4 +342,110 @@ void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
         ESP_LOGI(TAG, "Sent preview image: %zu bytes (base64: %zu)", size, written);
         free(json_str);
     }
+}
+
+std::vector<DiscoveredDisplay> RemoteDisplay::DiscoverDisplays(int timeout_ms) {
+    std::vector<DiscoveredDisplay> displays;
+
+    // 初始化 mDNS（如果尚未初始化）
+    static bool mdns_initialized = false;
+    if (!mdns_initialized) {
+        if (mdns_init() != ESP_OK) {
+            ESP_LOGE(TAG, "mDNS init failed");
+            return displays;
+        }
+        mdns_initialized = true;
+    }
+
+    ESP_LOGI(TAG, "Discovering display services via mDNS (timeout: %dms)...", timeout_ms);
+
+    // 查询 _xiaozhi-display._tcp 服务
+    mdns_result_t* results = nullptr;
+    esp_err_t err = mdns_query_ptr("_xiaozhi-display", "_tcp", timeout_ms, 10, &results);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mDNS query failed: %s", esp_err_to_name(err));
+        return displays;
+    }
+
+    if (!results) {
+        ESP_LOGI(TAG, "No display services found via mDNS");
+        return displays;
+    }
+
+    // 遍历结果
+    mdns_result_t* r = results;
+    while (r) {
+        DiscoveredDisplay display;
+        display.name = r->instance_name ? r->instance_name : "Unknown";
+        display.port = r->port;
+
+        // 获取 IPv4 地址
+        if (r->addr) {
+            mdns_ip_addr_t* addr = r->addr;
+            while (addr) {
+                if (addr->addr.type == ESP_IPADDR_TYPE_V4) {
+                    char ip_str[16];
+                    esp_ip4addr_ntoa(&addr->addr.u_addr.ip4, ip_str, sizeof(ip_str));
+                    display.ip = ip_str;
+                    break;
+                }
+                addr = addr->next;
+            }
+        }
+
+        if (!display.ip.empty()) {
+            displays.push_back(display);
+            ESP_LOGI(TAG, "Found display: %s at %s:%d",
+                     display.name.c_str(), display.ip.c_str(), display.port);
+        }
+        r = r->next;
+    }
+
+    mdns_query_results_free(results);
+    return displays;
+}
+
+std::string RemoteDisplay::GetIPPrefix() {
+    // 获取当前 WiFi 接口的 IP 地址
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        ESP_LOGE(TAG, "Failed to get WiFi netif");
+        return "";
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get IP info");
+        return "";
+    }
+
+    char ip_str[16];
+    esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+
+    // 提取前三段（如 192.168.1.）
+    std::string ip(ip_str);
+    size_t last_dot = ip.rfind('.');
+    if (last_dot != std::string::npos) {
+        return ip.substr(0, last_dot + 1);
+    }
+    return "";
+}
+
+bool RemoteDisplay::ConnectWithIPSuffix(int suffix, int port) {
+    if (suffix < 0 || suffix > 255) {
+        ESP_LOGE(TAG, "Invalid IP suffix: %d", suffix);
+        return false;
+    }
+
+    std::string prefix = GetIPPrefix();
+    if (prefix.empty()) {
+        ESP_LOGE(TAG, "Failed to get IP prefix");
+        return false;
+    }
+
+    std::string url = "ws://" + prefix + std::to_string(suffix) + ":" + std::to_string(port);
+    ESP_LOGI(TAG, "Connecting to: %s", url.c_str());
+
+    return Start(url);
 }
