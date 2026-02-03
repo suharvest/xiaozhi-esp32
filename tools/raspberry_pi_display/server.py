@@ -49,7 +49,8 @@ logger = logging.getLogger(__name__)
 
 # Message types (binary protocol from ESP32)
 MSG_TYPE_UI_STATE = 0x10
-MSG_TYPE_AUDIO_FRAME = 0x02
+MSG_TYPE_AUDIO_FRAME = 0x02  # Deprecated (Opus)
+MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio
 MSG_TYPE_HEARTBEAT = 0x04
 
 
@@ -282,21 +283,42 @@ class RemoteDisplayServer:
 
     async def _handle_binary_message(self, data: bytes):
         """Handle binary message (audio frame)"""
-        if len(data) < 4:
+        if len(data) < 1:
             logger.warning("Message too short")
             return
 
-        # Parse header: type(1) + flags(1) + payload_size(2)
-        msg_type, flags, payload_size = struct.unpack(">BBH", data[:4])
-        payload = data[4:]
+        msg_type = data[0]
 
-        if msg_type == MSG_TYPE_AUDIO_FRAME:
-            await self._handle_audio_frame(payload)
+        if msg_type == MSG_TYPE_AUDIO_PCM:
+            await self._handle_pcm_audio(data)
+        elif msg_type == MSG_TYPE_AUDIO_FRAME:
+            # Legacy Opus format (deprecated)
+            await self._handle_audio_frame(data[4:])
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
 
+    async def _handle_pcm_audio(self, data: bytes):
+        """Handle PCM audio frame"""
+        if len(data) < 9:  # type(1) + sample_rate(4) + samples(4)
+            return
+
+        # Parse PCM header (little-endian, ESP32 native)
+        # type(1B) + sample_rate(4B LE) + samples(4B LE) + pcm_data
+        sample_rate, samples = struct.unpack("<II", data[1:9])
+        pcm_data = data[9:]
+
+        expected_size = samples * 2  # 16-bit samples
+        if len(pcm_data) != expected_size:
+            logger.warning(f"PCM data size mismatch: expected {expected_size}, got {len(pcm_data)}")
+            return
+
+        # Play audio
+        if self.audio_player:
+            self.audio_player.play_pcm(pcm_data, sample_rate)
+            self.audio_count += 1
+
     async def _handle_audio_frame(self, payload: bytes):
-        """Handle audio frame"""
+        """Handle legacy Opus audio frame (deprecated)"""
         if len(payload) < 4:
             return
 
@@ -304,9 +326,9 @@ class RemoteDisplayServer:
         sample_rate, frame_duration, _ = struct.unpack(">HBB", payload[:4])
         opus_data = payload[4:]
 
-        # Play audio
+        # Play audio (Opus decode)
         if self.audio_player:
-            self.audio_player.play(opus_data, sample_rate, frame_duration)
+            self.audio_player.play_opus(opus_data, sample_rate, frame_duration)
             self.audio_count += 1
 
     async def _broadcast_to_browsers(self, msg: dict):

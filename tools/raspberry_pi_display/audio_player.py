@@ -1,5 +1,5 @@
 """
-Audio Player - Opus decode and PyAudio playback
+Audio Player - PCM and Opus audio playback via PyAudio
 """
 
 import logging
@@ -21,7 +21,7 @@ try:
     OPUSLIB_AVAILABLE = True
 except ImportError:
     OPUSLIB_AVAILABLE = False
-    logger.warning("opuslib not available, audio playback disabled")
+    logger.info("opuslib not available, Opus decoding disabled (PCM still works)")
 
 
 class AudioPlayer:
@@ -32,17 +32,22 @@ class AudioPlayer:
         self.frame_size = sample_rate * frame_duration // 1000
 
         self.running = True
-        self.audio_queue: Queue = Queue(maxsize=10)
+        self.audio_queue: Queue = Queue(maxsize=20)
 
-        if not PYAUDIO_AVAILABLE or not OPUSLIB_AVAILABLE:
-            logger.warning("Audio playback not available")
+        if not PYAUDIO_AVAILABLE:
+            logger.warning("Audio playback not available (PyAudio missing)")
             self.enabled = False
             return
 
         self.enabled = True
 
-        # Initialize Opus decoder
-        self.decoder = opuslib.Decoder(sample_rate, channels)
+        # Initialize Opus decoder (optional, for legacy support)
+        self.decoder = None
+        if OPUSLIB_AVAILABLE:
+            try:
+                self.decoder = opuslib.Decoder(sample_rate, channels)
+            except Exception as e:
+                logger.warning(f"Failed to initialize Opus decoder: {e}")
 
         # Initialize PyAudio
         self.pa = pyaudio.PyAudio()
@@ -60,9 +65,29 @@ class AudioPlayer:
 
         logger.info(f"Audio player started: {sample_rate}Hz, {frame_duration}ms frames")
 
-    def play(self, opus_data: bytes, sample_rate: int, frame_duration: int):
-        """Play Opus data (non-blocking)"""
+    def play_pcm(self, pcm_data: bytes, sample_rate: int):
+        """Play raw PCM data (non-blocking)"""
         if not self.enabled:
+            return
+
+        # Reinit stream if sample rate changed
+        if sample_rate != self.sample_rate:
+            self._reinit_stream(sample_rate)
+
+        # Put in queue (drop old if full)
+        if self.audio_queue.full():
+            try:
+                self.audio_queue.get_nowait()
+            except Empty:
+                pass
+        try:
+            self.audio_queue.put_nowait(pcm_data)
+        except Exception:
+            pass
+
+    def play_opus(self, opus_data: bytes, sample_rate: int, frame_duration: int):
+        """Play Opus data (non-blocking) - legacy support"""
+        if not self.enabled or not self.decoder:
             return
 
         # Reinit decoder if sample rate changed
@@ -83,13 +108,10 @@ class AudioPlayer:
         except Exception as e:
             logger.error(f"Failed to decode audio: {e}")
 
-    def _reinit(self, sample_rate: int, frame_duration: int):
-        """Reinitialize decoder with new sample rate"""
+    def _reinit_stream(self, sample_rate: int):
+        """Reinitialize audio stream with new sample rate"""
         self.sample_rate = sample_rate
-        self.frame_duration = frame_duration
-        self.frame_size = sample_rate * frame_duration // 1000
-
-        self.decoder = opuslib.Decoder(sample_rate, self.channels)
+        self.frame_size = sample_rate * self.frame_duration // 1000
 
         # Reopen audio stream
         self.stream.close()
@@ -100,7 +122,16 @@ class AudioPlayer:
             output=True,
             frames_per_buffer=self.frame_size
         )
-        logger.info(f"Audio reinitialized: {sample_rate}Hz")
+        logger.info(f"Audio stream reinitialized: {sample_rate}Hz")
+
+    def _reinit(self, sample_rate: int, frame_duration: int):
+        """Reinitialize decoder and stream with new sample rate"""
+        self.frame_duration = frame_duration
+
+        if self.decoder and OPUSLIB_AVAILABLE:
+            self.decoder = opuslib.Decoder(sample_rate, self.channels)
+
+        self._reinit_stream(sample_rate)
 
     def _play_loop(self):
         """Playback loop"""

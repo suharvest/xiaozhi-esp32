@@ -5,9 +5,20 @@
 
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
+#include <functional>
 
 class SensecapAudioCodec : public AudioCodec {
+public:
+    // PCM 转发回调类型: (pcm_data, samples, sample_rate)
+    using PcmForwardCallback = std::function<void(const int16_t*, int, int)>;
+
+    // 设置 PCM 转发回调（用于远程显示等功能）
+    void SetPcmForwardCallback(PcmForwardCallback callback) {
+        pcm_forward_callback_ = callback;
+    }
+
 private:
+    PcmForwardCallback pcm_forward_callback_;
     const audio_codec_data_if_t* data_if_ = nullptr;
     const audio_codec_ctrl_if_t* out_ctrl_if_ = nullptr;
     const audio_codec_if_t* out_codec_if_ = nullptr;
