@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# UV/pip
+uv.lock
+.python-version
+
+# Docker (don't include docker files in build context)
+docker/
+
+# Temporary files
+*.log
+*.tmp
+
+# Large/unnecessary assets
+assets/raw/
+assets/assets.bin
+assets/index.json
+
+# Development files
+main.py
+run.sh
+screen_renderer.py
+README.md
