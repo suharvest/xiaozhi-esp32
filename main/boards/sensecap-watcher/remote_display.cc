@@ -1,6 +1,7 @@
 #include "remote_display.h"
 #include "board.h"
 #include "settings.h"
+#include "application.h"
 
 #include <esp_log.h>
 #include <web_socket.h>
@@ -71,8 +72,14 @@ RemoteDisplay::~RemoteDisplay() {
 
 bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     if (running_) {
-        ESP_LOGW(TAG, "Already running");
-        return true;
+        // 如果 URL 相同，直接返回
+        if (current_server_url_ == server_url) {
+            ESP_LOGI(TAG, "Already connected to %s", server_url.c_str());
+            return true;
+        }
+        // URL 不同，先停止再切换
+        ESP_LOGI(TAG, "Switching from %s to %s", current_server_url_.c_str(), server_url.c_str());
+        Stop();
     }
 
     // 获取网络接口并创建 WebSocket
@@ -128,6 +135,18 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     }
 
     running_ = true;
+    current_server_url_ = server_url;
+
+    // 注册音频转发回调
+    Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(
+        [](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
+            auto* remote = RemoteDisplay::GetInstance();
+            if (remote->IsRunning()) {
+                remote->ForwardAudioPacket(data, sample_rate, frame_duration);
+            }
+        });
+    ESP_LOGI(TAG, "Audio forwarding callback registered");
+
     ESP_LOGI(TAG, "Remote display started (UI state sync mode)");
     return true;
 }
@@ -139,12 +158,17 @@ void RemoteDisplay::Stop() {
 
     running_ = false;
 
+    // 取消音频转发回调
+    Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(nullptr);
+    ESP_LOGI(TAG, "Audio forwarding callback unregistered");
+
     if (websocket_) {
         websocket_->Close();
         websocket_.reset();
     }
 
     connected_ = false;
+    current_server_url_.clear();
     ESP_LOGI(TAG, "Remote display stopped");
 }
 

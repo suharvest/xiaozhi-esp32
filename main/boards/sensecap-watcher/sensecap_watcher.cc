@@ -744,20 +744,12 @@ private:
             // 再等待一小段时间确保网络稳定
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            // 使用 NVS 配置启动远程显示
+            // 使用 NVS 配置启动远程显示（音频回调在 Start 内部自动注册）
             auto* remote = RemoteDisplay::GetInstance();
             if (!remote->StartWithConfig()) {
                 ESP_LOGW(TAG, "Remote display not available, feature disabled");
             } else {
                 ESP_LOGI(TAG, "Remote display started successfully (UI state sync mode)");
-                // 注册音频转发回调
-                Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(
-                    [](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
-                        auto* remote = RemoteDisplay::GetInstance();
-                        if (remote->IsRunning()) {
-                            remote->ForwardAudioPacket(data, sample_rate, frame_duration);
-                        }
-                    });
             }
 
             vTaskDelete(nullptr);

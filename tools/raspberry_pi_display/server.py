@@ -32,7 +32,8 @@ from audio_player import AudioPlayer
 
 # Optional mDNS support
 try:
-    from zeroconf import ServiceInfo, Zeroconf
+    from zeroconf import ServiceInfo
+    from zeroconf.asyncio import AsyncZeroconf
     MDNS_AVAILABLE = True
 except ImportError:
     MDNS_AVAILABLE = False
@@ -74,13 +75,34 @@ class RemoteDisplayServer:
         self.assets_dir = self.base_dir / "assets"
 
         # mDNS service
-        self.zeroconf: Optional['Zeroconf'] = None
+        self.async_zeroconf: Optional['AsyncZeroconf'] = None
         self.service_info: Optional['ServiceInfo'] = None
 
     def _get_local_ip(self) -> str:
         """Get local IP address for mDNS registration"""
+        # Allow manual override via environment variable
+        manual_ip = os.getenv("RD_LOCAL_IP")
+        if manual_ip:
+            return manual_ip
+
         try:
-            # Create a socket to determine the local IP
+            # Get all network interfaces
+            import subprocess
+            result = subprocess.run(
+                ["ifconfig"] if platform.system() != "Windows" else ["ipconfig"],
+                capture_output=True, text=True
+            )
+            # Look for 192.168.x.x or 10.x.x.x addresses (typical LAN)
+            import re
+            for pattern in [r'192\.168\.\d+\.\d+', r'10\.\d+\.\d+\.\d+', r'172\.(1[6-9]|2\d|3[01])\.\d+\.\d+']:
+                matches = re.findall(pattern, result.stdout)
+                if matches:
+                    return matches[0]
+        except Exception:
+            pass
+
+        # Fallback: socket-based detection
+        try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
@@ -89,24 +111,25 @@ class RemoteDisplayServer:
         except Exception:
             return "127.0.0.1"
 
-    def start_mdns(self):
+    async def start_mdns(self):
         """Start mDNS service broadcast"""
         if not MDNS_AVAILABLE:
             logger.warning("mDNS not available, skipping service registration")
             return
 
         try:
-            self.zeroconf = Zeroconf()
+            self.async_zeroconf = AsyncZeroconf()
 
             # Get local IP
             local_ip = self._get_local_ip()
 
-            # Get device name from config
+            # Get device name from config (sanitize for mDNS - replace spaces with dashes)
             device_name = self.config.DEVICE_NAME
+            mdns_name = device_name.replace(" ", "-")
 
             self.service_info = ServiceInfo(
                 "_xiaozhi-display._tcp.local.",  # Service type
-                f"{device_name}._xiaozhi-display._tcp.local.",  # Instance name
+                f"{mdns_name}._xiaozhi-display._tcp.local.",  # Instance name
                 addresses=[socket.inet_aton(local_ip)],
                 port=self.config.PORT,
                 properties={
@@ -114,22 +137,25 @@ class RemoteDisplayServer:
                     "device": device_name
                 }
             )
-            self.zeroconf.register_service(self.service_info)
+            await self.async_zeroconf.async_register_service(self.service_info)
             logger.info(f"mDNS service registered: {device_name} at {local_ip}:{self.config.PORT}")
         except Exception as e:
-            logger.error(f"Failed to start mDNS service: {e}")
+            import traceback
+            logger.error(f"Failed to start mDNS service: {type(e).__name__}: {e}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(traceback.format_exc())
 
-    def stop_mdns(self):
+    async def stop_mdns(self):
         """Stop mDNS service"""
-        if self.zeroconf and self.service_info:
+        if self.async_zeroconf and self.service_info:
             try:
-                self.zeroconf.unregister_service(self.service_info)
-                self.zeroconf.close()
+                await self.async_zeroconf.async_unregister_service(self.service_info)
+                await self.async_zeroconf.async_close()
                 logger.info("mDNS service unregistered")
             except Exception as e:
                 logger.error(f"Failed to stop mDNS service: {e}")
             finally:
-                self.zeroconf = None
+                self.async_zeroconf = None
                 self.service_info = None
 
     async def handle_root(self, request: web.Request) -> web.Response:
@@ -300,9 +326,9 @@ class RemoteDisplayServer:
         # Remove disconnected clients
         self.browser_clients -= disconnected
 
-    def cleanup(self):
+    async def cleanup(self):
         """Cleanup resources"""
-        self.stop_mdns()
+        await self.stop_mdns()
         if self.audio_player:
             self.audio_player.close()
         logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
@@ -355,7 +381,7 @@ async def main():
 
     # Setup cleanup
     async def on_shutdown(app):
-        server.cleanup()
+        await server.cleanup()
 
     app.on_shutdown.append(on_shutdown)
 
@@ -367,7 +393,7 @@ async def main():
     await site.start()
 
     # Start mDNS service broadcast
-    server.start_mdns()
+    await server.start_mdns()
 
     logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
     logger.info(f"Browser UI: http://localhost:{server.config.PORT}")
