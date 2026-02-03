@@ -14,6 +14,8 @@
 
 #include "sscma_client.h"
 #include "camera.h"
+#include "face_database.h"
+#include "face_recognition.h"
 
 struct SscmaData {
     uint8_t* img;
@@ -42,6 +44,12 @@ private:
         VALIDATING,     // 验证中（连续检测3秒）
         COOLDOWN        // 冷却期（等待重新检测）
     };
+
+    // 摄像头工作模式
+    enum CameraMode {
+        MODE_OBJECT_DETECT,     // 物体检测模式
+        MODE_FACE_RECOGNITION   // 人脸识别模式
+    };
     
     DetectionState detection_state = IDLE;
     int64_t state_start_time = 0;
@@ -58,6 +66,10 @@ private:
     
     sscma_client_model_t *model;
     int model_class_cnt = 0;
+
+    // 人脸识别相关
+    CameraMode camera_mode_ = MODE_OBJECT_DETECT;
+    bool face_recognition_en_ = 0;  // 待命时人脸识别开关
 public:
     SscmaCamera(esp_io_expander_handle_t io_exp_handle);
     ~SscmaCamera();
@@ -71,6 +83,10 @@ public:
     virtual std::string Explain(const std::string& question);
     virtual std::string FaceRecognition();
 
+    // 人脸识别相关方法
+    bool SetCameraMode(CameraMode mode);
+    bool SendFaceModeCommand(bool enable);
+    void InitializeFaceMcpTools();
 };
 
 #endif // ESP32_CAMERA_H

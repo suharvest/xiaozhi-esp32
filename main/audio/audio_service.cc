@@ -410,11 +410,6 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 }
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
-    // 在入队前转发给外部（如远程显示），需在锁外调用避免死锁
-    if (callbacks_.on_audio_output_forward) {
-        callbacks_.on_audio_output_forward(packet->payload, packet->sample_rate, packet->frame_duration);
-    }
-
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
@@ -523,10 +518,6 @@ void AudioService::EnableDeviceAec(bool enable) {
 
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
-}
-
-void AudioService::SetAudioOutputForwardCallback(std::function<void(const std::vector<uint8_t>&, int, int)> callback) {
-    callbacks_.on_audio_output_forward = callback;
 }
 
 void AudioService::PlaySound(const std::string_view& ogg) {

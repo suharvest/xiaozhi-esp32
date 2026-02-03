@@ -750,12 +750,13 @@ private:
                 ESP_LOGW(TAG, "Remote display not available, feature disabled");
             } else {
                 ESP_LOGI(TAG, "Remote display started successfully (UI state sync mode)");
-                // 注册音频转发回调
-                Application::GetInstance().GetAudioService().SetAudioOutputForwardCallback(
-                    [](const std::vector<uint8_t>& data, int sample_rate, int frame_duration) {
+                // 在 AudioCodec 上注册 PCM 转发回调
+                auto* codec = static_cast<SensecapAudioCodec*>(Board::GetInstance().GetAudioCodec());
+                codec->SetPcmForwardCallback(
+                    [](const int16_t* data, int samples, int sample_rate) {
                         auto* remote = RemoteDisplay::GetInstance();
-                        if (remote->IsRunning()) {
-                            remote->ForwardAudioPacket(data, sample_rate, frame_duration);
+                        if (remote && remote->IsRunning()) {
+                            remote->ForwardPcmAudio(data, samples, sample_rate);
                         }
                     });
             }

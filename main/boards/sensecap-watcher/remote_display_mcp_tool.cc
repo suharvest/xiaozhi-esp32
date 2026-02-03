@@ -130,8 +130,8 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
             }
         }
 
-        // 3. 尝试 mDNS 自动发现
-        auto displays = remote->DiscoverDisplays(3000);
+        // 3. 尝试 mDNS 自动发现（1.5秒超时，减少等待）
+        auto displays = remote->DiscoverDisplays(1500);
 
         if (displays.empty()) {
             // 未发现设备，提示用户手动输入
@@ -181,7 +181,7 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
         }
 
     } else if (action == "discover") {
-        auto displays = remote->DiscoverDisplays(3000);
+        auto displays = remote->DiscoverDisplays(1500);
 
         if (displays.empty()) {
             return std::string("未发现投屏设备");
@@ -212,7 +212,7 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
 
         // 如果缓存为空，先执行发现
         if (cached_displays_.empty()) {
-            cached_displays_ = remote->DiscoverDisplays(3000);
+            cached_displays_ = remote->DiscoverDisplays(1500);
         }
 
         if (cached_displays_.empty()) {

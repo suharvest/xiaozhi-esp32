@@ -19,14 +19,12 @@
 #define NVS_KEY_URL "url"
 #define NVS_KEY_TIMEOUT "timeout"
 
-// 音频帧头结构 (网络字节序)
-struct __attribute__((packed)) AudioFrameHeader {
-    uint8_t type;
-    uint8_t flags;
-    uint16_t payload_size;
-    uint16_t sample_rate;
-    uint8_t frame_duration;
-    uint8_t reserved;
+// PCM 音频帧头结构 (小端字节序)
+struct __attribute__((packed)) PcmAudioHeader {
+    uint8_t type;           // MSG_TYPE_AUDIO_PCM (0x03)
+    uint32_t sample_rate;   // 采样率 (little-endian)
+    uint32_t samples;       // 采样数 (little-endian)
+    // 后跟 PCM 数据: samples * sizeof(int16_t) 字节
 };
 
 RemoteDisplay* RemoteDisplay::GetInstance() {
@@ -240,42 +238,30 @@ void RemoteDisplay::SendUIState() {
     }
 }
 
-void RemoteDisplay::ForwardAudioPacket(const std::vector<uint8_t>& opus_data,
-                                        int sample_rate, int frame_duration) {
-    if (!running_ || !connected_) {
+void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample_rate) {
+    if (!running_ || !connected_ || !websocket_) {
         return;
     }
 
-    SendAudioFrame(opus_data, sample_rate, frame_duration);
-}
-
-bool RemoteDisplay::SendAudioFrame(const std::vector<uint8_t>& opus_data,
-                                    int sample_rate, int frame_duration) {
-    if (!connected_ || !websocket_) {
-        return false;
-    }
-
-    // 尝试获取锁，如果被占用则跳过
+    // 尝试获取锁，如果被占用则跳过（避免阻塞音频播放线程）
     std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
     if (!lock.owns_lock()) {
-        return true;  // 跳过本包，但不计入失败
+        return;  // 跳过本包
     }
 
-    // 构造消息
-    size_t total_size = sizeof(AudioFrameHeader) + opus_data.size();
+    // 构建二进制消息：[type(1B)][sample_rate(4B)][samples(4B)][pcm_data]
+    size_t pcm_bytes = samples * sizeof(int16_t);
+    size_t total_size = sizeof(PcmAudioHeader) + pcm_bytes;
     std::vector<uint8_t> buffer(total_size);
 
-    auto* header = reinterpret_cast<AudioFrameHeader*>(buffer.data());
-    header->type = MSG_TYPE_AUDIO_FRAME;
-    header->flags = 0;
-    header->payload_size = htons(sizeof(AudioFrameHeader) - 4 + opus_data.size());
-    header->sample_rate = htons(sample_rate);
-    header->frame_duration = frame_duration;
-    header->reserved = 0;
+    auto* header = reinterpret_cast<PcmAudioHeader*>(buffer.data());
+    header->type = MSG_TYPE_AUDIO_PCM;
+    header->sample_rate = sample_rate;  // Little-endian (ESP32 native)
+    header->samples = samples;          // Little-endian (ESP32 native)
 
-    memcpy(buffer.data() + sizeof(AudioFrameHeader), opus_data.data(), opus_data.size());
+    memcpy(buffer.data() + sizeof(PcmAudioHeader), data, pcm_bytes);
 
-    return websocket_->Send(buffer.data(), buffer.size(), true);
+    websocket_->Send(buffer.data(), buffer.size(), true);
 }
 
 void RemoteDisplay::SendHello() {
@@ -286,7 +272,8 @@ void RemoteDisplay::SendHello() {
     cJSON_AddStringToObject(root, "mode", "ui_state");
 
     cJSON* audio = cJSON_CreateObject();
-    cJSON_AddStringToObject(audio, "format", "opus");
+    cJSON_AddStringToObject(audio, "format", "pcm");
+    cJSON_AddStringToObject(audio, "encoding", "s16le");  // signed 16-bit little-endian
     cJSON_AddItemToObject(root, "audio", audio);
 
     char* json_str = cJSON_PrintUnformatted(root);

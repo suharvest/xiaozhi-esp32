@@ -22,6 +22,7 @@ import struct
 import signal
 import logging
 import socket
+import traceback
 from pathlib import Path
 from typing import Optional, Set
 
@@ -32,7 +33,8 @@ from audio_player import AudioPlayer
 
 # Optional mDNS support
 try:
-    from zeroconf import ServiceInfo, Zeroconf
+    from zeroconf import ServiceInfo
+    from zeroconf.asyncio import AsyncZeroconf
     MDNS_AVAILABLE = True
 except ImportError:
     MDNS_AVAILABLE = False
@@ -48,7 +50,8 @@ logger = logging.getLogger(__name__)
 
 # Message types (binary protocol from ESP32)
 MSG_TYPE_UI_STATE = 0x10
-MSG_TYPE_AUDIO_FRAME = 0x02
+MSG_TYPE_AUDIO_FRAME = 0x02  # Legacy Opus format (deprecated)
+MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio format (s16le)
 MSG_TYPE_HEARTBEAT = 0x04
 
 
@@ -74,7 +77,7 @@ class RemoteDisplayServer:
         self.assets_dir = self.base_dir / "assets"
 
         # mDNS service
-        self.zeroconf: Optional['Zeroconf'] = None
+        self.async_zeroconf: Optional['AsyncZeroconf'] = None
         self.service_info: Optional['ServiceInfo'] = None
 
     def _get_local_ip(self) -> str:
@@ -89,20 +92,23 @@ class RemoteDisplayServer:
         except Exception:
             return "127.0.0.1"
 
-    def start_mdns(self):
-        """Start mDNS service broadcast"""
+    async def start_mdns(self):
+        """Start mDNS service broadcast (async)"""
         if not MDNS_AVAILABLE:
             logger.warning("mDNS not available, skipping service registration")
             return
 
         try:
-            self.zeroconf = Zeroconf()
-
-            # Get local IP
+            # Get local IP first
             local_ip = self._get_local_ip()
+            logger.info(f"Local IP for mDNS: {local_ip}")
 
             # Get device name from config
             device_name = self.config.DEVICE_NAME
+
+            # Initialize AsyncZeroconf
+            logger.info("Initializing AsyncZeroconf...")
+            self.async_zeroconf = AsyncZeroconf()
 
             self.service_info = ServiceInfo(
                 "_xiaozhi-display._tcp.local.",  # Service type
@@ -114,22 +120,23 @@ class RemoteDisplayServer:
                     "device": device_name
                 }
             )
-            self.zeroconf.register_service(self.service_info)
+            await self.async_zeroconf.async_register_service(self.service_info)
             logger.info(f"mDNS service registered: {device_name} at {local_ip}:{self.config.PORT}")
         except Exception as e:
-            logger.error(f"Failed to start mDNS service: {e}")
+            logger.error(f"Failed to start mDNS service: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
 
-    def stop_mdns(self):
-        """Stop mDNS service"""
-        if self.zeroconf and self.service_info:
+    async def stop_mdns(self):
+        """Stop mDNS service (async)"""
+        if self.async_zeroconf and self.service_info:
             try:
-                self.zeroconf.unregister_service(self.service_info)
-                self.zeroconf.close()
+                await self.async_zeroconf.async_unregister_service(self.service_info)
+                await self.async_zeroconf.async_close()
                 logger.info("mDNS service unregistered")
             except Exception as e:
                 logger.error(f"Failed to stop mDNS service: {e}")
             finally:
-                self.zeroconf = None
+                self.async_zeroconf = None
                 self.service_info = None
 
     async def handle_root(self, request: web.Request) -> web.Response:
@@ -256,21 +263,46 @@ class RemoteDisplayServer:
 
     async def _handle_binary_message(self, data: bytes):
         """Handle binary message (audio frame)"""
-        if len(data) < 4:
+        if len(data) < 1:
             logger.warning("Message too short")
             return
 
-        # Parse header: type(1) + flags(1) + payload_size(2)
-        msg_type, flags, payload_size = struct.unpack(">BBH", data[:4])
-        payload = data[4:]
+        msg_type = data[0]
 
-        if msg_type == MSG_TYPE_AUDIO_FRAME:
+        if msg_type == MSG_TYPE_AUDIO_PCM:
+            # New PCM format: type(1) + sample_rate(4) + samples(4) + pcm_data
+            await self._handle_pcm_audio(data)
+        elif msg_type == MSG_TYPE_AUDIO_FRAME:
+            # Legacy Opus format: type(1) + flags(1) + payload_size(2) + ...
+            if len(data) < 4:
+                return
+            payload = data[4:]
             await self._handle_audio_frame(payload)
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
 
+    async def _handle_pcm_audio(self, data: bytes):
+        """Handle PCM audio frame (new format)"""
+        if len(data) < 9:  # type(1) + sample_rate(4) + samples(4)
+            return
+
+        # Parse header (little-endian from ESP32)
+        sample_rate = struct.unpack("<I", data[1:5])[0]
+        samples = struct.unpack("<I", data[5:9])[0]
+        pcm_data = data[9:]
+
+        expected_size = samples * 2  # 16-bit samples
+        if len(pcm_data) < expected_size:
+            logger.warning(f"PCM data too short: expected {expected_size}, got {len(pcm_data)}")
+            return
+
+        # Play PCM audio directly (no decoding needed)
+        if self.audio_player:
+            self.audio_player.play_pcm(pcm_data, sample_rate)
+            self.audio_count += 1
+
     async def _handle_audio_frame(self, payload: bytes):
-        """Handle audio frame"""
+        """Handle audio frame (legacy Opus format)"""
         if len(payload) < 4:
             return
 
@@ -278,7 +310,7 @@ class RemoteDisplayServer:
         sample_rate, frame_duration, _ = struct.unpack(">HBB", payload[:4])
         opus_data = payload[4:]
 
-        # Play audio
+        # Play audio (requires Opus decoding)
         if self.audio_player:
             self.audio_player.play(opus_data, sample_rate, frame_duration)
             self.audio_count += 1
@@ -300,9 +332,9 @@ class RemoteDisplayServer:
         # Remove disconnected clients
         self.browser_clients -= disconnected
 
-    def cleanup(self):
-        """Cleanup resources"""
-        self.stop_mdns()
+    async def cleanup(self):
+        """Cleanup resources (async)"""
+        await self.stop_mdns()
         if self.audio_player:
             self.audio_player.close()
         logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
@@ -355,7 +387,7 @@ async def main():
 
     # Setup cleanup
     async def on_shutdown(app):
-        server.cleanup()
+        await server.cleanup()
 
     app.on_shutdown.append(on_shutdown)
 
@@ -367,7 +399,7 @@ async def main():
     await site.start()
 
     # Start mDNS service broadcast
-    server.start_mdns()
+    await server.start_mdns()
 
     logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
     logger.info(f"Browser UI: http://localhost:{server.config.PORT}")

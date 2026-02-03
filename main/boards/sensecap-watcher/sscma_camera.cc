@@ -1,4 +1,6 @@
 #include "sscma_camera.h"
+#include "face_database.h"
+#include "face_recognition.h"
 #include "mcp_server.h"
 #include "lvgl_display.h"
 #include "lvgl_image.h"
@@ -97,8 +99,71 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 width = cJSON_GetArrayItem(resolution, 0)->valueint;
                 height = cJSON_GetArrayItem(resolution, 1)->valueint;
             }
+
+            // Check for face recognition mode data
+            cJSON *mode = cJSON_GetObjectItem(data, "mode");
+            if (mode != NULL && cJSON_IsString(mode) && strcmp(mode->valuestring, "face") == 0) {
+                // Parse face recognition data
+                cJSON *faces = cJSON_GetObjectItem(data, "faces");
+                if (faces != NULL && cJSON_IsArray(faces)) {
+                    int face_count = cJSON_GetArraySize(faces);
+                    ESP_LOGD(TAG, "Received %d faces in face mode", face_count);
+
+                    auto& face_rec = FaceRecognition::GetInstance();
+
+                    for (int i = 0; i < face_count; i++) {
+                        cJSON *face = cJSON_GetArrayItem(faces, i);
+                        if (face == NULL) continue;
+
+                        HimaxFaceData face_data;
+                        memset(&face_data, 0, sizeof(face_data));
+
+                        // Parse bounding box
+                        cJSON *box = cJSON_GetObjectItem(face, "box");
+                        if (box != NULL && cJSON_IsArray(box) && cJSON_GetArraySize(box) == 4) {
+                            face_data.box_x = cJSON_GetArrayItem(box, 0)->valueint;
+                            face_data.box_y = cJSON_GetArrayItem(box, 1)->valueint;
+                            face_data.box_w = cJSON_GetArrayItem(box, 2)->valueint;
+                            face_data.box_h = cJSON_GetArrayItem(box, 3)->valueint;
+                        }
+
+                        // Parse score
+                        cJSON *score = cJSON_GetObjectItem(face, "score");
+                        if (score != NULL && cJSON_IsNumber(score)) {
+                            face_data.score = score->valueint;
+                        }
+
+                        // Parse quality
+                        cJSON *quality = cJSON_GetObjectItem(face, "quality");
+                        if (quality != NULL && cJSON_IsNumber(quality)) {
+                            face_data.quality = (float)quality->valuedouble;
+                        }
+
+                        // Parse embedding
+                        cJSON *embedding = cJSON_GetObjectItem(face, "embedding");
+                        if (embedding != NULL && cJSON_IsArray(embedding) &&
+                            cJSON_GetArraySize(embedding) == FACE_EMBEDDING_DIM) {
+                            for (int j = 0; j < FACE_EMBEDDING_DIM; j++) {
+                                cJSON *val = cJSON_GetArrayItem(embedding, j);
+                                if (val != NULL && cJSON_IsNumber(val)) {
+                                    face_data.embedding[j] = (float)val->valuedouble;
+                                }
+                            }
+                            face_data.has_embedding = true;
+                        }
+
+                        ESP_LOGI(TAG, "[face %d]: box=[%d,%d,%d,%d], score=%d, quality=%.2f, has_emb=%d",
+                                 i, face_data.box_x, face_data.box_y, face_data.box_w, face_data.box_h,
+                                 face_data.score, face_data.quality, face_data.has_embedding);
+
+                        // Process face data
+                        face_rec.ProcessFaceData(face_data);
+                    }
+                }
+                return;  // Don't process as regular detection data
+            }
         }
-        
+
         switch ((width+height)) {
             case (416+416): 
             {
@@ -367,10 +432,12 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
     ESP_LOGI(TAG, "initialize mcp tools");
     InitializeMcpTools();
+    InitializeFaceMcpTools();
 
     xTaskCreate([](void* arg) {
         auto this_ = (SscmaCamera*)arg;
         bool is_inference = false;
+        bool is_face_mode = false;
         int64_t last_keepalive_time = esp_timer_get_time();
         while (true)
         {
@@ -378,6 +445,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 ESP_LOGI(TAG, "SSCMA restarted detected");
                 this_->sscma_restarted_ = false;
                 is_inference = false;
+                is_face_mode = false;
             }
 
             if (esp_timer_get_time() - last_keepalive_time > 10 * 1000000) {
@@ -389,7 +457,68 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 }
             }
 
-            if (this_->inference_en && Application::GetInstance().GetDeviceState() == kDeviceStateIdle ) {
+            bool is_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+            auto& face_rec = FaceRecognition::GetInstance();
+            int face_count = FaceDatabase::GetInstance().GetFaceCount();
+
+            // Debug: print face recognition status every 10 seconds
+            static int64_t last_debug_time = 0;
+            if (esp_timer_get_time() - last_debug_time > 10000000) {
+                last_debug_time = esp_timer_get_time();
+                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, is_idle=%d, face_count=%d, is_face_mode=%d, registering=%d",
+                         this_->face_recognition_en_, is_idle, face_count, is_face_mode, face_rec.IsRegistering());
+            }
+
+            // Check if face recognition mode should be active
+            // Enter face mode when: enabled (even if no faces registered) OR registering
+            bool want_face_mode = is_idle && (
+                this_->face_recognition_en_ || face_rec.IsRegistering()
+            );
+
+            // Check if object detection mode should be active
+            bool want_object_mode = this_->inference_en && is_idle && !want_face_mode;
+
+            // Handle face recognition mode
+            if (want_face_mode) {
+                if (!is_face_mode) {
+                    ESP_LOGI(TAG, "Start face recognition mode");
+                    sscma_client_break(this_->sscma_client_handle_);
+
+                    // Send AT+FACE=1 to enable face mode on Himax
+                    if (this_->SendFaceModeCommand(true)) {
+                        this_->camera_mode_ = SscmaCamera::MODE_FACE_RECOGNITION;
+                        face_rec.SetEnabled(true);
+                        is_face_mode = true;
+                        is_inference = false;
+
+                        // Set sensor resolution for face mode (same as object detection)
+                        sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true);
+
+                        // Wait for Himax to process face mode command
+                        vTaskDelay(pdMS_TO_TICKS(200));
+
+                        // Start face inference
+                        esp_err_t ret = sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
+                        if (ret != ESP_OK) {
+                            ESP_LOGE(TAG, "Failed to start face inference: %d", ret);
+                        } else {
+                            ESP_LOGI(TAG, "Face inference started");
+                        }
+                    }
+                }
+            } else if (is_face_mode) {
+                ESP_LOGI(TAG, "Stop face recognition mode");
+                sscma_client_break(this_->sscma_client_handle_);
+
+                // Send AT+FACE=0 to disable face mode on Himax
+                this_->SendFaceModeCommand(false);
+                this_->camera_mode_ = SscmaCamera::MODE_OBJECT_DETECT;
+                face_rec.SetEnabled(false);
+                is_face_mode = false;
+            }
+
+            // Handle object detection mode (only if not in face mode)
+            if (want_object_mode && !is_face_mode) {
                 if (!is_inference) {
                     ESP_LOGI(TAG, "Start inference (enable=1)");
                     sscma_client_break(this_->sscma_client_handle_);
@@ -398,11 +527,12 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
                     is_inference = true;
                 }
-            } else if (is_inference && (!this_->inference_en || Application::GetInstance().GetDeviceState() != kDeviceStateIdle))  {
+            } else if (is_inference && !want_object_mode) {
                 ESP_LOGI(TAG, "Stop inference (enable=%d state=%d)", this_->inference_en, Application::GetInstance().GetDeviceState());
                 is_inference = false;
                 sscma_client_break(this_->sscma_client_handle_);
             }
+
             vTaskDelay(pdMS_TO_TICKS(200));
         }
     }, "sscma_camera", 4096, this, 1, nullptr);
@@ -436,6 +566,25 @@ SscmaCamera::~SscmaCamera() {
         heap_caps_free(jpeg_out_);
         jpeg_out_ = nullptr;
     }
+}
+
+bool SscmaCamera::SendFaceModeCommand(bool enable) {
+    sscma_client_reply_t reply = {0};
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "AT+FACE=%d\r\n", enable ? 1 : 0);
+
+    esp_err_t ret = sscma_client_request(sscma_client_handle_, cmd, &reply, true, pdMS_TO_TICKS(2000));
+    if (reply.payload != NULL) {
+        sscma_client_reply_clear(&reply);
+    }
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set face mode: %d", ret);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Face mode %s", enable ? "enabled" : "disabled");
+    return true;
 }
 
 void SscmaCamera::InitializeMcpTools() {
@@ -900,4 +1049,185 @@ std::string SscmaCamera::FaceRecognition() {
     cJSON_Delete(response);
 
     return result;
+}
+
+bool SscmaCamera::SetCameraMode(CameraMode mode) {
+    if (mode == camera_mode_) {
+        return true;
+    }
+
+    ESP_LOGI(TAG, "Switching camera mode to %s",
+             mode == MODE_OBJECT_DETECT ? "OBJECT_DETECT" : "FACE_RECOGNITION");
+
+    // Stop current inference
+    sscma_client_break(sscma_client_handle_);
+
+    if (mode == MODE_FACE_RECOGNITION) {
+        // Switch to face recognition mode
+        if (!SendFaceModeCommand(true)) {
+            return false;
+        }
+        camera_mode_ = MODE_FACE_RECOGNITION;
+    } else {
+        // Switch back to object detection mode
+        SendFaceModeCommand(false);
+        camera_mode_ = MODE_OBJECT_DETECT;
+        sscma_client_set_model(sscma_client_handle_, 4);
+    }
+
+    return true;
+}
+
+void SscmaCamera::InitializeFaceMcpTools() {
+    auto& mcp_server = McpServer::GetInstance();
+    auto& face_db = FaceDatabase::GetInstance();
+    auto& face_rec = FaceRecognition::GetInstance();
+
+    // Load face recognition settings
+    Settings settings("face", false);
+    face_recognition_en_ = settings.GetInt("enable", 0);
+    float threshold = (float)settings.GetInt("threshold", 60) / 100.0f;
+    face_rec.SetMatchThreshold(threshold);
+
+    // Tool: Register a face
+    mcp_server.AddTool("self.face.register",
+        "录入一张新的人脸到本地数据库。\n"
+        "使用场景：当用户说'记住我的脸'、'录入人脸'、'把我的脸存起来叫xxx'时调用。\n"
+        "参数：\n"
+        "  `name`: 要录入的人脸名称（必填，最长31个字符）\n"
+        "返回：录入成功/失败信息",
+        PropertyList({
+            Property("name", kPropertyTypeString)
+        }),
+        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
+            std::string name = properties["name"].value<std::string>();
+
+            if (name.empty()) {
+                return std::string("{\"success\": false, \"message\": \"请提供要录入的名字\"}");
+            }
+
+            if (name.length() >= FACE_NAME_MAX_LEN) {
+                return std::string("{\"success\": false, \"message\": \"名字太长，请使用较短的名字\"}");
+            }
+
+            // Start registration mode
+            if (!face_rec.StartRegistration(name)) {
+                auto& db = FaceDatabase::GetInstance();
+                auto faces = db.ListFaces();
+                for (const auto& face : faces) {
+                    if (face == name) {
+                        return std::string("{\"success\": false, \"message\": \"名字 '" + name + "' 已存在\"}");
+                    }
+                }
+                if (db.GetFaceCount() >= FACE_MAX_COUNT) {
+                    return std::string("{\"success\": false, \"message\": \"人脸数据库已满，最多" +
+                                       std::to_string(FACE_MAX_COUNT) + "张\"}");
+                }
+                return std::string("{\"success\": false, \"message\": \"无法开始录入\"}");
+            }
+
+            // Switch to face mode and capture
+            SetCameraMode(MODE_FACE_RECOGNITION);
+
+            // For now, return a message that registration has started
+            // The actual registration will be completed when face data is received
+            return std::string("{\"success\": true, \"message\": \"请正对摄像头，开始录入人脸: " + name + "\"}");
+        });
+
+    // Tool: Delete a face
+    mcp_server.AddTool("self.face.delete",
+        "从本地数据库删除一张已录入的人脸。\n"
+        "使用场景：当用户说'删除人脸xxx'、'忘记xxx的脸'时调用。\n"
+        "参数：\n"
+        "  `name`: 要删除的人脸名称（必填）\n"
+        "返回：删除成功/失败信息",
+        PropertyList({
+            Property("name", kPropertyTypeString)
+        }),
+        [&face_db](const PropertyList& properties) -> ReturnValue {
+            std::string name = properties["name"].value<std::string>();
+
+            if (name.empty()) {
+                return std::string("{\"success\": false, \"message\": \"请提供要删除的名字\"}");
+            }
+
+            if (face_db.DeleteFace(name)) {
+                return std::string("{\"success\": true, \"message\": \"已删除人脸: " + name + "\"}");
+            } else {
+                return std::string("{\"success\": false, \"message\": \"未找到名为 '" + name + "' 的人脸\"}");
+            }
+        });
+
+    // Tool: List all faces
+    mcp_server.AddTool("self.face.list",
+        "列出本地数据库中所有已录入的人脸。\n"
+        "使用场景：当用户问'有哪些人脸'、'你认识谁'时调用。\n"
+        "返回：已录入人脸的名称列表",
+        PropertyList(),
+        [&face_db](const PropertyList& properties) -> ReturnValue {
+            auto faces = face_db.ListFaces();
+
+            cJSON* result = cJSON_CreateObject();
+            cJSON_AddNumberToObject(result, "count", (int)faces.size());
+
+            cJSON* names = cJSON_CreateArray();
+            for (const auto& name : faces) {
+                cJSON_AddItemToArray(names, cJSON_CreateString(name.c_str()));
+            }
+            cJSON_AddItemToObject(result, "faces", names);
+
+            return result;
+        });
+
+    // Tool: Enable/disable face recognition
+    mcp_server.AddTool("self.face.enable",
+        "开启或关闭待命时的人脸识别功能。\n"
+        "使用场景：当用户说'打开人脸识别'、'关闭人脸识别'时调用。\n"
+        "参数：\n"
+        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。\n"
+        "返回：当前开关状态",
+        PropertyList({
+            Property("enable", kPropertyTypeInteger, face_recognition_en_, 0, 1)
+        }),
+        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
+            Settings settings("face", true);
+            try {
+                const Property& enable_prop = properties["enable"];
+                int en = enable_prop.value<int>();
+                settings.SetInt("enable", en);
+                this->face_recognition_en_ = en;
+                face_rec.SetEnabled(en != 0);
+                ESP_LOGI(TAG, "Set face recognition enable to %d", en);
+            } catch (const std::runtime_error&) {
+                // enable not provided -> treat as query
+            }
+            int cur_en = settings.GetInt("enable", this->face_recognition_en_);
+            return std::string("{\"enable\":" + std::to_string(cur_en) + "}");
+        });
+
+    // Tool: Set face recognition threshold
+    mcp_server.AddTool("self.face.threshold",
+        "设置人脸识别的置信度阈值。\n"
+        "参数：\n"
+        "  `threshold`: 置信度阈值 (0-100)，越高越严格。默认60。\n"
+        "返回：当前阈值设置",
+        PropertyList({
+            Property("threshold", kPropertyTypeInteger, 60, 0, 100)
+        }),
+        [&face_rec](const PropertyList& properties) -> ReturnValue {
+            Settings settings("face", true);
+            try {
+                const Property& threshold_prop = properties["threshold"];
+                int threshold = threshold_prop.value<int>();
+                settings.SetInt("threshold", threshold);
+                face_rec.SetMatchThreshold((float)threshold / 100.0f);
+                ESP_LOGI(TAG, "Set face recognition threshold to %d%%", threshold);
+            } catch (const std::runtime_error&) {
+                // threshold not provided -> treat as query
+            }
+            int cur_threshold = settings.GetInt("threshold", 60);
+            return std::string("{\"threshold\":" + std::to_string(cur_threshold) + "}");
+        });
+
+    ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }

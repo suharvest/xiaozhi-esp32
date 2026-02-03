@@ -207,6 +207,12 @@ int SensecapAudioCodec::Read(int16_t* dest, int samples) {
 }
 
 int SensecapAudioCodec::Write(const int16_t* data, int samples) {
+    // 转发 PCM 到远程显示（在写入硬件前）
+    if (pcm_forward_callback_) {
+        pcm_forward_callback_(data, samples, output_sample_rate_);
+    }
+
+    // 原有逻辑：写入硬件播放
     if (output_enabled_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
     }
