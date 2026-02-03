@@ -32,7 +32,7 @@ class AudioPlayer:
         self.frame_size = sample_rate * frame_duration // 1000
 
         self.running = True
-        self.audio_queue: Queue = Queue(maxsize=20)
+        self.audio_queue: Queue = Queue(maxsize=50)
 
         if not PYAUDIO_AVAILABLE:
             logger.warning("Audio playback not available (PyAudio missing)")

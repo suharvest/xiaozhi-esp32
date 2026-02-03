@@ -255,11 +255,8 @@ void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample
         return;
     }
 
-    // 尝试获取锁，如果被占用则跳过（避免阻塞音频播放线程）
-    std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        return;  // 跳过本包
-    }
+    // 使用阻塞锁确保所有音频包都被发送
+    std::lock_guard<std::mutex> lock(send_mutex_);
 
     // 构建二进制消息：[type(1B)][sample_rate(4B)][samples(4B)][pcm_data]
     size_t pcm_bytes = samples * sizeof(int16_t);
