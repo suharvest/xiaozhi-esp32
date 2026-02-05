@@ -19,11 +19,11 @@
 #define NVS_KEY_URL "url"
 #define NVS_KEY_TIMEOUT "timeout"
 
-// PCM 音频帧头结构 (小端字节序)
+// PCM 音频帧头结构 (little-endian, ESP32 native)
 struct __attribute__((packed)) PcmAudioHeader {
     uint8_t type;           // MSG_TYPE_AUDIO_PCM (0x03)
-    uint32_t sample_rate;   // 采样率 (little-endian)
-    uint32_t samples;       // 采样数 (little-endian)
+    uint32_t sample_rate;   // 采样率
+    uint32_t samples;       // 采样数
     // 后跟 PCM 数据: samples * sizeof(int16_t) 字节
 };
 
@@ -69,8 +69,14 @@ RemoteDisplay::~RemoteDisplay() {
 
 bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     if (running_) {
-        ESP_LOGW(TAG, "Already running");
-        return true;
+        // 如果 URL 相同，直接返回
+        if (current_server_url_ == server_url) {
+            ESP_LOGI(TAG, "Already connected to %s", server_url.c_str());
+            return true;
+        }
+        // URL 不同，先停止再切换
+        ESP_LOGI(TAG, "Switching from %s to %s", current_server_url_.c_str(), server_url.c_str());
+        Stop();
     }
 
     // 获取网络接口并创建 WebSocket
@@ -126,6 +132,9 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     }
 
     running_ = true;
+    current_server_url_ = server_url;
+
+    // 注意：PCM 音频转发回调需要在 sensecap_watcher.cc 中通过 AudioCodec 注册
     ESP_LOGI(TAG, "Remote display started (UI state sync mode)");
     return true;
 }
@@ -137,12 +146,15 @@ void RemoteDisplay::Stop() {
 
     running_ = false;
 
+    // 注意：PCM 音频转发回调的取消需要在调用方处理
+
     if (websocket_) {
         websocket_->Close();
         websocket_.reset();
     }
 
     connected_ = false;
+    current_server_url_.clear();
     ESP_LOGI(TAG, "Remote display stopped");
 }
 
@@ -243,11 +255,8 @@ void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample
         return;
     }
 
-    // 尝试获取锁，如果被占用则跳过（避免阻塞音频播放线程）
-    std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        return;  // 跳过本包
-    }
+    // 使用阻塞锁确保所有音频包都被发送
+    std::lock_guard<std::mutex> lock(send_mutex_);
 
     // 构建二进制消息：[type(1B)][sample_rate(4B)][samples(4B)][pcm_data]
     size_t pcm_bytes = samples * sizeof(int16_t);

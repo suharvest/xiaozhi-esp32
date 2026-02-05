@@ -1,5 +1,14 @@
 # Xiaozhi Remote Display Server
 # Deploy on Raspberry Pi / reComputer for large screen display
+#
+# Usage:
+#   docker compose up -d
+#
+# Configure via environment variables or .env file:
+#   RD_DEVICE_NAME=客厅显示器
+#   RD_PORT=8765
+#   RD_LOCAL_AUDIO=1  (enable server-side audio, default: browser only)
+#   PUID=1000  (user ID for PulseAudio, run `id -u` to check)
 
 services:
   xiaozhi-display:
@@ -20,10 +29,12 @@ services:
 
     # Share system sockets for audio and mDNS
     volumes:
-      - /run/user/1000/pulse:/run/user/1000/pulse:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix:ro
-      - /var/run/dbus:/var/run/dbus:ro  # For mDNS/Avahi support
-      - /var/run/avahi-daemon:/var/run/avahi-daemon:ro  # For Avahi mDNS
+      # PulseAudio socket (use PUID env var for user ID)
+      - /run/user/${PUID:-1000}/pulse:/run/user/${PUID:-1000}/pulse:ro
+      # D-Bus for Avahi/mDNS (optional, may not exist on all systems)
+      - /var/run/dbus:/var/run/dbus:ro
+      # Custom assets (optional)
+      # - ./custom-emojis:/app/assets/emojis:ro
 
     # Environment configuration
     environment:
@@ -31,10 +42,12 @@ services:
       - RD_DEVICE_NAME=${RD_DEVICE_NAME:-Xiaozhi Display}
       # Server port (default: 8765)
       - RD_PORT=${RD_PORT:-8765}
-      # Disable audio (set to 1 if no audio output needed)
-      - RD_NO_AUDIO=${RD_NO_AUDIO:-0}
+      # Enable server-side audio (HDMI/speaker), default: browser only
+      - RD_LOCAL_AUDIO=${RD_LOCAL_AUDIO:-0}
+      # Display scale factor
+      - RD_SCALE=${RD_SCALE:-1.5}
       # PulseAudio server for audio output
-      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - PULSE_SERVER=unix:/run/user/${PUID:-1000}/pulse/native
       # Timezone
       - TZ=${TZ:-Asia/Shanghai}
 
@@ -51,7 +64,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8765/"]
+      test: ["CMD", "curl", "-f", "http://localhost:${RD_PORT:-8765}/"]
       interval: 30s
       timeout: 10s
       retries: 3

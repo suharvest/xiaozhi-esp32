@@ -30,9 +30,20 @@ Thumbs.db
 uv.lock
 .python-version
 
-# Docker (don't include docker files in context)
+# Docker (don't include docker files in build context)
 docker/
 
 # Temporary files
 *.log
 *.tmp
+
+# Large/unnecessary assets
+assets/raw/
+assets/assets.bin
+assets/index.json
+
+# Development files
+main.py
+run.sh
+screen_renderer.py
+README.md

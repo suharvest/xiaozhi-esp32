@@ -759,6 +759,7 @@ private:
                             remote->ForwardPcmAudio(data, samples, sample_rate);
                         }
                     });
+                ESP_LOGI(TAG, "PCM audio forwarding callback registered");
             }
 
             vTaskDelete(nullptr);
