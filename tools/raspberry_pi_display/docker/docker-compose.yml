@@ -7,7 +7,7 @@
 # Configure via environment variables or .env file:
 #   RD_DEVICE_NAME=客厅显示器
 #   RD_PORT=8765
-#   RD_NO_AUDIO=0
+#   RD_LOCAL_AUDIO=1  (enable server-side audio, default: browser only)
 #   PUID=1000  (user ID for PulseAudio, run `id -u` to check)
 
 services:
@@ -42,8 +42,8 @@ services:
       - RD_DEVICE_NAME=${RD_DEVICE_NAME:-Xiaozhi Display}
       # Server port (default: 8765)
       - RD_PORT=${RD_PORT:-8765}
-      # Disable audio (set to 1 if no audio output needed)
-      - RD_NO_AUDIO=${RD_NO_AUDIO:-0}
+      # Enable server-side audio (HDMI/speaker), default: browser only
+      - RD_LOCAL_AUDIO=${RD_LOCAL_AUDIO:-0}
       # Display scale factor
       - RD_SCALE=${RD_SCALE:-1.5}
       # PulseAudio server for audio output

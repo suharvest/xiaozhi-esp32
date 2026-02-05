@@ -397,6 +397,12 @@
         let previewTimer = null;
         const PREVIEW_DURATION_MS = 5000; // Match device's PREVIEW_IMAGE_DURATION_MS
 
+        // Web Audio API for PCM playback
+        let audioContext = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        const AUDIO_BUFFER_SIZE = 10; // Max queued audio chunks
+
         // Base size
         const BASE_SIZE = 412;
         let currentScale = 1.5;
@@ -511,9 +517,88 @@
                 updateUI(data);
             } else if (data.type === 'preview_image') {
                 showPreviewImage(data);
+            } else if (data.type === 'audio') {
+                handleAudio(data);
             } else if (data.type === 'emoji_list') {
                 // Server sends list of available emojis
                 data.emojis.forEach(name => availableEmojis.add(name));
+            }
+        }
+
+        // Initialize Web Audio API
+        function initAudio() {
+            if (audioContext) return;
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            console.log('Audio context initialized:', audioContext.sampleRate + 'Hz');
+        }
+
+        // Handle PCM audio from server
+        function handleAudio(data) {
+            if (!audioStarted || !data.data) return;
+
+            // Initialize audio context on first audio (needs user interaction)
+            if (!audioContext) {
+                initAudio();
+            }
+
+            // Resume if suspended (browser may suspend when page loses focus)
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+
+            // Decode base64 PCM data
+            const binaryString = atob(data.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            // Convert Int16 PCM to Float32 for Web Audio API
+            const int16 = new Int16Array(bytes.buffer);
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) {
+                float32[i] = int16[i] / 32768.0; // Normalize to [-1, 1]
+            }
+
+            // Queue audio chunk (drop old if full to keep realtime)
+            if (audioQueue.length >= AUDIO_BUFFER_SIZE) {
+                audioQueue.shift();
+            }
+            audioQueue.push({
+                samples: float32,
+                sampleRate: data.sample_rate
+            });
+
+            // Start playback if not already playing
+            if (!isPlaying) {
+                playNextChunk();
+            }
+        }
+
+        // Play queued audio chunks
+        function playNextChunk() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                return;
+            }
+
+            isPlaying = true;
+            const chunk = audioQueue.shift();
+
+            try {
+                // Create audio buffer
+                const buffer = audioContext.createBuffer(1, chunk.samples.length, chunk.sampleRate);
+                buffer.getChannelData(0).set(chunk.samples);
+
+                // Create source and play
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.onended = playNextChunk;
+                source.start();
+            } catch (e) {
+                console.error('Audio playback error:', e);
+                isPlaying = false;
             }
         }
 
@@ -656,6 +741,11 @@
         startOverlay.addEventListener('click', () => {
             audioStarted = true;
             startOverlay.classList.add('hidden');
+            // Initialize audio context on user interaction (required by browsers)
+            initAudio();
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
             connect();
         });
 

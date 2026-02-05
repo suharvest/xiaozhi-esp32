@@ -161,8 +161,10 @@ class RemoteDisplayServer:
 
     async def handle_root(self, request: web.Request) -> web.Response:
         """Handle root path - WebSocket for device, HTML for browser"""
+        logger.debug(f"Root request from {request.remote}, headers: {dict(request.headers)}")
         # Check if this is a WebSocket upgrade request
         if request.headers.get("Upgrade", "").lower() == "websocket":
+            logger.info(f"WebSocket upgrade request from {request.remote}")
             return await self.handle_device_ws(request)
 
         # Otherwise serve index.html
@@ -289,6 +291,10 @@ class RemoteDisplayServer:
 
         msg_type = data[0]
 
+        # Debug log for binary messages
+        if self.audio_count == 0 and msg_type in (MSG_TYPE_AUDIO_PCM, MSG_TYPE_AUDIO_FRAME):
+            logger.info(f"Received first binary audio message: type=0x{msg_type:02x}, size={len(data)}")
+
         if msg_type == MSG_TYPE_AUDIO_PCM:
             await self._handle_pcm_audio(data)
         elif msg_type == MSG_TYPE_AUDIO_FRAME:
@@ -296,6 +302,8 @@ class RemoteDisplayServer:
             await self._handle_audio_frame(data[4:])
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
+        else:
+            logger.debug(f"Unknown binary message type: 0x{msg_type:02x}, size={len(data)}")
 
     async def _handle_pcm_audio(self, data: bytes):
         """Handle PCM audio frame"""
@@ -312,10 +320,42 @@ class RemoteDisplayServer:
             logger.warning(f"PCM data size mismatch: expected {expected_size}, got {len(pcm_data)}")
             return
 
-        # Play audio
+        # Count audio packets
+        self.audio_count += 1
+
+        # Play audio locally (if enabled)
         if self.audio_player:
             self.audio_player.play_pcm(pcm_data, sample_rate)
-            self.audio_count += 1
+
+        # Forward to browser clients
+        await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
+
+        # Log audio count periodically
+        if self.audio_count == 1:
+            logger.info(f"First audio packet: sample_rate={sample_rate}, samples={samples}, forwarded to {len(self.browser_clients)} browser(s)")
+        elif self.audio_count % 100 == 0:
+            logger.info(f"Audio packets forwarded: {self.audio_count}")
+
+    async def _broadcast_audio_to_browsers(self, pcm_data: bytes, sample_rate: int):
+        """Broadcast PCM audio to all browser clients"""
+        if not self.browser_clients:
+            return
+
+        import base64
+        audio_msg = {
+            "type": "audio",
+            "data": base64.b64encode(pcm_data).decode('ascii'),
+            "sample_rate": sample_rate
+        }
+
+        disconnected = set()
+        for client in self.browser_clients:
+            try:
+                await client.send_json(audio_msg)
+            except Exception:
+                disconnected.add(client)
+
+        self.browser_clients -= disconnected
 
     async def _handle_audio_frame(self, payload: bytes):
         """Handle legacy Opus audio frame (deprecated)"""
@@ -370,22 +410,22 @@ async def main():
 
     server = RemoteDisplayServer()
 
-    # Initialize audio player (skip if RD_NO_AUDIO=1)
-    if os.getenv("RD_NO_AUDIO", "0") == "1":
-        logger.info("Audio disabled (RD_NO_AUDIO=1)")
-        server.audio_player = None
-    else:
+    # Initialize audio player (skip by default, enable with RD_LOCAL_AUDIO=1)
+    # Audio is played via browser by default for consistent behavior
+    if os.getenv("RD_LOCAL_AUDIO", "0") == "1":
         try:
-            logger.info("Initializing Audio Player...")
+            logger.info("Initializing local audio player (RD_LOCAL_AUDIO=1)...")
             server.audio_player = AudioPlayer(
                 sample_rate=server.config.AUDIO_SAMPLE_RATE,
                 channels=server.config.AUDIO_CHANNELS,
                 frame_duration=server.config.AUDIO_FRAME_DURATION
             )
-            logger.info("Audio Player initialized successfully")
+            logger.info("Local audio player initialized successfully")
         except Exception as e:
-            logger.warning(f"Failed to initialize Audio Player: {e}")
+            logger.warning(f"Failed to initialize local audio player: {e}")
             server.audio_player = None
+    else:
+        logger.info("Local audio disabled, audio plays via browser only")
 
     # Create aiohttp app
     app = web.Application()
