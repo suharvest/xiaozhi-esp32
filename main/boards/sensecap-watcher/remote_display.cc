@@ -69,13 +69,13 @@ RemoteDisplay::~RemoteDisplay() {
 
 bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     if (running_) {
-        // 如果 URL 相同，直接返回
-        if (current_server_url_ == server_url) {
+        // 如果 URL 相同且连接正常，直接返回
+        if (current_server_url_ == server_url && connected_) {
             ESP_LOGI(TAG, "Already connected to %s", server_url.c_str());
             return true;
         }
-        // URL 不同，先停止再切换
-        ESP_LOGI(TAG, "Switching from %s to %s", current_server_url_.c_str(), server_url.c_str());
+        // URL 不同或连接已断开，先停止再重连
+        ESP_LOGI(TAG, "Reconnecting: %s (connected=%d)", server_url.c_str(), connected_.load());
         Stop();
     }
 
