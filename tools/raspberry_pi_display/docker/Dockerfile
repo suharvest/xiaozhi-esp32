@@ -5,7 +5,7 @@ FROM python:3.12-slim-bookworm
 LABEL org.opencontainers.image.title="Xiaozhi Remote Display"
 LABEL org.opencontainers.image.description="Remote display server for Xiaozhi ESP32/SenseCAP Watcher"
 LABEL org.opencontainers.image.vendor="Seeed Studio"
-LABEL org.opencontainers.image.version="0.2.2"
+LABEL org.opencontainers.image.version="0.3.0"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -55,7 +55,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY server.py audio_player.py config.py ./
+COPY server.py audio_player.py config.py mcp_pipe.py narrate_mcp.py ./
 COPY web/ ./web/
 COPY assets/emojis/ ./assets/emojis/
 COPY assets/backgrounds/ ./assets/backgrounds/

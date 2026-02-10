@@ -3,3 +3,8 @@ aiohttp>=3.9.0
 opuslib>=3.0.1
 pyaudio>=0.2.13
 zeroconf>=0.131.0
+
+# Narrate mode MCP dependencies
+fastmcp>=0.1.0
+httpx>=0.27.0
+websockets>=12.0

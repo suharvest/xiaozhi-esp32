@@ -30,6 +30,10 @@ from aiohttp import web, WSMsgType
 from config import Config
 from audio_player import AudioPlayer
 
+# MCP process management
+import subprocess
+import shutil
+
 # Optional mDNS support
 try:
     from zeroconf import ServiceInfo
@@ -52,6 +56,125 @@ MSG_TYPE_UI_STATE = 0x10
 MSG_TYPE_AUDIO_FRAME = 0x02  # Deprecated (Opus)
 MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio
 MSG_TYPE_HEARTBEAT = 0x04
+
+
+class MCPManager:
+    """Manages the MCP subprocess for narrate mode"""
+
+    def __init__(self, server: 'RemoteDisplayServer'):
+        self.server = server
+        self.process: Optional[subprocess.Popen] = None
+        self.running = False
+        self._read_task: Optional[asyncio.Task] = None
+
+    async def start(self, xiaozhi_ws_url: str) -> bool:
+        """Start the MCP pipe subprocess (bridges stdio MCP server to WebSocket)"""
+        if self.running:
+            logger.warning("MCP already running")
+            return True
+
+        base_dir = Path(__file__).parent
+        pipe_script = base_dir / "mcp_pipe.py"
+        mcp_script = base_dir / "narrate_mcp.py"
+
+        if not pipe_script.exists():
+            logger.error(f"MCP pipe script not found: {pipe_script}")
+            return False
+        if not mcp_script.exists():
+            logger.error(f"MCP server script not found: {mcp_script}")
+            return False
+
+        # Find uv or python
+        uv_path = shutil.which("uv")
+        python_path = shutil.which("python3") or shutil.which("python")
+
+        try:
+            env = os.environ.copy()
+            env["NARRATE_SERVER_URL"] = f"http://localhost:{self.server.config.PORT}"
+            env["MCP_ENDPOINT"] = xiaozhi_ws_url
+
+            if uv_path:
+                # Use uv run for dependency management
+                self.process = subprocess.Popen(
+                    [uv_path, "run", "python", str(pipe_script), str(mcp_script)],
+                    cwd=str(base_dir),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+            elif python_path:
+                self.process = subprocess.Popen(
+                    [python_path, str(pipe_script), str(mcp_script)],
+                    cwd=str(base_dir),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+            else:
+                logger.error("Neither uv nor python found")
+                return False
+
+            self.running = True
+            self._read_task = asyncio.create_task(self._read_output())
+            logger.info(f"MCP process started (PID: {self.process.pid})")
+
+            # Broadcast status
+            await self.server.broadcast_mcp_status(True)
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start MCP process: {e}")
+            return False
+
+    async def stop(self):
+        """Stop the MCP subprocess"""
+        if not self.running:
+            return
+
+        self.running = False
+
+        if self._read_task:
+            self._read_task.cancel()
+            try:
+                await self._read_task
+            except asyncio.CancelledError:
+                pass
+            self._read_task = None
+
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except Exception as e:
+                logger.warning(f"Error stopping MCP process: {e}")
+                self.process.kill()
+            self.process = None
+
+        logger.info("MCP process stopped")
+        await self.server.broadcast_mcp_status(False)
+
+    async def _read_output(self):
+        """Read and log MCP process output"""
+        if not self.process or not self.process.stdout:
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            while self.running and self.process.poll() is None:
+                line = await loop.run_in_executor(None, self.process.stdout.readline)
+                if line:
+                    logger.info(f"[MCP] {line.rstrip()}")
+        except Exception as e:
+            if self.running:
+                logger.error(f"Error reading MCP output: {e}")
+
+        # Process ended
+        if self.running:
+            self.running = False
+            logger.warning("MCP process exited unexpectedly")
+            await self.server.broadcast_mcp_status(False)
 
 
 class RemoteDisplayServer:
@@ -78,6 +201,22 @@ class RemoteDisplayServer:
         # mDNS service
         self.async_zeroconf: Optional['AsyncZeroconf'] = None
         self.service_info: Optional['ServiceInfo'] = None
+
+        # Narrate mode
+        self.narrate_config: dict = {
+            "name": "",
+            "xiaozhiWsUrl": "",
+            "mcpEnabled": False,
+            "autoConnect": False,
+            "defaultBgUrl": "",
+            "triggers": []
+        }
+        self.mcp_manager = MCPManager(self)
+        self.current_narrate_state: Optional[dict] = None
+
+        # Uploads directory for local images
+        self.uploads_dir = self.base_dir / "uploads"
+        self.uploads_dir.mkdir(exist_ok=True)
 
     def _get_local_ip(self) -> str:
         """Get local IP address for mDNS registration"""
@@ -388,9 +527,214 @@ class RemoteDisplayServer:
         # Remove disconnected clients
         self.browser_clients -= disconnected
 
+    # ========== Narrate Mode APIs ==========
+
+    async def handle_get_config(self, request: web.Request) -> web.Response:
+        """GET /api/config - Get narrate mode config"""
+        return web.json_response({
+            **self.narrate_config,
+            "mcpConnected": self.mcp_manager.running
+        })
+
+    async def handle_post_config(self, request: web.Request) -> web.Response:
+        """POST /api/config - Update narrate mode config"""
+        try:
+            data = await request.json()
+
+            # Update config fields
+            for field in ["name", "xiaozhiWsUrl", "mcpEnabled", "autoConnect", "defaultBgUrl", "triggers"]:
+                if field in data:
+                    self.narrate_config[field] = data[field]
+
+            return web.json_response({"success": True})
+
+        except Exception as e:
+            logger.error(f"Failed to update config: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_mcp_control(self, request: web.Request) -> web.Response:
+        """POST /api/mcp - Control MCP server (start/stop/restart)"""
+        try:
+            data = await request.json()
+            action = data.get("action")
+
+            if action == "start":
+                ws_url = self.narrate_config.get("xiaozhiWsUrl", "")
+                if not ws_url:
+                    return web.json_response({"success": False, "error": "WebSocket URL not configured"}, status=400)
+                if self.mcp_manager.running:
+                    return web.json_response({"success": True, "message": "MCP already running"})
+                success = await self.mcp_manager.start(ws_url)
+                return web.json_response({"success": success})
+
+            elif action == "stop":
+                await self.mcp_manager.stop()
+                return web.json_response({"success": True})
+
+            elif action == "restart":
+                ws_url = self.narrate_config.get("xiaozhiWsUrl", "")
+                if not ws_url:
+                    return web.json_response({"success": False, "error": "WebSocket URL not configured"}, status=400)
+                await self.mcp_manager.stop()
+                success = await self.mcp_manager.start(ws_url)
+                return web.json_response({"success": success})
+
+            else:
+                return web.json_response({"success": False, "error": "Invalid action"}, status=400)
+
+        except Exception as e:
+            logger.error(f"Failed to control MCP: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_upload_image(self, request: web.Request) -> web.Response:
+        """POST /api/upload - Upload local image"""
+        try:
+            import uuid
+            import time
+
+            reader = await request.multipart()
+            field = await reader.next()
+
+            if field is None or field.name != 'file':
+                return web.json_response({"success": False, "error": "No file provided"}, status=400)
+
+            # Get filename and extension
+            filename = field.filename or "image"
+            ext = Path(filename).suffix.lower()
+            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                return web.json_response({"success": False, "error": "Invalid image format"}, status=400)
+
+            # Generate unique filename
+            unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+            file_path = self.uploads_dir / unique_name
+
+            # Save file
+            size = 0
+            with open(file_path, 'wb') as f:
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    f.write(chunk)
+
+            # Return URL
+            url = f"/uploads/{unique_name}"
+            logger.info(f"Image uploaded: {unique_name} ({size} bytes)")
+
+            return web.json_response({
+                "success": True,
+                "url": url,
+                "filename": unique_name,
+                "size": size
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to upload image: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_list_images(self, request: web.Request) -> web.Response:
+        """GET /api/images - List uploaded images"""
+        try:
+            images = []
+            for f in self.uploads_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                    images.append({
+                        "filename": f.name,
+                        "url": f"/uploads/{f.name}",
+                        "size": f.stat().st_size,
+                        "modified": f.stat().st_mtime
+                    })
+            # Sort by modified time, newest first
+            images.sort(key=lambda x: x["modified"], reverse=True)
+            return web.json_response({"success": True, "images": images})
+
+        except Exception as e:
+            logger.error(f"Failed to list images: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_delete_image(self, request: web.Request) -> web.Response:
+        """DELETE /api/images/{filename} - Delete uploaded image"""
+        try:
+            filename = request.match_info.get('filename')
+            if not filename:
+                return web.json_response({"success": False, "error": "Filename required"}, status=400)
+
+            file_path = self.uploads_dir / filename
+            if not file_path.exists():
+                return web.json_response({"success": False, "error": "File not found"}, status=404)
+
+            # Security check: ensure file is within uploads_dir
+            if not str(file_path.resolve()).startswith(str(self.uploads_dir.resolve())):
+                return web.json_response({"success": False, "error": "Invalid path"}, status=400)
+
+            file_path.unlink()
+            logger.info(f"Image deleted: {filename}")
+            return web.json_response({"success": True})
+
+        except Exception as e:
+            logger.error(f"Failed to delete image: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_narrate(self, request: web.Request) -> web.Response:
+        """POST /api/narrate - Control narrate mode display"""
+        try:
+            data = await request.json()
+            action = data.get("action")
+
+            if action == "show":
+                image_url = data.get("imageUrl")
+                caption = data.get("caption", "")
+
+                if not image_url:
+                    return web.json_response({"success": False, "error": "imageUrl required"}, status=400)
+
+                # Update state
+                self.current_narrate_state = {
+                    "type": "narrate_state",
+                    "action": "show",
+                    "imageUrl": image_url,
+                    "caption": caption
+                }
+
+                # Broadcast to browsers
+                await self._broadcast_to_browsers(self.current_narrate_state)
+                logger.info(f"Narrate: show image {image_url}")
+
+                return web.json_response({"success": True})
+
+            elif action == "clear":
+                # Clear state
+                self.current_narrate_state = {
+                    "type": "narrate_state",
+                    "action": "clear"
+                }
+
+                # Broadcast to browsers
+                await self._broadcast_to_browsers(self.current_narrate_state)
+                logger.info("Narrate: clear background")
+
+                return web.json_response({"success": True})
+
+            else:
+                return web.json_response({"success": False, "error": "Invalid action"}, status=400)
+
+        except Exception as e:
+            logger.error(f"Failed to handle narrate: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def broadcast_mcp_status(self, connected: bool):
+        """Broadcast MCP connection status to browsers"""
+        msg = {
+            "type": "mcp_status",
+            "connected": connected
+        }
+        await self._broadcast_to_browsers(msg)
+
     async def cleanup(self):
         """Cleanup resources"""
         await self.stop_mdns()
+        await self.mcp_manager.stop()
         if self.audio_player:
             self.audio_player.close()
         logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
@@ -435,11 +779,24 @@ async def main():
     app.router.add_get("/ws", server.handle_browser_ws)
     app.router.add_get("/device", server.handle_device_ws)  # Alternative device endpoint
 
+    # Narrate mode APIs
+    app.router.add_get("/api/config", server.handle_get_config)
+    app.router.add_post("/api/config", server.handle_post_config)
+    app.router.add_post("/api/narrate", server.handle_narrate)
+    app.router.add_post("/api/mcp", server.handle_mcp_control)
+
+    # Image upload APIs
+    app.router.add_post("/api/upload", server.handle_upload_image)
+    app.router.add_get("/api/images", server.handle_list_images)
+    app.router.add_delete("/api/images/{filename}", server.handle_delete_image)
+
     # Static files
     if server.web_dir.exists():
         app.router.add_static("/web/", server.web_dir)
     if server.assets_dir.exists():
         app.router.add_static("/assets/", server.assets_dir)
+    if server.uploads_dir.exists():
+        app.router.add_static("/uploads/", server.uploads_dir)
 
     # Setup cleanup
     async def on_shutdown(app):
