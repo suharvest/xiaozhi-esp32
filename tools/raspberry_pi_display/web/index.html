@@ -335,6 +335,667 @@
         #start-overlay p {
             opacity: 0.7;
         }
+
+        /* ========== Narrate Mode Styles ========== */
+
+        /* Narrate mode background panel */
+        #narrate-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #narrate-bg.hidden {
+            display: none;
+        }
+
+        #narrate-image {
+            max-width: 90%;
+            max-height: 80%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+        }
+
+        #narrate-image:not([src]),
+        #narrate-image[src=""] {
+            display: none;
+        }
+
+        #narrate-caption {
+            margin-top: 20px;
+            color: #fff;
+            font-size: 24px;
+            text-align: center;
+            max-width: 80%;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+        }
+
+        #narrate-caption:empty {
+            display: none;
+        }
+
+        /* Narrate mode - container becomes small window */
+        body.narrate-mode #container {
+            position: fixed !important;
+            right: 20px !important;
+            bottom: 20px !important;
+            left: auto !important;
+            top: auto !important;
+            z-index: 10;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+            cursor: pointer;
+            transition: width 0.3s ease, height 0.3s ease;
+        }
+
+        body.narrate-mode #container:hover {
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 0 2px rgba(137, 180, 250, 0.4);
+        }
+
+        body.narrate-mode #resize-handle {
+            display: none;
+        }
+
+        body.narrate-mode #hint {
+            display: none;
+        }
+
+        /* Config button */
+        #config-btn {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(10px);
+        }
+
+        #config-btn:hover {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.4) 0%, rgba(139, 92, 246, 0.4) 100%);
+            border-color: rgba(139, 92, 246, 0.6);
+            color: #fff;
+            transform: rotate(30deg) scale(1.05);
+            box-shadow: 0 8px 25px rgba(139, 92, 246, 0.3);
+        }
+
+        /* Config panel */
+        #config-panel {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 520px;
+            max-height: 85vh;
+            background: linear-gradient(180deg, #1e1e2e 0%, #181825 100%);
+            border-radius: 20px;
+            box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            z-index: 1001;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #config-panel.hidden {
+            display: none;
+        }
+
+        #config-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+        }
+
+        #config-overlay.hidden {
+            display: none;
+        }
+
+        .config-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .config-header h3 {
+            margin: 0;
+            color: #cdd6f4;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+
+        #config-close {
+            background: rgba(255, 255, 255, 0.05);
+            border: none;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        #config-close:hover {
+            background: rgba(243, 139, 168, 0.2);
+            color: #f38ba8;
+        }
+
+        .config-body {
+            padding: 24px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .config-section {
+            margin-bottom: 24px;
+        }
+
+        .config-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .config-section label {
+            display: block;
+            color: #a6adc8;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .config-section input[type="text"] {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.25);
+            color: #cdd6f4;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .config-section input[type="text"]:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .config-section input[type="text"]:focus {
+            outline: none;
+            border-color: #89b4fa;
+            background: rgba(0, 0, 0, 0.35);
+            box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.15);
+        }
+
+        .config-section input[type="text"]::placeholder {
+            color: rgba(166, 173, 200, 0.5);
+        }
+
+        .config-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #bac2de;
+            font-size: 14px;
+        }
+
+        .config-row input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #89b4fa;
+        }
+
+        /* Trigger list */
+        #trigger-list {
+            margin-top: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .trigger-item {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .trigger-item input[type="text"] {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.3);
+            color: #cdd6f4;
+            font-size: 13px;
+            min-width: 0;
+            transition: all 0.2s ease;
+        }
+
+        .trigger-item input[type="text"]:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .trigger-item input[type="text"]:focus {
+            outline: none;
+            border-color: #89b4fa;
+            box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.1);
+        }
+
+        .trigger-item .image-input-group {
+            flex: 1.5;
+            display: flex;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .trigger-item .image-input-group input {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .trigger-item .pick-file {
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.15) 0%, rgba(116, 199, 236, 0.15) 100%);
+            border: 1px solid rgba(137, 180, 250, 0.25);
+            color: #89b4fa;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .trigger-item .pick-file:hover {
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.25) 0%, rgba(116, 199, 236, 0.25) 100%);
+            border-color: rgba(137, 180, 250, 0.4);
+            transform: scale(1.05);
+        }
+
+        .trigger-item .remove-trigger {
+            background: rgba(243, 139, 168, 0.1);
+            border: 1px solid rgba(243, 139, 168, 0.2);
+            color: #f38ba8;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 18px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .trigger-item .remove-trigger:hover {
+            background: rgba(243, 139, 168, 0.2);
+            border-color: rgba(243, 139, 168, 0.4);
+            transform: scale(1.05);
+        }
+
+        #add-trigger {
+            background: transparent;
+            border: 2px dashed rgba(137, 180, 250, 0.3);
+            color: #89b4fa;
+            padding: 12px 16px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            width: 100%;
+            margin-top: 10px;
+            transition: all 0.2s ease;
+        }
+
+        #add-trigger:hover {
+            background: rgba(137, 180, 250, 0.1);
+            border-color: rgba(137, 180, 250, 0.5);
+        }
+
+        .config-footer {
+            padding: 20px 24px;
+            background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.2) 100%);
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .config-footer button {
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        #config-cancel {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #bac2de;
+        }
+
+        #config-cancel:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        #config-save {
+            background: linear-gradient(135deg, #89b4fa 0%, #74c7ec 100%);
+            color: #11111b;
+            box-shadow: 0 4px 15px rgba(137, 180, 250, 0.3);
+        }
+
+        #config-save:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(137, 180, 250, 0.4);
+        }
+
+        /* Narrate mode toggle switch */
+        .mode-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            margin: -24px -24px 20px -24px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .mode-toggle label {
+            color: #cdd6f4;
+            font-size: 15px;
+            font-weight: 500;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 26px;
+            transition: all 0.3s ease;
+        }
+
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: #6c7086;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background: linear-gradient(135deg, #89b4fa 0%, #74c7ec 100%);
+        }
+
+        .toggle-switch input:checked + .toggle-slider::before {
+            transform: translateX(22px);
+            background: #fff;
+        }
+
+        .narrate-config-sections {
+            transition: opacity 0.3s ease;
+        }
+
+        .narrate-config-sections.disabled {
+            opacity: 0.35;
+            pointer-events: none;
+        }
+
+        .required {
+            color: #f38ba8;
+            font-weight: 600;
+        }
+
+        /* MCP controls */
+        .mcp-controls {
+            background: linear-gradient(135deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.15) 100%);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .mcp-status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .mcp-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: rgba(108, 112, 134, 0.2);
+            color: #6c7086;
+            letter-spacing: 0.3px;
+        }
+
+        .mcp-badge.connected {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.2) 0%, rgba(148, 226, 213, 0.2) 100%);
+            color: #a6e3a1;
+        }
+
+        .mcp-badge.connecting {
+            background: rgba(249, 226, 175, 0.2);
+            color: #f9e2af;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .mcp-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .mcp-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .mcp-btn.start {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.15) 0%, rgba(148, 226, 213, 0.15) 100%);
+            border-color: rgba(166, 227, 161, 0.25);
+            color: #a6e3a1;
+        }
+
+        .mcp-btn.start:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.25) 0%, rgba(148, 226, 213, 0.25) 100%);
+            border-color: rgba(166, 227, 161, 0.4);
+            transform: scale(1.08);
+        }
+
+        .mcp-btn.stop {
+            background: rgba(243, 139, 168, 0.15);
+            border-color: rgba(243, 139, 168, 0.25);
+            color: #f38ba8;
+        }
+
+        .mcp-btn.stop:hover:not(:disabled) {
+            background: rgba(243, 139, 168, 0.25);
+            border-color: rgba(243, 139, 168, 0.4);
+            transform: scale(1.08);
+        }
+
+        .mcp-btn.restart {
+            background: rgba(249, 226, 175, 0.15);
+            border-color: rgba(249, 226, 175, 0.25);
+            color: #f9e2af;
+        }
+
+        .mcp-btn.restart:hover:not(:disabled) {
+            background: rgba(249, 226, 175, 0.25);
+            border-color: rgba(249, 226, 175, 0.4);
+            transform: scale(1.08);
+        }
+
+        .mcp-btn:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        /* Default background input */
+        .default-bg-input {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .default-bg-input input[type="text"] {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .pick-file-btn,
+        .preview-btn,
+        .clear-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .pick-file-btn {
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.15) 0%, rgba(116, 199, 236, 0.15) 100%);
+            border-color: rgba(137, 180, 250, 0.25);
+            color: #89b4fa;
+        }
+
+        .pick-file-btn:hover {
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.25) 0%, rgba(116, 199, 236, 0.25) 100%);
+            border-color: rgba(137, 180, 250, 0.4);
+            transform: scale(1.05);
+        }
+
+        .preview-btn {
+            background: rgba(203, 166, 247, 0.15);
+            border-color: rgba(203, 166, 247, 0.25);
+            color: #cba6f7;
+        }
+
+        .preview-btn:hover {
+            background: rgba(203, 166, 247, 0.25);
+            border-color: rgba(203, 166, 247, 0.4);
+            transform: scale(1.05);
+        }
+
+        .clear-btn {
+            background: rgba(243, 139, 168, 0.1);
+            border-color: rgba(243, 139, 168, 0.2);
+            color: #f38ba8;
+            font-size: 14px;
+        }
+
+        .clear-btn:hover {
+            background: rgba(243, 139, 168, 0.2);
+            border-color: rgba(243, 139, 168, 0.4);
+            transform: scale(1.05);
+        }
+
+        .bg-thumbnail {
+            margin-top: 10px;
+            border-radius: 10px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .bg-thumbnail.show {
+            display: block;
+        }
+
+        .bg-thumbnail img {
+            width: 100%;
+            max-height: 120px;
+            object-fit: cover;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
     </style>
 </head>
 <body>
@@ -343,6 +1004,79 @@
         <div class="content">
             <h2>Xiaozhi Remote Display</h2>
             <p>Click to start</p>
+        </div>
+    </div>
+
+    <!-- Narrate mode background -->
+    <div id="narrate-bg" class="hidden">
+        <img id="narrate-image" alt="">
+        <div id="narrate-caption"></div>
+    </div>
+
+    <!-- Config button -->
+    <button id="config-btn" title="Settings">⚙</button>
+
+    <!-- Config overlay -->
+    <div id="config-overlay" class="hidden"></div>
+
+    <!-- Config panel -->
+    <div id="config-panel" class="hidden">
+        <div class="config-header">
+            <h3>讲述模式配置</h3>
+            <button id="config-close">&times;</button>
+        </div>
+        <div class="config-body">
+            <div class="mode-toggle">
+                <label>启用讲述模式</label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="narrate-toggle">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div id="narrate-config-sections" class="narrate-config-sections disabled">
+                <div class="config-section">
+                    <label>名称</label>
+                    <input type="text" id="config-name" placeholder="我的讲述服务">
+                </div>
+                <div class="config-section">
+                    <label>小智 WebSocket 地址 <span class="required">*</span></label>
+                    <input type="text" id="xiaozhi-ws-url" placeholder="wss://api.xiaozhi.me/mcp/...">
+                    <div class="mcp-controls" style="margin-top: 16px;">
+                        <div class="mcp-status-row">
+                            <span id="mcp-status" class="mcp-badge">未启动</span>
+                            <div class="mcp-buttons">
+                                <button id="mcp-start" class="mcp-btn start" title="启动">▶</button>
+                                <button id="mcp-stop" class="mcp-btn stop" title="停止">■</button>
+                                <button id="mcp-restart" class="mcp-btn restart" title="重启">↻</button>
+                            </div>
+                        </div>
+                        <div class="config-row" style="margin-top: 12px;">
+                            <input type="checkbox" id="auto-connect">
+                            <span>系统启动时自动连接</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <label>默认背景</label>
+                    <div class="default-bg-input">
+                        <input type="text" id="default-bg-url" placeholder="图片 URL 或选择本地文件">
+                        <input type="file" id="default-bg-file" accept="image/*" style="display:none;">
+                        <button id="default-bg-pick" class="pick-file-btn" title="选择本地图片">+</button>
+                        <button id="default-bg-preview" class="preview-btn" title="预览">👁</button>
+                        <button id="default-bg-clear" class="clear-btn" title="清除">&times;</button>
+                    </div>
+                    <div id="default-bg-thumbnail" class="bg-thumbnail"></div>
+                </div>
+                <div class="config-section">
+                    <label>触发条件（可选）</label>
+                    <div id="trigger-list"></div>
+                    <button id="add-trigger">+ 添加触发条件</button>
+                </div>
+            </div>
+        </div>
+        <div class="config-footer">
+            <button id="config-cancel">取消</button>
+            <button id="config-save">保存</button>
         </div>
     </div>
 
@@ -485,6 +1219,9 @@
                 setTimeout(() => {
                     connectionStatus.style.opacity = '0.3';
                 }, 2000);
+
+                // Fetch MCP status
+                fetchMcpStatus();
             };
 
             ws.onmessage = (event) => {
@@ -717,8 +1454,11 @@
             }
         }
 
-        // Keyboard shortcuts
+        // Keyboard shortcuts (ignore when typing in input fields)
         document.addEventListener('keydown', (e) => {
+            const tag = e.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+
             if (e.key === 'f' || e.key === 'F' || e.key === 'F11') {
                 e.preventDefault();
                 toggleFullscreen();
@@ -752,6 +1492,504 @@
         // Initialize
         initScale();
         loadEmoji('neutral');
+
+        // ========== Narrate Mode ==========
+        const narrateBg = document.getElementById('narrate-bg');
+        const narrateImage = document.getElementById('narrate-image');
+        const narrateCaption = document.getElementById('narrate-caption');
+        const configBtn = document.getElementById('config-btn');
+        const configPanel = document.getElementById('config-panel');
+        const configOverlay = document.getElementById('config-overlay');
+        const configClose = document.getElementById('config-close');
+        const configCancel = document.getElementById('config-cancel');
+        const configSave = document.getElementById('config-save');
+        const narrateToggle = document.getElementById('narrate-toggle');
+        const narrateConfigSections = document.getElementById('narrate-config-sections');
+        const configName = document.getElementById('config-name');
+        const xiaozhiWsUrl = document.getElementById('xiaozhi-ws-url');
+        const autoConnect = document.getElementById('auto-connect');
+        const mcpStatus = document.getElementById('mcp-status');
+        const mcpStartBtn = document.getElementById('mcp-start');
+        const mcpStopBtn = document.getElementById('mcp-stop');
+        const mcpRestartBtn = document.getElementById('mcp-restart');
+        const triggerList = document.getElementById('trigger-list');
+        const addTriggerBtn = document.getElementById('add-trigger');
+        const defaultBgUrl = document.getElementById('default-bg-url');
+        const defaultBgFile = document.getElementById('default-bg-file');
+        const defaultBgPick = document.getElementById('default-bg-pick');
+        const defaultBgPreview = document.getElementById('default-bg-preview');
+        const defaultBgClear = document.getElementById('default-bg-clear');
+        const defaultBgThumbnail = document.getElementById('default-bg-thumbnail');
+
+        // Narrate mode state
+        let narrateMode = false;
+        let mcpConnected = false;
+        let currentImageUrl = ''; // Currently displayed image (not default)
+        let narrateConfig = {
+            name: '',
+            xiaozhiWsUrl: '',
+            autoConnect: false,
+            defaultBgUrl: '',
+            triggers: []
+        };
+
+        // Narrate mode pip sizes: small, medium, large
+        const PIP_SIZES = [280, 400, 520];
+        let pipSizeIndex = 0;
+
+        // Load config from localStorage
+        function loadConfig() {
+            try {
+                const saved = localStorage.getItem('narrate-config');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    narrateConfig = { ...narrateConfig, ...parsed };
+                    // Restore narrate mode state
+                    if (parsed.narrateModeEnabled) {
+                        toggleNarrateMode(true);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load config:', e);
+            }
+        }
+
+        // Helper function for API calls with proper error handling
+        async function apiCall(url, options = {}) {
+            try {
+                const res = await fetch(url, {
+                    headers: { 'Content-Type': 'application/json' },
+                    ...options
+                });
+                const text = await res.text();
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    console.error('Invalid JSON response:', text);
+                    return { success: false, error: 'Server returned invalid response' };
+                }
+            } catch (e) {
+                console.error('API call failed:', e);
+                return { success: false, error: e.message };
+            }
+        }
+
+        // Save config to localStorage and server
+        async function saveConfig() {
+            try {
+                localStorage.setItem('narrate-config', JSON.stringify({
+                    ...narrateConfig,
+                    narrateModeEnabled: narrateMode
+                }));
+                const result = await apiCall('/api/config', {
+                    method: 'POST',
+                    body: JSON.stringify(narrateConfig)
+                });
+                if (!result.success) {
+                    console.error('Failed to save config:', result.error);
+                }
+                return result;
+            } catch (e) {
+                console.error('Failed to save config:', e);
+                return { success: false, error: e.message };
+            }
+        }
+
+        // Toggle narrate mode
+        function toggleNarrateMode(enabled) {
+            narrateMode = enabled;
+            if (enabled) {
+                document.body.classList.add('narrate-mode');
+                narrateBg.classList.remove('hidden');
+                applyPipSize();
+                // Show default background if no current image
+                if (!currentImageUrl && narrateConfig.defaultBgUrl) {
+                    narrateImage.src = narrateConfig.defaultBgUrl;
+                    narrateCaption.textContent = '';
+                }
+            } else {
+                document.body.classList.remove('narrate-mode');
+                narrateBg.classList.add('hidden');
+                clearNarrateImage();
+                // Clear inline size overrides
+                container.style.removeProperty('width');
+                container.style.removeProperty('height');
+            }
+        }
+
+        function applyPipSize() {
+            const size = PIP_SIZES[pipSizeIndex];
+            container.style.setProperty('width', size + 'px', 'important');
+            container.style.setProperty('height', size + 'px', 'important');
+        }
+
+        function cyclePipSize() {
+            pipSizeIndex = (pipSizeIndex + 1) % PIP_SIZES.length;
+            applyPipSize();
+        }
+
+        // Show background image in narrate mode
+        function showNarrateImage(url, caption = '') {
+            if (!narrateMode) {
+                toggleNarrateMode(true);
+            }
+            currentImageUrl = url;
+            narrateImage.src = url;
+            narrateCaption.textContent = caption;
+        }
+
+        // Clear background image (show default if available)
+        function clearNarrateImage() {
+            currentImageUrl = '';
+            narrateCaption.textContent = '';
+            // Show default background if in narrate mode
+            if (narrateMode && narrateConfig.defaultBgUrl) {
+                narrateImage.src = narrateConfig.defaultBgUrl;
+            } else {
+                narrateImage.src = '';
+            }
+        }
+
+        // Update MCP status display
+        function updateMcpStatus(connected) {
+            mcpConnected = connected;
+            if (connected) {
+                mcpStatus.textContent = '运行中';
+                mcpStatus.className = 'mcp-badge connected';
+                mcpStartBtn.disabled = true;
+                mcpStopBtn.disabled = false;
+                mcpRestartBtn.disabled = false;
+            } else {
+                mcpStatus.textContent = '未启动';
+                mcpStatus.className = 'mcp-badge';
+                mcpStartBtn.disabled = false;
+                mcpStopBtn.disabled = true;
+                mcpRestartBtn.disabled = true;
+            }
+        }
+
+        // MCP control functions
+        async function mcpControl(action) {
+            mcpStatus.textContent = action === 'start' ? '启动中...' : action === 'stop' ? '停止中...' : '重启中...';
+            mcpStatus.className = 'mcp-badge connecting';
+
+            const data = await apiCall('/api/mcp', {
+                method: 'POST',
+                body: JSON.stringify({ action })
+            });
+
+            if (data.success) {
+                // Status will be updated via WebSocket or we update manually
+                if (action === 'stop') {
+                    updateMcpStatus(false);
+                } else {
+                    // Give server time to start, then check status
+                    setTimeout(fetchMcpStatus, 1000);
+                }
+            } else {
+                alert('操作失败: ' + (data.error || '未知错误'));
+                await fetchMcpStatus();
+            }
+        }
+
+        // Render trigger list
+        function renderTriggers() {
+            triggerList.innerHTML = '';
+            narrateConfig.triggers.forEach((trigger, index) => {
+                const item = document.createElement('div');
+                item.className = 'trigger-item';
+                item.innerHTML = `
+                    <input type="text" placeholder="触发词" value="${trigger.prompt || ''}" data-field="prompt" data-index="${index}">
+                    <div class="image-input-group">
+                        <input type="text" placeholder="图片 URL 或选择本地文件" value="${trigger.imageUrl || ''}" data-field="imageUrl" data-index="${index}">
+                        <input type="file" accept="image/*" data-index="${index}" style="display:none;">
+                        <button class="pick-file" data-index="${index}" title="选择本地图片">+</button>
+                    </div>
+                    <button class="remove-trigger" data-index="${index}">&times;</button>
+                `;
+                triggerList.appendChild(item);
+            });
+
+            // Bind text input events
+            triggerList.querySelectorAll('input[type="text"]').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const field = e.target.dataset.field;
+                    narrateConfig.triggers[index][field] = e.target.value;
+                });
+            });
+
+            // Bind file picker button events
+            triggerList.querySelectorAll('.pick-file').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const fileInput = triggerList.querySelector(`input[type="file"][data-index="${index}"]`);
+                    fileInput.click();
+                });
+            });
+
+            // Bind file input change events
+            triggerList.querySelectorAll('input[type="file"]').forEach(input => {
+                input.addEventListener('change', async (e) => {
+                    if (e.target.files && e.target.files[0]) {
+                        const index = parseInt(e.target.dataset.index);
+                        await uploadTriggerImage(index, e.target.files[0]);
+                        e.target.value = ''; // Reset for next upload
+                    }
+                });
+            });
+
+            // Bind remove button events
+            triggerList.querySelectorAll('.remove-trigger').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    narrateConfig.triggers.splice(index, 1);
+                    renderTriggers();
+                });
+            });
+        }
+
+        // Upload image for a trigger and update the URL field
+        async function uploadTriggerImage(index, file) {
+            const fileInput = triggerList.querySelector(`input[type="file"][data-index="${index}"]`);
+            const pickBtn = triggerList.querySelector(`.pick-file[data-index="${index}"]`);
+            const urlInput = triggerList.querySelector(`input[type="text"][data-field="imageUrl"][data-index="${index}"]`);
+
+            pickBtn.textContent = '...';
+            pickBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    throw new Error('Server returned invalid response');
+                }
+
+                if (data.success) {
+                    // Update the URL field with the uploaded file path
+                    urlInput.value = data.url;
+                    narrateConfig.triggers[index].imageUrl = data.url;
+                } else {
+                    alert('上传失败: ' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('Upload error:', e);
+                alert('上传失败: ' + e.message);
+            } finally {
+                pickBtn.textContent = '+';
+                pickBtn.disabled = false;
+            }
+        }
+
+        // Open config panel
+        function openConfigPanel() {
+            loadConfig();
+            narrateToggle.checked = narrateMode;
+            updateConfigSectionsVisibility();
+            configName.value = narrateConfig.name || '';
+            xiaozhiWsUrl.value = narrateConfig.xiaozhiWsUrl || '';
+            autoConnect.checked = narrateConfig.autoConnect || false;
+            defaultBgUrl.value = narrateConfig.defaultBgUrl || '';
+            updateDefaultBgThumbnail();
+            renderTriggers();
+            fetchMcpStatus();
+            configPanel.classList.remove('hidden');
+            configOverlay.classList.remove('hidden');
+        }
+
+        function updateConfigSectionsVisibility() {
+            if (narrateToggle.checked) {
+                narrateConfigSections.classList.remove('disabled');
+            } else {
+                narrateConfigSections.classList.add('disabled');
+            }
+        }
+
+        // Update default background thumbnail
+        function updateDefaultBgThumbnail() {
+            const url = defaultBgUrl.value;
+            if (url) {
+                defaultBgThumbnail.innerHTML = `<img src="${url}" alt="Default background">`;
+                defaultBgThumbnail.classList.add('show');
+            } else {
+                defaultBgThumbnail.innerHTML = '';
+                defaultBgThumbnail.classList.remove('show');
+            }
+        }
+
+        // Upload default background image
+        async function uploadDefaultBgImage(file) {
+            defaultBgPick.textContent = '...';
+            defaultBgPick.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    throw new Error('Server returned invalid response');
+                }
+
+                if (data.success) {
+                    defaultBgUrl.value = data.url;
+                    narrateConfig.defaultBgUrl = data.url;
+                    updateDefaultBgThumbnail();
+                } else {
+                    alert('上传失败: ' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                console.error('Upload error:', e);
+                alert('上传失败: ' + e.message);
+            } finally {
+                defaultBgPick.textContent = '+';
+                defaultBgPick.disabled = false;
+            }
+        }
+
+        // Close config panel
+        function closeConfigPanel() {
+            configPanel.classList.add('hidden');
+            configOverlay.classList.add('hidden');
+        }
+
+        // Collect config from form
+        function collectConfig() {
+            narrateConfig.name = configName.value;
+            narrateConfig.xiaozhiWsUrl = xiaozhiWsUrl.value;
+            narrateConfig.autoConnect = autoConnect.checked;
+            narrateConfig.defaultBgUrl = defaultBgUrl.value;
+        }
+
+        // Save and close config
+        async function saveAndCloseConfig() {
+            collectConfig();
+            await saveConfig();
+            // Toggle narrate mode based on switch
+            toggleNarrateMode(narrateToggle.checked);
+            closeConfigPanel();
+        }
+
+        // Config panel events
+        configBtn.addEventListener('click', openConfigPanel);
+        configClose.addEventListener('click', closeConfigPanel);
+        configCancel.addEventListener('click', closeConfigPanel);
+        configOverlay.addEventListener('click', closeConfigPanel);
+        configSave.addEventListener('click', saveAndCloseConfig);
+        narrateToggle.addEventListener('change', updateConfigSectionsVisibility);
+
+        // MCP control buttons (save config first to ensure server has latest values)
+        mcpStartBtn.addEventListener('click', async () => {
+            collectConfig();
+            await saveConfig();
+            await mcpControl('start');
+        });
+        mcpStopBtn.addEventListener('click', () => mcpControl('stop'));
+        mcpRestartBtn.addEventListener('click', async () => {
+            collectConfig();
+            await saveConfig();
+            await mcpControl('restart');
+        });
+
+        addTriggerBtn.addEventListener('click', () => {
+            narrateConfig.triggers.push({ prompt: '', imageUrl: '' });
+            renderTriggers();
+        });
+
+        // Default background events
+        defaultBgPick.addEventListener('click', () => defaultBgFile.click());
+        defaultBgFile.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                uploadDefaultBgImage(e.target.files[0]);
+                e.target.value = '';
+            }
+        });
+        defaultBgUrl.addEventListener('change', () => {
+            narrateConfig.defaultBgUrl = defaultBgUrl.value;
+            updateDefaultBgThumbnail();
+        });
+        defaultBgPreview.addEventListener('click', () => {
+            const url = defaultBgUrl.value;
+            if (url) {
+                showNarrateImage(url);
+                closeConfigPanel();
+            }
+        });
+        defaultBgClear.addEventListener('click', () => {
+            defaultBgUrl.value = '';
+            narrateConfig.defaultBgUrl = '';
+            updateDefaultBgThumbnail();
+        });
+
+        // Click on container in narrate mode cycles pip size
+        container.addEventListener('click', () => {
+            if (narrateMode) {
+                cyclePipSize();
+            }
+        });
+
+        // Handle narrate_state message from server
+        function handleNarrateState(data) {
+            if (data.action === 'show') {
+                showNarrateImage(data.imageUrl, data.caption || '');
+            } else if (data.action === 'clear') {
+                clearNarrateImage();
+                toggleNarrateMode(false);
+            }
+        }
+
+        // Handle mcp_status message from server
+        function handleMcpStatus(data) {
+            updateMcpStatus(data.connected);
+        }
+
+        // Extend handleMessage for narrate mode
+        const originalHandleMessage = handleMessage;
+        handleMessage = function(data) {
+            if (data.type === 'narrate_state') {
+                handleNarrateState(data);
+            } else if (data.type === 'mcp_status') {
+                handleMcpStatus(data);
+            } else {
+                originalHandleMessage(data);
+            }
+        };
+
+        // Keyboard shortcut: N to toggle narrate mode
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.key === 'n' || e.key === 'N') {
+                toggleNarrateMode(!narrateMode);
+            }
+        });
+
+        // Load config on startup
+        loadConfig();
+
+        // Fetch MCP status
+        async function fetchMcpStatus() {
+            const data = await apiCall('/api/config', { method: 'GET' });
+            if (data && !data.error) {
+                updateMcpStatus(data.mcpConnected || false);
+            }
+        }
+
     </script>
 </body>
 </html>
