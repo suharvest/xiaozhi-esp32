@@ -4,7 +4,7 @@ Narrate Mode MCP Service
 
 Provides tools for controlling the remote display in narrate mode:
 - show_background_image: Display a background image
-- clear_background: Clear the background and exit narrate mode
+- clear_background: Clear current image and return to default background
 - get_display_status: Get current display status
 - get_triggers: Get trigger rules for automatic image switching
 
@@ -125,10 +125,10 @@ def show_background_image(image_url: str, caption: str = "") -> dict:
 @mcp.tool()
 def clear_background() -> dict:
     """
-    Clear the background image and exit narrate mode.
+    Clear the current background image and return to the default background.
 
-    This will remove the background image and return the display to normal
-    mode, with the original content (emoji, chat, etc.) in full view.
+    This removes the currently displayed image and shows the default
+    background if one is configured. The display stays in narrate mode.
 
     Returns:
         Dict with success status and message
@@ -138,10 +138,10 @@ def clear_background() -> dict:
     })
 
     if result.get("success"):
-        logger.info("Background cleared")
+        logger.info("Background cleared, showing default")
         return {
             "success": True,
-            "message": "Background cleared, returned to normal display mode"
+            "message": "Current image cleared, showing default background"
         }
     else:
         logger.warning(f"Failed to clear background: {result.get('error')}")

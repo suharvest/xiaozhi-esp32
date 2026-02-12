@@ -1950,7 +1950,7 @@
                 showNarrateImage(data.imageUrl, data.caption || '');
             } else if (data.action === 'clear') {
                 clearNarrateImage();
-                toggleNarrateMode(false);
+                // Stay in narrate mode - only browser UI can exit it
             }
         }
 
