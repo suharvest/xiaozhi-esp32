@@ -744,22 +744,24 @@ private:
             // 再等待一小段时间确保网络稳定
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            // 使用 NVS 配置启动远程显示
+            // 无条件注册 PCM 转发回调（回调内部有 IsRunning() 保护）
+            // 这样即使后续通过 MCP 工具连接投屏，音频也能正常转发
+            auto* codec = static_cast<SensecapAudioCodec*>(Board::GetInstance().GetAudioCodec());
+            codec->SetPcmForwardCallback(
+                [](const int16_t* data, int samples, int sample_rate) {
+                    auto* remote = RemoteDisplay::GetInstance();
+                    if (remote && remote->IsRunning()) {
+                        remote->ForwardPcmAudio(data, samples, sample_rate);
+                    }
+                });
+            ESP_LOGI(TAG, "PCM audio forwarding callback registered");
+
+            // 尝试使用 NVS 配置启动远程显示
             auto* remote = RemoteDisplay::GetInstance();
             if (!remote->StartWithConfig()) {
-                ESP_LOGW(TAG, "Remote display not available, feature disabled");
+                ESP_LOGW(TAG, "Remote display not available at boot, can connect later via voice command");
             } else {
-                ESP_LOGI(TAG, "Remote display started successfully (UI state sync mode)");
-                // 在 AudioCodec 上注册 PCM 转发回调
-                auto* codec = static_cast<SensecapAudioCodec*>(Board::GetInstance().GetAudioCodec());
-                codec->SetPcmForwardCallback(
-                    [](const int16_t* data, int samples, int sample_rate) {
-                        auto* remote = RemoteDisplay::GetInstance();
-                        if (remote && remote->IsRunning()) {
-                            remote->ForwardPcmAudio(data, samples, sample_rate);
-                        }
-                    });
-                ESP_LOGI(TAG, "PCM audio forwarding callback registered");
+                ESP_LOGI(TAG, "Remote display started successfully");
             }
 
             vTaskDelete(nullptr);
