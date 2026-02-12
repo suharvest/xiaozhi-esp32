@@ -5,7 +5,7 @@ FROM python:3.12-slim-bookworm
 LABEL org.opencontainers.image.title="Xiaozhi Remote Display"
 LABEL org.opencontainers.image.description="Remote display server for Xiaozhi ESP32/SenseCAP Watcher"
 LABEL org.opencontainers.image.vendor="Seeed Studio"
-LABEL org.opencontainers.image.version="0.3.0"
+LABEL org.opencontainers.image.version="0.3.1"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
