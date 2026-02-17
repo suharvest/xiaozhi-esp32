@@ -23,7 +23,10 @@ import scipy.signal
 
 from .config import BridgeConfig
 from .xiaozhi_protocol import (
-    XiaozhiProtocolClient, DeviceState, ListeningMode, AbortReason,
+    XiaozhiProtocolClient,
+    DeviceState,
+    ListeningMode,
+    AbortReason,
 )
 from .audio_bridge import AudioBridge
 from .emotion_mapper import EmotionMapper
@@ -33,6 +36,26 @@ from .robot_controller import RobotController
 logger = logging.getLogger(__name__)
 
 
+def create_protocol(config: BridgeConfig):
+    """Create protocol client based on config.
+
+    Matching original logic:
+      if HasMqttConfig -> MqttProtocol
+      elif HasWebsocketConfig -> WebsocketProtocol
+      else -> MqttProtocol (default)
+    """
+    if config.protocol == "mqtt" and config.mqtt.endpoint:
+        try:
+            from .mqtt_protocol import MqttProtocolClient
+            logger.info("Using MQTT+UDP protocol (primary)")
+            return MqttProtocolClient(config.mqtt, config.audio)
+        except ImportError as e:
+            logger.warning(f"MQTT dependencies missing ({e}), falling back to WebSocket")
+
+    logger.info("Using WebSocket protocol")
+    return XiaozhiProtocolClient(config.server, config.audio)
+
+
 class ReachyXiaozhiBridge:
     """Main bridge application connecting Reachy Mini to Xiaozhi server."""
 
@@ -40,8 +63,8 @@ class ReachyXiaozhiBridge:
         self._config = config
         self._running = False
 
-        # Components
-        self._protocol = XiaozhiProtocolClient(config.server, config.audio)
+        # Components - protocol selection matches original ESP32 logic
+        self._protocol = create_protocol(config)
         self._audio = AudioBridge(config.audio)
         self._emotions = EmotionMapper(intensity=config.motion.emotion_intensity)
         self._robot = RobotController(media_backend=config.audio.media_backend)
@@ -290,11 +313,20 @@ class ReachyXiaozhiBridge:
         self._setup_mcp_tools()
 
         # 3. Connect to xiaozhi server
-        logger.info("Connecting to Xiaozhi server...")
+        logger.info(f"Connecting to Xiaozhi server (protocol={self._config.protocol})...")
         if not await self._protocol.connect():
             logger.error("Failed to connect to Xiaozhi server")
             self._robot.disconnect()
             return
+
+        # 3b. For MQTT protocol, open the audio channel (UDP) separately
+        if hasattr(self._protocol, "open_audio_channel"):
+            logger.info("Opening audio channel (UDP)...")
+            if not await self._protocol.open_audio_channel():
+                logger.error("Failed to open audio channel")
+                await self._protocol.disconnect()
+                self._robot.disconnect()
+                return
 
         # 4. Start audio bridge
         self._audio.start()
