@@ -60,6 +60,10 @@ class WakeWordConfig:
     # If disabled, use button (antenna press) or always-on listening
     mode: str = "always_on"  # "always_on", "antenna_press", "wake_word"
     keyword: str = "你好小智"
+    # Path to sherpa-onnx keyword spotting model directory
+    model_dir: str = ""
+    # Detection sensitivity (0.0 - 1.0, higher = more sensitive but more false positives)
+    sensitivity: float = 0.5
 
 
 @dataclass

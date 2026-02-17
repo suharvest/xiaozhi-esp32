@@ -74,15 +74,22 @@ motion:
   idle_animation_interval: 5.0
 
 wake_word:
-  # Wake word detection mode
-  # Note: wake word detection runs on the server side in xiaozhi
   enabled: false
   # Interaction mode:
-  #   "always_on" - always listening (realtime mode)
+  #   "always_on" - always listening, audio always streamed (realtime mode)
   #   "antenna_press" - press antenna to start/stop listening
-  #   "wake_word" - say wake word to activate (server-side detection)
+  #   "wake_word" - local wake word detection, only stream after keyword heard
   mode: "always_on"
   keyword: "你好小智"
+
+  # --- Settings for mode: "wake_word" ---
+  # Requires: sherpa-onnx installed + keyword spotting model downloaded
+  #   pip install sherpa-onnx
+  #   Download model: https://k2-fsa.github.io/sherpa/onnx/kws/
+  # Path to sherpa-onnx keyword spotting model directory
+  model_dir: ""
+  # Detection sensitivity (0.0 - 1.0, higher = more false positives)
+  sensitivity: 0.5
 
 # Logging level: DEBUG, INFO, WARNING, ERROR
 log_level: "INFO"
