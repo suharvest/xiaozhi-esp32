@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config with secrets
+bridge_config.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# sherpa-onnx models (large binary files)
+*.onnx
