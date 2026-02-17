@@ -6,11 +6,8 @@
 
 static const char* TAG = "FaceRecognition";
 
-// Registration timeout in microseconds (10 seconds)
-#define REGISTRATION_TIMEOUT_US 10000000
-
-// Cooldown duration in microseconds (10 seconds between notifications for same person)
-#define DEFAULT_COOLDOWN_US 10000000
+// Default cooldown: 5 seconds (matches object detection default interval)
+#define DEFAULT_COOLDOWN_US 5000000
 
 // ============== FaceVotingBuffer Implementation ==============
 
@@ -39,7 +36,7 @@ void FaceVotingBuffer::Clear() {
 void FaceVotingBuffer::PruneOldEntries(int64_t current_time_us) {
     for (int i = 0; i < FACE_VOTING_BUFFER_SIZE; i++) {
         if (buffer_[i].valid) {
-            if (current_time_us - buffer_[i].timestamp_us > FACE_VOTING_WINDOW_US) {
+            if (current_time_us - buffer_[i].timestamp_us > window_us_) {
                 buffer_[i].valid = false;
                 valid_count_--;
             }
@@ -110,7 +107,7 @@ bool FaceVotingBuffer::GetConsensusEmbedding(float* out_embedding) {
 
     xSemaphoreGive(mutex_);
 
-    ESP_LOGI(TAG, "Got consensus embedding from %d votes", count);
+    ESP_LOGD(TAG, "Got consensus embedding from %d votes", count);
     return true;
 }
 
@@ -131,99 +128,84 @@ FaceRecognition& FaceRecognition::GetInstance() {
 
 FaceRecognition::FaceRecognition()
     : enabled_(false)
-    , registering_(false)
-    , registration_start_time_(0)
+    , familiar_mode_(false)
     , match_threshold_(0.6f)
-    , last_notification_time_(0)
-    , cooldown_duration_us_(DEFAULT_COOLDOWN_US) {
+    , cooldown_duration_us_(DEFAULT_COOLDOWN_US)
+    , has_pending_notification_(false) {
+    notification_mutex_ = xSemaphoreCreateMutex();
     last_match_.matched = false;
     last_match_.similarity = 0.0f;
     last_match_.index = -1;
 }
 
+bool FaceRecognition::IsEnabled() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return enabled_;
+}
+
+void FaceRecognition::SetFamiliarMode(bool enabled) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    familiar_mode_ = enabled;
+    ESP_LOGI(TAG, "Familiar DND mode %s", enabled ? "enabled" : "disabled");
+}
+
+bool FaceRecognition::IsFamiliarMode() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return familiar_mode_;
+}
+
 void FaceRecognition::SetEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     enabled_ = enabled;
-    if (!enabled) {
+    if (enabled) {
+        // Starting face mode: if we were in cooldown and deferred the timer start,
+        // begin the cooldown timer now (same as object detection's need_start_cooldown)
+        if (state_ == FaceDetectionState::COOLDOWN && need_start_cooldown_) {
+            cooldown_start_time_ = esp_timer_get_time();
+            need_start_cooldown_ = false;
+            ESP_LOGI(TAG, "Face cooldown timer started");
+        }
+    } else {
         voting_buffer_.Clear();
-        last_notified_name_.clear();
     }
     ESP_LOGI(TAG, "Face recognition %s", enabled ? "enabled" : "disabled");
 }
 
-bool FaceRecognition::StartRegistration(const std::string& name) {
-    if (name.empty()) {
-        ESP_LOGE(TAG, "Cannot start registration with empty name");
-        return false;
-    }
-
-    // Check if name already exists
-    auto& db = FaceDatabase::GetInstance();
-    auto faces = db.ListFaces();
-    for (const auto& face : faces) {
-        if (face == name) {
-            ESP_LOGE(TAG, "Face '%s' already exists", name.c_str());
-            return false;
-        }
-    }
-
-    if (db.GetFaceCount() >= FACE_MAX_COUNT) {
-        ESP_LOGE(TAG, "Face database is full");
-        return false;
-    }
-
-    registering_ = true;
-    registering_name_ = name;
-    registration_start_time_ = esp_timer_get_time();
-    voting_buffer_.Clear();
-
-    ESP_LOGI(TAG, "Started face registration for: %s", name.c_str());
-    return true;
+void FaceRecognition::SetValidationDuration(int seconds) {
+    int64_t window_us = (int64_t)seconds * 1000000LL;
+    voting_buffer_.SetWindow(window_us);
+    ESP_LOGI(TAG, "Validation duration set to %ds", seconds);
 }
 
-void FaceRecognition::CancelRegistration() {
-    if (registering_) {
-        ESP_LOGI(TAG, "Cancelled face registration for: %s", registering_name_.c_str());
-        registering_ = false;
-        registering_name_.clear();
+void FaceRecognition::SetCooldownInterval(int seconds) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    cooldown_duration_us_ = (int64_t)seconds * 1000000LL;
+    ESP_LOGI(TAG, "Cooldown interval set to %ds", seconds);
+}
+
+void FaceRecognition::NotifyFacePresent() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_face_seen_us_ = esp_timer_get_time();
+}
+
+void FaceRecognition::NotifyNoFace() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
+    // Check if we can exit cooldown: time elapsed AND face gone for debounce period
+    if (state_ != FaceDetectionState::COOLDOWN) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    bool time_passed = (now - cooldown_start_time_) >= cooldown_duration_us_;
+    bool face_gone = (now - last_face_seen_us_) >= kFaceGoneDebounceUs;
+
+    if (time_passed && face_gone) {
+        state_ = FaceDetectionState::DETECTING;
         voting_buffer_.Clear();
+        last_notified_name_.clear();
+        ESP_LOGI(TAG, "Cooldown complete and face left, back to detecting");
     }
-}
-
-FaceQualityResult FaceRecognition::CheckFaceQuality(const HimaxFaceData& face_data) {
-    FaceQualityResult result;
-    result.is_acceptable = false;
-    result.quality_score = 0.0f;
-
-    // Check detection confidence
-    if (face_data.score < (int)(FACE_MIN_CONFIDENCE * 100)) {
-        result.message = "Detection confidence too low";
-        return result;
-    }
-
-    // Check face size
-    int face_size = (face_data.box_w + face_data.box_h) / 2;
-    if (face_size < FACE_MIN_BOX_SIZE) {
-        result.message = "Face too small, please move closer";
-        return result;
-    }
-
-    if (face_size > FACE_MAX_BOX_SIZE) {
-        result.message = "Face too close, please move back";
-        return result;
-    }
-
-    // Check quality score (based on pose)
-    if (face_data.quality < FACE_MIN_QUALITY) {
-        result.message = "Please face the camera directly";
-        return result;
-    }
-
-    // All checks passed
-    result.is_acceptable = true;
-    result.quality_score = face_data.quality;
-    result.message = "Face quality OK";
-
-    return result;
 }
 
 void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
@@ -232,13 +214,18 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
         return;
     }
 
-    if (registering_) {
-        HandleRegistrationFrame(face_data);
-        return;
-    }
-
-    if (!enabled_) {
-        return;
+    float threshold = 0.6f;
+    bool familiar_mode = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!enabled_) {
+            return;
+        }
+        if (state_ == FaceDetectionState::COOLDOWN) {
+            return;
+        }
+        threshold = match_threshold_;
+        familiar_mode = familiar_mode_;
     }
 
     // Add to voting buffer
@@ -249,85 +236,124 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
     if (voting_buffer_.GetConsensusEmbedding(consensus_emb)) {
         // Match against database
         auto& db = FaceDatabase::GetInstance();
-        FaceMatchResult match = db.Match(consensus_emb, match_threshold_);
+        FaceMatchResult match = db.Match(consensus_emb, threshold);
+
+        ESP_LOGI(TAG, "Match result: matched=%d, name=%s, similarity=%.3f, threshold=%.2f, familiar_dnd=%d",
+                 match.matched, match.matched ? match.name.c_str() : "N/A",
+                 match.similarity, threshold, familiar_mode);
 
         if (match.matched) {
-            HandleRecognitionResult(match);
+            // Familiar DND: ignore familiar faces (don't wake)
+            if (familiar_mode) {
+                ESP_LOGI(TAG, "Familiar face ignored (DND): %s (sim=%.3f)", match.name.c_str(), match.similarity);
+                voting_buffer_.Clear();
+            } else {
+                // Normal mode: notify for familiar faces
+                HandleRecognitionResult(match);
+            }
+        } else {
+            // Unknown person detected
+            // Familiar DND: "stranger" alert, Normal mode: "person" notification
+            HandleUnknownPersonDetected(familiar_mode);
         }
     }
 }
 
-void FaceRecognition::HandleRegistrationFrame(const HimaxFaceData& face_data) {
-    // Check timeout
-    int64_t current_time = esp_timer_get_time();
-    if (current_time - registration_start_time_ > REGISTRATION_TIMEOUT_US) {
-        ESP_LOGW(TAG, "Registration timeout for: %s", registering_name_.c_str());
-        CancelRegistration();
-        return;
+void FaceRecognition::TriggerNotification(const std::string& wake_word) {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = FaceDetectionState::COOLDOWN;
+        need_start_cooldown_ = true;  // Actual timer starts when face mode resumes after conversation
     }
-
-    // Check face quality
-    FaceQualityResult quality = CheckFaceQuality(face_data);
-    if (!quality.is_acceptable) {
-        ESP_LOGD(TAG, "Registration: %s", quality.message.c_str());
-        return;
-    }
-
-    // Add to voting buffer
-    voting_buffer_.AddEmbedding(face_data.embedding);
-
-    // Try to get consensus embedding
-    float consensus_emb[FACE_EMBEDDING_DIM];
-    if (voting_buffer_.GetConsensusEmbedding(consensus_emb)) {
-        // We have a stable embedding, add to database
-        auto& db = FaceDatabase::GetInstance();
-        if (db.AddFace(registering_name_, consensus_emb)) {
-            ESP_LOGI(TAG, "Successfully registered face: %s", registering_name_.c_str());
-
-            // Notify via wake word
-            std::string wake_word = "<face>" + registering_name_ + " registered</face>";
-            Application::GetInstance().WakeWordInvoke(wake_word);
-        } else {
-            ESP_LOGE(TAG, "Failed to add face to database: %s", registering_name_.c_str());
-        }
-
-        // End registration mode
-        registering_ = false;
-        registering_name_.clear();
-        voting_buffer_.Clear();
-    }
+    voting_buffer_.Clear();
+    Application::GetInstance().Schedule([wake_word]() {
+        Application::GetInstance().WakeWordInvoke(wake_word);
+    });
 }
 
 void FaceRecognition::HandleRecognitionResult(const FaceMatchResult& result) {
-    last_match_ = result;
-
-    // Check cooldown for this person
-    int64_t current_time = esp_timer_get_time();
-    if (last_notified_name_ == result.name &&
-        (current_time - last_notification_time_) < cooldown_duration_us_) {
-        ESP_LOGD(TAG, "Skipping notification for %s (in cooldown)", result.name.c_str());
-        return;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_match_ = result;
+        last_notified_name_ = result.name;
     }
 
-    // Notify via wake word
-    ESP_LOGI(TAG, "Recognized: %s (similarity: %.2f)", result.name.c_str(), result.similarity);
+    // Notify via wake word (decode hex-encoded UTF-8 names from SBC)
+    std::string display_name = FaceDatabase::DecodeName(result.name);
+    ESP_LOGI(TAG, "Recognized: %s (similarity: %.2f)", display_name.c_str(), result.similarity);
 
-    std::string wake_word = "<face>" + result.name + " detected</face>";
-    Application::GetInstance().WakeWordInvoke(wake_word);
+    std::string wake_word = "<face>" + display_name + " detected</face>";
+    TriggerNotification(wake_word);
 
-    // Update cooldown tracking
-    last_notification_time_ = current_time;
-    last_notified_name_ = result.name;
+}
 
-    // Clear voting buffer after successful recognition
-    voting_buffer_.Clear();
+void FaceRecognition::HandleUnknownPersonDetected(bool is_stranger_alert) {
+    const char* person_id = is_stranger_alert ? "stranger" : "person";
+
+    ESP_LOGI(TAG, "%s detected", person_id);
+    std::string wake_word = std::string("<face>") + person_id + " detected</face>";
+    TriggerNotification(wake_word);
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_notified_name_ = person_id;
+    }
 }
 
 bool FaceRecognition::IsInCooldown() const {
-    int64_t current_time = esp_timer_get_time();
-    return (current_time - last_notification_time_) < cooldown_duration_us_;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return state_ == FaceDetectionState::COOLDOWN;
 }
 
 void FaceRecognition::StartCooldown() {
-    last_notification_time_ = esp_timer_get_time();
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    cooldown_start_time_ = esp_timer_get_time();
+}
+
+FaceMatchResult FaceRecognition::GetLastMatch() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_match_;
+}
+
+void FaceRecognition::SetMatchThreshold(float threshold) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    match_threshold_ = threshold;
+}
+
+float FaceRecognition::GetMatchThreshold() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return match_threshold_;
+}
+
+void FaceRecognition::SetPendingNotification(const std::string& wake_word) {
+    xSemaphoreTake(notification_mutex_, portMAX_DELAY);
+    pending_wake_word_ = wake_word;
+    has_pending_notification_ = true;
+    xSemaphoreGive(notification_mutex_);
+    ESP_LOGI(TAG, "Pending notification queued: %s", wake_word.c_str());
+}
+
+bool FaceRecognition::DeliverPendingNotification() {
+    xSemaphoreTake(notification_mutex_, portMAX_DELAY);
+    if (!has_pending_notification_) {
+        xSemaphoreGive(notification_mutex_);
+        return false;
+    }
+
+    DeviceState dev_state = Application::GetInstance().GetDeviceState();
+    if (dev_state != kDeviceStateIdle) {
+        xSemaphoreGive(notification_mutex_);
+        return false;
+    }
+
+    std::string wake_word = std::move(pending_wake_word_);
+    has_pending_notification_ = false;
+    pending_wake_word_.clear();
+    xSemaphoreGive(notification_mutex_);
+
+    ESP_LOGI(TAG, "Delivering deferred notification: %s", wake_word.c_str());
+    Application::GetInstance().Schedule([wake_word]() {
+        Application::GetInstance().WakeWordInvoke(wake_word);
+    });
+    return true;
 }

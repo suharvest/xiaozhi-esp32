@@ -4,17 +4,12 @@
 #include "face_database.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <mutex>
 
 // Multi-frame voting configuration
 #define FACE_VOTING_BUFFER_SIZE 5
 #define FACE_VOTING_MIN_VOTES 3
-#define FACE_VOTING_WINDOW_US 3000000  // 3 seconds
-
-// Face quality thresholds
-#define FACE_MIN_CONFIDENCE 0.7f
-#define FACE_MIN_QUALITY 0.6f
-#define FACE_MIN_BOX_SIZE 60       // Minimum face box size in pixels
-#define FACE_MAX_BOX_SIZE 300      // Maximum face box size (too close)
+#define FACE_VOTING_WINDOW_US_DEFAULT 2000000  // 2 seconds default (maps to detect_duration_sec)
 
 // Parsed face data from Himax
 struct HimaxFaceData {
@@ -28,13 +23,6 @@ struct HimaxFaceData {
     bool has_embedding;
 };
 
-// Face quality assessment result
-struct FaceQualityResult {
-    bool is_acceptable;
-    std::string message;
-    float quality_score;
-};
-
 // Multi-frame voting buffer for stable recognition
 class FaceVotingBuffer {
 public:
@@ -45,6 +33,7 @@ public:
     bool GetConsensusEmbedding(float* out_embedding);
     void Clear();
     int GetVoteCount();
+    void SetWindow(int64_t window_us) { window_us_ = window_us; }
 
 private:
     struct VoteEntry {
@@ -56,9 +45,16 @@ private:
     VoteEntry buffer_[FACE_VOTING_BUFFER_SIZE];
     int write_index_;
     int valid_count_;
+    int64_t window_us_ = FACE_VOTING_WINDOW_US_DEFAULT;
     SemaphoreHandle_t mutex_;
 
     void PruneOldEntries(int64_t current_time_us);
+};
+
+// Face recognition state machine (mirrors object detection)
+enum class FaceDetectionState {
+    DETECTING,  // Normal: accumulating votes, matching
+    COOLDOWN,   // After trigger: waiting for interval + face to leave
 };
 
 // Main face recognition controller
@@ -67,27 +63,34 @@ public:
     static FaceRecognition& GetInstance();
 
     // Face detection mode
-    bool IsEnabled() const { return enabled_; }
+    bool IsEnabled() const;
     void SetEnabled(bool enabled);
 
-    // Registration mode control
-    bool StartRegistration(const std::string& name);
-    void CancelRegistration();
-    bool IsRegistering() const { return registering_; }
-    const std::string& GetRegisteringName() const { return registering_name_; }
-
-    // Process face data from Himax
+    // Process face data from Himax (ignored during COOLDOWN)
     void ProcessFaceData(const HimaxFaceData& face_data);
 
-    // Check face quality for registration
-    FaceQualityResult CheckFaceQuality(const HimaxFaceData& face_data);
+    // Face presence tracking (called from on_event callback every frame)
+    void NotifyFacePresent();
+    void NotifyNoFace();
 
     // Get last recognition result
-    FaceMatchResult GetLastMatch() const { return last_match_; }
+    FaceMatchResult GetLastMatch() const;
 
-    // Configuration
-    void SetMatchThreshold(float threshold) { match_threshold_ = threshold; }
-    float GetMatchThreshold() const { return match_threshold_; }
+    // Deferred notification: stores wake word and delivers when device returns to idle.
+    void SetPendingNotification(const std::string& wake_word);
+    bool DeliverPendingNotification();
+
+    // Configuration - timing parameters (shared with object detection)
+    void SetValidationDuration(int seconds);
+    void SetCooldownInterval(int seconds);
+
+    // Configuration - face-specific
+    void SetMatchThreshold(float threshold);
+    float GetMatchThreshold() const;
+
+    // Familiar DND mode (熟人免打扰)
+    void SetFamiliarMode(bool enabled);
+    bool IsFamiliarMode() const;
 
     // Cooldown management (avoid repeated notifications)
     bool IsInCooldown() const;
@@ -100,22 +103,33 @@ private:
     FaceRecognition(const FaceRecognition&) = delete;
     FaceRecognition& operator=(const FaceRecognition&) = delete;
 
+    void TriggerNotification(const std::string& wake_word);
     void HandleRecognitionResult(const FaceMatchResult& result);
-    void HandleRegistrationFrame(const HimaxFaceData& face_data);
+    void HandleUnknownPersonDetected(bool is_stranger_alert);
 
     bool enabled_;
-    bool registering_;
-    std::string registering_name_;
-    int64_t registration_start_time_;
+    bool familiar_mode_;
 
     FaceVotingBuffer voting_buffer_;
     FaceMatchResult last_match_;
 
     float match_threshold_;
-    int64_t last_notification_time_;
+
+    // State machine (mirrors object detection IDLE/VALIDATING/COOLDOWN)
+    FaceDetectionState state_ = FaceDetectionState::DETECTING;
+    int64_t cooldown_start_time_ = 0;
     int64_t cooldown_duration_us_;
+    int64_t last_face_seen_us_ = 0;
+    bool need_start_cooldown_ = false;  // Defer cooldown start until face mode resumes
+    static constexpr int64_t kFaceGoneDebounceUs = 2000000;  // 2s: face must be gone this long
 
     std::string last_notified_name_;
+
+    // Deferred notification state (accessed from SSCMA process task + camera task)
+    SemaphoreHandle_t notification_mutex_;
+    std::string pending_wake_word_;
+    bool has_pending_notification_;
+    mutable std::mutex state_mutex_;
 };
 
 #endif // FACE_RECOGNITION_H
