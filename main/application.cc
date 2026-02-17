@@ -238,8 +238,14 @@ void Application::Run() {
             std::unique_lock<std::mutex> lock(mutex_);
             auto tasks = std::move(main_tasks_);
             lock.unlock();
-            for (auto& task : tasks) {
-                task();
+            for (size_t i = 0; i < tasks.size(); i++) {
+                int64_t t0 = esp_timer_get_time();
+                tasks[i]();
+                int64_t dt = esp_timer_get_time() - t0;
+                if (dt > 500000) {  // > 500ms
+                    ESP_LOGW(TAG, "Schedule task %d/%d took %lldms (main loop blocked!)",
+                             (int)(i + 1), (int)tasks.size(), dt / 1000);
+                }
             }
         }
 
@@ -247,11 +253,30 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
-        
+
+            // Speaking idle timeout: if no audio data for 8s while speaking, close session
+            if (GetDeviceState() == kDeviceStateSpeaking) {
+                int64_t last_audio = last_incoming_audio_time_.load();
+                if (last_audio > 0) {
+                    int64_t elapsed_us = esp_timer_get_time() - last_audio;
+                    if (elapsed_us > 8 * 1000000LL) {
+                        ESP_LOGW(TAG, "Speaking idle timeout: no audio data for %llds, closing session",
+                                 elapsed_us / 1000000LL);
+                        last_incoming_audio_time_.store(0);
+                        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel();
+                        } else {
+                            SetDeviceState(kDeviceStateIdle);
+                        }
+                    }
+                }
+            }
+
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
             }
+
         }
     }
 }
@@ -493,6 +518,7 @@ void Application::InitializeProtocol() {
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (GetDeviceState() == kDeviceStateSpeaking) {
+            last_incoming_audio_time_.store(esp_timer_get_time());
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -522,6 +548,7 @@ void Application::InitializeProtocol() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
+                    last_incoming_audio_time_.store(esp_timer_get_time());
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
@@ -535,6 +562,7 @@ void Application::InitializeProtocol() {
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+                last_incoming_audio_time_.store(esp_timer_get_time());
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
@@ -669,7 +697,7 @@ void Application::StopListening() {
 
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -706,7 +734,7 @@ void Application::HandleToggleChatEvent() {
 
 void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
