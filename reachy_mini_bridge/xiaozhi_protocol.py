@@ -60,6 +60,13 @@ class XiaozhiProtocolClient:
         self._state = DeviceState.IDLE
         self._connected = False
 
+        # Abort tracking
+        self._aborted = False
+        self._listening_mode = ListeningMode.AUTO_STOP
+        # Timeout tracking
+        self._last_incoming_time = time.monotonic()
+        self._timeout_seconds = 120.0
+
         # Callbacks
         self._on_audio: Optional[Callable[[bytes], None]] = None
         self._on_tts_start: Optional[Callable[[], None]] = None
@@ -68,6 +75,9 @@ class XiaozhiProtocolClient:
         self._on_stt_text: Optional[Callable[[str], None]] = None
         self._on_emotion: Optional[Callable[[str], None]] = None
         self._on_state_change: Optional[Callable[[DeviceState], None]] = None
+        self._on_mcp: Optional[Callable[[dict], None]] = None
+        self._on_system_command: Optional[Callable[[str], None]] = None
+        self._on_alert: Optional[Callable[[str, str, str], None]] = None
 
         # Connection event for hello handshake
         self._hello_event = asyncio.Event()
@@ -108,6 +118,18 @@ class XiaozhiProtocolClient:
 
     def on_state_change(self, callback: Callable[[DeviceState], None]):
         self._on_state_change = callback
+
+    def on_mcp(self, callback: Callable[[dict], None]):
+        """Called when MCP JSON-RPC message arrives."""
+        self._on_mcp = callback
+
+    def on_system_command(self, callback: Callable[[str], None]):
+        """Called when a system command arrives (e.g. 'reboot')."""
+        self._on_system_command = callback
+
+    def on_alert(self, callback: Callable[[str, str, str], None]):
+        """Called when an alert arrives (status, message, emotion)."""
+        self._on_alert = callback
 
     def _set_state(self, state: DeviceState):
         if self._state != state:
@@ -168,11 +190,17 @@ class XiaozhiProtocolClient:
         if msg_type == "tts":
             state = data.get("state", "")
             if state == "start":
-                self._set_state(DeviceState.SPEAKING)
+                self._aborted = False
+                if self._state in (DeviceState.IDLE, DeviceState.LISTENING):
+                    self._set_state(DeviceState.SPEAKING)
                 if self._on_tts_start:
                     self._on_tts_start()
             elif state == "stop":
-                self._set_state(DeviceState.LISTENING)
+                if self._state == DeviceState.SPEAKING:
+                    if self._listening_mode == ListeningMode.MANUAL_STOP:
+                        self._set_state(DeviceState.IDLE)
+                    else:
+                        self._set_state(DeviceState.LISTENING)
                 if self._on_tts_stop:
                     self._on_tts_stop()
             elif state == "sentence_start":
@@ -195,11 +223,31 @@ class XiaozhiProtocolClient:
                     self._on_emotion(emotion)
 
         elif msg_type == "mcp":
-            logger.info(f"MCP message: {json.dumps(data.get('payload', {}))}")
+            payload = data.get("payload")
+            if payload and isinstance(payload, dict):
+                logger.debug(f"MCP message: {json.dumps(payload)}")
+                if self._on_mcp:
+                    self._on_mcp(payload)
+            else:
+                logger.warning("MCP message with invalid payload")
 
         elif msg_type == "system":
             command = data.get("command", "")
             logger.info(f"System command: {command}")
+            if self._on_system_command:
+                self._on_system_command(command)
+
+        elif msg_type == "alert":
+            status = data.get("status", "")
+            message = data.get("message", "")
+            emotion = data.get("emotion", "")
+            logger.info(f"Alert: status={status}, message={message}, emotion={emotion}")
+            if self._on_alert:
+                self._on_alert(status, message, emotion)
+
+        elif msg_type == "custom":
+            payload = data.get("payload", {})
+            logger.info(f"Custom message: {json.dumps(payload)}")
 
         else:
             logger.warning(f"Unknown message type: {msg_type}")
@@ -307,8 +355,24 @@ class XiaozhiProtocolClient:
 
     async def send_abort_speaking(self, reason: AbortReason = AbortReason.NONE):
         """Tell server to abort current TTS."""
+        logger.info(f"Abort speaking (reason={reason.name})")
+        self._aborted = True
         msg = {"type": "abort", "reason": reason.value}
         await self._send_json(msg)
+
+    async def send_mcp_message(self, payload: str):
+        """Send an MCP JSON-RPC response to the server."""
+        msg = {"type": "mcp", "payload": json.loads(payload)}
+        await self._send_json(msg)
+
+    def set_listening_mode(self, mode: ListeningMode):
+        """Set the current listening mode."""
+        self._listening_mode = mode
+        self._set_state(DeviceState.LISTENING)
+
+    def is_timeout(self) -> bool:
+        """Check if the connection has timed out."""
+        return (time.monotonic() - self._last_incoming_time) > self._timeout_seconds
 
     async def _send_json(self, data: dict) -> bool:
         """Send a JSON message to the server."""
@@ -330,6 +394,7 @@ class XiaozhiProtocolClient:
 
         try:
             async for message in self._ws:
+                self._last_incoming_time = time.monotonic()
                 if isinstance(message, bytes):
                     # Binary = OPUS audio from server (TTS)
                     opus_data = self._parse_binary(message)
