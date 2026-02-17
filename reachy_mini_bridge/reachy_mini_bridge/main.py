@@ -6,6 +6,8 @@ Orchestrates:
 3. Stream mic audio -> OPUS encode -> server
 4. Receive server OPUS audio -> decode -> play on speaker
 5. Receive emotion/control messages -> robot expressions
+6. Handle MCP tool calls from LLM
+7. Handle abort speaking (user interrupts TTS)
 """
 
 import argparse
@@ -20,9 +22,12 @@ import numpy as np
 import scipy.signal
 
 from .config import BridgeConfig
-from .xiaozhi_protocol import XiaozhiProtocolClient, DeviceState, ListeningMode
+from .xiaozhi_protocol import (
+    XiaozhiProtocolClient, DeviceState, ListeningMode, AbortReason,
+)
 from .audio_bridge import AudioBridge
 from .emotion_mapper import EmotionMapper
+from .mcp_server import McpServer
 from .robot_controller import RobotController
 
 logger = logging.getLogger(__name__)
@@ -40,8 +45,9 @@ class ReachyXiaozhiBridge:
         self._audio = AudioBridge(config.audio)
         self._emotions = EmotionMapper(intensity=config.motion.emotion_intensity)
         self._robot = RobotController(media_backend=config.audio.media_backend)
+        self._mcp = McpServer()
 
-        # Wire up callbacks
+        # Wire up protocol callbacks
         self._protocol.on_audio(self._on_server_audio)
         self._protocol.on_tts_start(self._on_tts_start)
         self._protocol.on_tts_stop(self._on_tts_stop)
@@ -49,10 +55,29 @@ class ReachyXiaozhiBridge:
         self._protocol.on_stt_text(self._on_stt_text)
         self._protocol.on_emotion(self._on_emotion)
         self._protocol.on_state_change(self._on_state_change)
+        self._protocol.on_mcp(self._on_mcp_message)
+        self._protocol.on_system_command(self._on_system_command)
+        self._protocol.on_alert(self._on_alert)
 
-        # Resampler state (if robot sample rate differs from config)
-        self._input_resampler = None
-        self._output_resampler = None
+        # MCP send callback (needs async bridge)
+        self._mcp_send_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._mcp.set_send_callback(self._queue_mcp_response)
+
+        # VAD state for antenna-press abort
+        self._is_speaking = False
+
+    # -- MCP setup --
+
+    def _setup_mcp_tools(self):
+        """Register Reachy Mini tools with the MCP server."""
+        self._mcp.add_reachy_mini_tools(self._robot, self._audio)
+
+    def _queue_mcp_response(self, payload: str):
+        """Queue an MCP response for async sending."""
+        try:
+            self._mcp_send_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.warning("MCP send queue full, dropping response")
 
     # -- Callbacks from protocol --
 
@@ -63,12 +88,13 @@ class ReachyXiaozhiBridge:
     def _on_tts_start(self):
         """Server starts sending TTS audio."""
         logger.info("TTS started - begin playback")
+        self._is_speaking = True
         self._robot.start_playing()
 
     def _on_tts_stop(self):
         """Server finished TTS."""
         logger.info("TTS stopped")
-        # Play remaining audio, then stop
+        self._is_speaking = False
         asyncio.get_event_loop().call_soon(self._flush_playback)
 
     def _on_tts_sentence(self, text: str):
@@ -86,14 +112,32 @@ class ReachyXiaozhiBridge:
 
     def _on_state_change(self, state: DeviceState):
         """Protocol state changed."""
-        logger.info(f"Device state: {state.value}")
+        logger.debug(f"Device state: {state.value}")
+
+    def _on_mcp_message(self, payload: dict):
+        """Handle incoming MCP JSON-RPC message from server."""
+        self._mcp.parse_message(payload)
+
+    def _on_system_command(self, command: str):
+        """Handle system command from server."""
+        if command == "reboot":
+            logger.warning("Server requested reboot - ignoring (not an embedded device)")
+        else:
+            logger.warning(f"Unknown system command: {command}")
+
+    def _on_alert(self, status: str, message: str, emotion: str):
+        """Handle alert from server."""
+        logger.info(f"ALERT [{status}]: {message}")
+        # Express the emotion physically
+        if emotion and self._config.motion.enable_emotions:
+            self._emotions.queue_emotion(emotion)
 
     def _flush_playback(self):
         """Play remaining audio and stop."""
         remaining = self._audio.drain_playback()
         if len(remaining) > 0:
             self._robot.push_audio(remaining)
-        time.sleep(0.5)
+        time.sleep(0.3)
         self._robot.stop_playing()
 
     # -- Main async loops --
@@ -177,6 +221,61 @@ class ReachyXiaozhiBridge:
                 await asyncio.sleep(0.1)
         logger.info("Motion loop stopped")
 
+    async def _mcp_send_loop(self):
+        """Send queued MCP responses to the server."""
+        logger.info("MCP send loop started")
+        while self._running:
+            try:
+                payload = await asyncio.wait_for(
+                    self._mcp_send_queue.get(), timeout=0.5
+                )
+                await self._protocol.send_mcp_message(payload)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"MCP send error: {e}")
+                await asyncio.sleep(0.1)
+        logger.info("MCP send loop stopped")
+
+    async def _timeout_watchdog_loop(self):
+        """Monitor connection timeout and handle reconnection."""
+        logger.info("Timeout watchdog started")
+        while self._running:
+            if self._protocol.is_connected and self._protocol.is_timeout():
+                logger.warning("Connection timeout detected")
+                await self._protocol.disconnect()
+                # Try to reconnect
+                logger.info("Attempting reconnection...")
+                if await self._protocol.connect():
+                    mode = self._get_listening_mode()
+                    await self._protocol.send_start_listening(mode)
+                    logger.info("Reconnected successfully")
+                else:
+                    logger.error("Reconnection failed, will retry in 5s")
+                    await asyncio.sleep(5.0)
+            await asyncio.sleep(5.0)
+        logger.info("Timeout watchdog stopped")
+
+    def _get_listening_mode(self) -> ListeningMode:
+        """Determine listening mode from config."""
+        if self._config.wake_word.mode == "always_on":
+            return ListeningMode.REALTIME
+        elif self._config.wake_word.mode == "auto_stop":
+            return ListeningMode.AUTO_STOP
+        else:
+            return ListeningMode.AUTO_STOP
+
+    async def _abort_speaking(self):
+        """Abort current TTS playback."""
+        if self._is_speaking:
+            logger.info("Aborting current speech")
+            self._is_speaking = False
+            # Clear playback queue
+            self._audio.drain_playback()
+            self._robot.stop_playing()
+            # Tell server
+            await self._protocol.send_abort_speaking(AbortReason.NONE)
+
     async def run(self):
         """Main run loop."""
         self._running = True
@@ -187,28 +286,30 @@ class ReachyXiaozhiBridge:
             logger.error("Failed to connect to Reachy Mini")
             return
 
-        # 2. Connect to xiaozhi server
+        # 2. Setup MCP tools
+        self._setup_mcp_tools()
+
+        # 3. Connect to xiaozhi server
         logger.info("Connecting to Xiaozhi server...")
         if not await self._protocol.connect():
             logger.error("Failed to connect to Xiaozhi server")
             self._robot.disconnect()
             return
 
-        # 3. Start audio bridge
+        # 4. Start audio bridge
         self._audio.start()
 
-        # 4. Tell server we're listening
-        mode = ListeningMode.REALTIME
-        if self._config.wake_word.mode == "auto_stop":
-            mode = ListeningMode.AUTO_STOP
+        # 5. Tell server we're listening
+        mode = self._get_listening_mode()
         await self._protocol.send_start_listening(mode)
+        self._protocol.set_listening_mode(mode)
 
-        # 5. Start playback on the robot
+        # 6. Start playback on the robot
         self._robot.start_playing()
 
         logger.info("Bridge is running! Speak to interact...")
 
-        # 6. Run all loops concurrently
+        # 7. Run all loops concurrently
         try:
             await asyncio.gather(
                 self._protocol.receive_loop(),
@@ -216,6 +317,8 @@ class ReachyXiaozhiBridge:
                 self._audio_send_loop(),
                 self._playback_loop(),
                 self._motion_loop(),
+                self._mcp_send_loop(),
+                self._timeout_watchdog_loop(),
             )
         except asyncio.CancelledError:
             logger.info("Bridge tasks cancelled")
