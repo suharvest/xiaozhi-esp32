@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
 
 // Face embedding dimension (MobileFaceNet output)
 #define FACE_EMBEDDING_DIM 128
@@ -30,6 +31,7 @@ public:
     bool AddFace(const std::string& name, const float* embedding);
     bool DeleteFace(const std::string& name);
     bool DeleteFaceByIndex(int index);
+    bool RenameFace(const std::string& old_name, const std::string& new_name);
     std::vector<std::string> ListFaces();
     int GetFaceCount();
 
@@ -40,7 +42,12 @@ public:
     static float CosineSimilarity(const float* a, const float* b, int dim = FACE_EMBEDDING_DIM);
     static void NormalizeEmbedding(float* embedding, int dim = FACE_EMBEDDING_DIM);
 
+    // Decode hex-encoded UTF-8 names (e.g. "u_e88b8fe7a6be" -> "苏禾")
+    static std::string DecodeName(const std::string& name);
+
 private:
+    bool DeleteFaceByIndexLocked(int index);
+
     FaceDatabase();
     ~FaceDatabase() = default;
 
@@ -58,6 +65,7 @@ private:
     // In-memory cache
     std::vector<FaceEntry> faces_;
     bool loaded_;
+    std::mutex mutex_;
 };
 
 #endif // FACE_DATABASE_H

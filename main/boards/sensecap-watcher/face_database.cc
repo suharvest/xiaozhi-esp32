@@ -50,6 +50,8 @@ void FaceDatabase::NormalizeEmbedding(float* embedding, int dim) {
 }
 
 bool FaceDatabase::LoadFromNvs() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
 
@@ -206,6 +208,8 @@ bool FaceDatabase::DeleteFaceEntry(int index) {
 }
 
 bool FaceDatabase::AddFace(const std::string& name, const float* embedding) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     if (name.empty() || name.length() >= FACE_NAME_MAX_LEN) {
         ESP_LOGE(TAG, "Invalid name length");
         return false;
@@ -253,9 +257,11 @@ bool FaceDatabase::AddFace(const std::string& name, const float* embedding) {
 }
 
 bool FaceDatabase::DeleteFace(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     for (size_t i = 0; i < faces_.size(); i++) {
         if (faces_[i].name == name) {
-            return DeleteFaceByIndex((int)i);
+            return DeleteFaceByIndexLocked((int)i);
         }
     }
 
@@ -264,6 +270,11 @@ bool FaceDatabase::DeleteFace(const std::string& name) {
 }
 
 bool FaceDatabase::DeleteFaceByIndex(int index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return DeleteFaceByIndexLocked(index);
+}
+
+bool FaceDatabase::DeleteFaceByIndexLocked(int index) {
     if (index < 0 || index >= (int)faces_.size()) {
         return false;
     }
@@ -303,7 +314,43 @@ bool FaceDatabase::DeleteFaceByIndex(int index) {
     return true;
 }
 
+bool FaceDatabase::RenameFace(const std::string& old_name, const std::string& new_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (new_name.empty() || new_name.length() >= FACE_NAME_MAX_LEN) {
+        ESP_LOGE(TAG, "Invalid new name length");
+        return false;
+    }
+
+    // Check new name doesn't already exist
+    for (const auto& face : faces_) {
+        if (face.name == new_name) {
+            ESP_LOGE(TAG, "Face with name '%s' already exists", new_name.c_str());
+            return false;
+        }
+    }
+
+    // Find and rename
+    for (size_t i = 0; i < faces_.size(); i++) {
+        if (faces_[i].name == old_name) {
+            faces_[i].name = new_name;
+            if (!SaveFaceEntry((int)i, faces_[i])) {
+                ESP_LOGE(TAG, "Failed to save renamed entry to NVS");
+                faces_[i].name = old_name;  // Rollback
+                return false;
+            }
+            ESP_LOGI(TAG, "Renamed face: %s -> %s", old_name.c_str(), new_name.c_str());
+            return true;
+        }
+    }
+
+    ESP_LOGW(TAG, "Face not found: %s", old_name.c_str());
+    return false;
+}
+
 std::vector<std::string> FaceDatabase::ListFaces() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     std::vector<std::string> names;
     for (const auto& face : faces_) {
         names.push_back(face.name);
@@ -312,10 +359,13 @@ std::vector<std::string> FaceDatabase::ListFaces() {
 }
 
 int FaceDatabase::GetFaceCount() {
+    std::lock_guard<std::mutex> lock(mutex_);
     return (int)faces_.size();
 }
 
 FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     FaceMatchResult result;
     result.matched = false;
     result.name = "";
@@ -349,11 +399,31 @@ FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
         result.name = faces_[best_index].name;
         result.similarity = best_similarity;
         result.index = best_index;
-        ESP_LOGI(TAG, "Matched: %s (similarity: %.3f)", result.name.c_str(), result.similarity);
+        ESP_LOGD(TAG, "Matched: %s (similarity: %.3f)", result.name.c_str(), result.similarity);
     } else {
-        ESP_LOGI(TAG, "No match found (best similarity: %.3f, threshold: %.3f)",
+        ESP_LOGD(TAG, "No match found (best similarity: %.3f, threshold: %.3f)",
                  best_similarity, threshold);
     }
 
     return result;
+}
+
+std::string FaceDatabase::DecodeName(const std::string& name) {
+    if (name.size() > 2 && name[0] == 'u' && name[1] == '_') {
+        std::string decoded;
+        for (size_t i = 2; i + 1 < name.size(); i += 2) {
+            char hi = name[i], lo = name[i + 1];
+            auto hex_val = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            int h = hex_val(hi), l = hex_val(lo);
+            if (h < 0 || l < 0) return name;  // invalid hex, return as-is
+            decoded += static_cast<char>((h << 4) | l);
+        }
+        return decoded;
+    }
+    return name;
 }
