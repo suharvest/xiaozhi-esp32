@@ -17,5 +17,14 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+mqtt = [
+    "aiomqtt>=2.0",
+    "cryptography>=41.0",
+]
+all = [
+    "reachy-mini-xiaozhi-bridge[mqtt]",
+]
+
 [project.scripts]
 reachy-xiaozhi = "reachy_mini_bridge.main:main"

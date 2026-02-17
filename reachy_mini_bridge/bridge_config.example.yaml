@@ -1,6 +1,13 @@
 # Reachy Mini <-> Xiaozhi Bridge Configuration
 # Copy this file to bridge_config.yaml and modify as needed.
 
+# Protocol selection: "mqtt" or "websocket"
+# "mqtt" = MQTT+UDP (official xiaozhi server default, lower audio latency)
+# "websocket" = WebSocket (self-hosted servers, simpler setup)
+# If mqtt.endpoint is set, MQTT is auto-selected.
+protocol: "websocket"
+
+# --- WebSocket mode settings ---
 server:
   # Xiaozhi server WebSocket URL
   # For self-hosted server, change to your server address
@@ -12,6 +19,22 @@ server:
   # Device identifier
   device_id: "reachy-mini-bridge-001"
   client_id: "reachy-mini-bridge"
+
+# --- MQTT+UDP mode settings ---
+# These are provided by the xiaozhi OTA/activation server.
+# If you use the official xiaozhi server, these will be auto-configured.
+mqtt:
+  # MQTT broker endpoint (host:port)
+  endpoint: ""
+  # MQTT credentials (from xiaozhi server activation)
+  client_id: ""
+  username: ""
+  password: ""
+  # MQTT topics
+  publish_topic: ""
+  subscribe_topic: ""
+  # Keep-alive interval in seconds
+  keepalive: 240
 
 audio:
   # Microphone capture sample rate (sent to server)

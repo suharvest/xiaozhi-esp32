@@ -9,12 +9,24 @@ import yaml
 
 @dataclass
 class XiaozhiServerConfig:
-    """Xiaozhi server connection settings."""
+    """Xiaozhi server connection settings (WebSocket mode)."""
     websocket_url: str = "ws://localhost:9005/xiaozhi/v1/"
     token: str = ""
     protocol_version: int = 1
     device_id: str = "reachy-mini-bridge-001"
     client_id: str = "reachy-mini-bridge"
+
+
+@dataclass
+class MqttServerConfig:
+    """Xiaozhi server connection settings (MQTT+UDP mode)."""
+    endpoint: str = ""         # MQTT broker host:port (e.g. "mqtt.example.com:8883")
+    client_id: str = ""
+    username: str = ""
+    password: str = ""
+    publish_topic: str = ""    # Topic to publish messages to
+    subscribe_topic: str = ""  # Topic to subscribe for incoming messages
+    keepalive: int = 240       # MQTT keep-alive interval in seconds
 
 
 @dataclass
@@ -49,7 +61,10 @@ class WakeWordConfig:
 @dataclass
 class BridgeConfig:
     """Top-level bridge configuration."""
+    # Protocol selection: "mqtt" (MQTT+UDP, preferred) or "websocket"
+    protocol: str = "websocket"
     server: XiaozhiServerConfig = field(default_factory=XiaozhiServerConfig)
+    mqtt: MqttServerConfig = field(default_factory=MqttServerConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     motion: MotionConfig = field(default_factory=MotionConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
@@ -63,10 +78,16 @@ class BridgeConfig:
         with open(path, "r") as f:
             data = yaml.safe_load(f) or {}
         config = cls()
+        if "protocol" in data:
+            config.protocol = data["protocol"]
         if "server" in data:
             for k, v in data["server"].items():
                 if hasattr(config.server, k):
                     setattr(config.server, k, v)
+        if "mqtt" in data:
+            for k, v in data["mqtt"].items():
+                if hasattr(config.mqtt, k):
+                    setattr(config.mqtt, k, v)
         if "audio" in data:
             for k, v in data["audio"].items():
                 if hasattr(config.audio, k):
@@ -81,6 +102,11 @@ class BridgeConfig:
                     setattr(config.wake_word, k, v)
         if "log_level" in data:
             config.log_level = data["log_level"]
+
+        # Auto-detect protocol: if mqtt endpoint is set, prefer MQTT
+        if config.mqtt.endpoint and config.protocol != "websocket":
+            config.protocol = "mqtt"
+
         return config
 
     def to_yaml(self, path: str) -> None:
