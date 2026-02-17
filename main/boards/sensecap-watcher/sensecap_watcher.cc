@@ -12,6 +12,7 @@
 #include "lvgl_theme.h"
 #include "remote_display.h"
 #include "remote_display_mcp_tool.h"
+#include "face_serial_handler.h"
 #include <wifi_manager.h>
 
 #include <esp_log.h>
@@ -488,7 +489,7 @@ private:
     void InitializeCmd() {
         esp_console_repl_t *repl = NULL;
         esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-        repl_config.max_cmdline_length = 1024;
+        repl_config.max_cmdline_length = 4096;
         repl_config.prompt = "SenseCAP>";
         
         const esp_console_cmd_t cmd1 = {
@@ -681,6 +682,9 @@ private:
             .context = this
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_remote));
+
+        // Register face database CRUD commands
+        FaceSerialHandler::GetInstance().RegisterCommands();
 
         esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
