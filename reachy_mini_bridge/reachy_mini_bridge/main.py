@@ -29,6 +29,7 @@ from .xiaozhi_protocol import (
     AbortReason,
 )
 from .audio_bridge import AudioBridge
+from .doa_tracker import HeadTracker
 from .emotion_mapper import EmotionMapper
 from .mcp_server import McpServer
 from .robot_controller import RobotController
@@ -69,6 +70,12 @@ class ReachyXiaozhiBridge:
         self._emotions = EmotionMapper(intensity=config.motion.emotion_intensity)
         self._robot = RobotController(media_backend=config.audio.media_backend)
         self._mcp = McpServer()
+        self._head_tracker = HeadTracker(
+            poll_interval=config.motion.head_tracking_poll_interval,
+            smoothing=config.motion.head_tracking_smoothing,
+            max_yaw=config.motion.head_tracking_max_yaw,
+            no_speech_timeout=config.motion.head_tracking_no_speech_timeout,
+        ) if config.motion.enable_head_tracking else None
 
         # Wire up protocol callbacks
         self._protocol.on_audio(self._on_server_audio)
@@ -244,6 +251,27 @@ class ReachyXiaozhiBridge:
                 await asyncio.sleep(0.1)
         logger.info("Motion loop stopped")
 
+    async def _head_tracking_loop(self):
+        """Read XVF3800 DOA and turn head toward speaker."""
+        if not self._head_tracker:
+            return
+        if not self._head_tracker.start():
+            logger.warning("Head tracking init failed, loop exiting")
+            return
+
+        logger.info("Head tracking loop started")
+        try:
+            while self._running:
+                # Only track when idle or listening (not during TTS)
+                if self._protocol.state in (DeviceState.IDLE, DeviceState.LISTENING):
+                    yaw = self._head_tracker.update()
+                    if yaw is not None:
+                        self._robot.set_head_yaw(yaw)
+                await asyncio.sleep(self._head_tracker._poll_interval)
+        finally:
+            self._head_tracker.stop()
+            logger.info("Head tracking loop stopped")
+
     async def _mcp_send_loop(self):
         """Send queued MCP responses to the server."""
         logger.info("MCP send loop started")
@@ -349,6 +377,7 @@ class ReachyXiaozhiBridge:
                 self._audio_send_loop(),
                 self._playback_loop(),
                 self._motion_loop(),
+                self._head_tracking_loop(),
                 self._mcp_send_loop(),
                 self._timeout_watchdog_loop(),
             )

@@ -22,8 +22,11 @@ mqtt = [
     "aiomqtt>=2.0",
     "cryptography>=41.0",
 ]
+doa = [
+    "pyusb>=1.2",
+]
 all = [
-    "reachy-mini-xiaozhi-bridge[mqtt]",
+    "reachy-mini-xiaozhi-bridge[mqtt,doa]",
 ]
 
 [project.scripts]

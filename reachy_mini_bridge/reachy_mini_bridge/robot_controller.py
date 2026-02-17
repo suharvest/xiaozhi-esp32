@@ -182,6 +182,20 @@ class RobotController:
         except Exception as e:
             logger.error(f"Failed to execute expression: {e}")
 
+    def set_head_yaw(self, yaw_degrees: float):
+        """Set head yaw directly for real-time tracking (no interpolation).
+
+        Uses set_target() for low-latency updates (suitable for ~10Hz DOA loop).
+        Only changes yaw; pitch/roll stay at current values.
+        """
+        if not HAS_REACHY or not self._mini:
+            return
+        try:
+            head_pose = create_head_pose(yaw=yaw_degrees, degrees=True)
+            self._mini.set_target(head=head_pose)
+        except Exception as e:
+            logger.debug(f"set_head_yaw error: {e}")
+
     def look_neutral(self):
         """Return to neutral position."""
         self.execute_expression(

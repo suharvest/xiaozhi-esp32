@@ -53,8 +53,19 @@ audio:
 motion:
   # Enable emotion -> robot movement mapping
   enable_emotions: true
-  # Enable head tracking (look at sound source)
+
+  # --- Head tracking (look toward speaker using XVF3800 DOA) ---
+  # Requires: Seeed ReSpeaker XVF3800 connected via USB + pyusb installed
   enable_head_tracking: false
+  # Maximum head yaw angle in degrees (clamped to this range)
+  head_tracking_max_yaw: 30.0
+  # Smoothing factor (0.0 = very smooth/slow, 1.0 = instant/jittery)
+  head_tracking_smoothing: 0.3
+  # How often to read DOA, in seconds (0.1 = 10 Hz)
+  head_tracking_poll_interval: 0.1
+  # Seconds of silence before head returns to neutral
+  head_tracking_no_speech_timeout: 3.0
+
   # Emotion movement intensity (0.0 - 1.0)
   emotion_intensity: 0.7
   # Enable subtle idle animation when not speaking

@@ -44,6 +44,10 @@ class MotionConfig:
     """Robot motion/expression settings."""
     enable_emotions: bool = True
     enable_head_tracking: bool = False
+    head_tracking_max_yaw: float = 30.0
+    head_tracking_smoothing: float = 0.3
+    head_tracking_poll_interval: float = 0.1
+    head_tracking_no_speech_timeout: float = 3.0
     emotion_intensity: float = 0.7
     idle_animation: bool = True
     idle_animation_interval: float = 5.0
