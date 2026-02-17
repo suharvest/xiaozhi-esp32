@@ -110,6 +110,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             return;
         }
 
+        ESP_LOGI(TAG, "MQTT msg type: %s", type->valuestring);
         if (strcmp(type->valuestring, "hello") == 0) {
             ParseServerHello(root);
         } else if (strcmp(type->valuestring, "goodbye") == 0) {
