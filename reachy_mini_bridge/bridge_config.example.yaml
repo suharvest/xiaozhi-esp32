@@ -1,0 +1,54 @@
+# Reachy Mini <-> Xiaozhi Bridge Configuration
+# Copy this file to bridge_config.yaml and modify as needed.
+
+server:
+  # Xiaozhi server WebSocket URL
+  # For self-hosted server, change to your server address
+  websocket_url: "ws://localhost:9005/xiaozhi/v1/"
+  # Authorization token (leave empty if not required)
+  token: ""
+  # Protocol version: 1 (raw OPUS), 2 (with timestamp), 3 (compact)
+  protocol_version: 1
+  # Device identifier
+  device_id: "reachy-mini-bridge-001"
+  client_id: "reachy-mini-bridge"
+
+audio:
+  # Microphone capture sample rate (sent to server)
+  input_sample_rate: 16000
+  # Server TTS output sample rate
+  output_sample_rate: 24000
+  # OPUS frame duration in milliseconds
+  opus_frame_duration_ms: 60
+  channels: 1
+  # Reachy Mini media backend:
+  #   "default_no_video" - sounddevice backend (USB/lite)
+  #   "gstreamer_no_video" - GStreamer backend
+  #   "webrtc" - WebRTC backend (wireless)
+  media_backend: "default_no_video"
+
+motion:
+  # Enable emotion -> robot movement mapping
+  enable_emotions: true
+  # Enable head tracking (look at sound source)
+  enable_head_tracking: false
+  # Emotion movement intensity (0.0 - 1.0)
+  emotion_intensity: 0.7
+  # Enable subtle idle animation when not speaking
+  idle_animation: true
+  # Seconds between idle animation movements
+  idle_animation_interval: 5.0
+
+wake_word:
+  # Wake word detection mode
+  # Note: wake word detection runs on the server side in xiaozhi
+  enabled: false
+  # Interaction mode:
+  #   "always_on" - always listening (realtime mode)
+  #   "antenna_press" - press antenna to start/stop listening
+  #   "wake_word" - say wake word to activate (server-side detection)
+  mode: "always_on"
+  keyword: "你好小智"
+
+# Logging level: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
