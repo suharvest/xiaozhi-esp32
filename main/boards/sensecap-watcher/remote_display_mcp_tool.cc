@@ -122,16 +122,16 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
             return std::string("投屏已开启");
         }
 
-        // 2. 尝试使用已保存的配置
+        // 2. 尝试使用已保存的配置（1秒超时，快速失败）
         auto config = RemoteDisplay::LoadConfig();
         if (!config.server_url.empty()) {
-            if (remote->Start(config.server_url)) {
+            if (remote->Start(config.server_url, 1000)) {
                 return std::string("投屏已开启，已连接到 " + config.server_url);
             }
         }
 
-        // 3. 尝试 mDNS 自动发现（1.5秒超时，减少等待）
-        auto displays = remote->DiscoverDisplays(1500);
+        // 3. 尝试 mDNS 自动发现（500ms超时）
+        auto displays = remote->DiscoverDisplays(500);
 
         if (displays.empty()) {
             // 未发现设备，提示用户手动输入
@@ -181,7 +181,7 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
         }
 
     } else if (action == "discover") {
-        auto displays = remote->DiscoverDisplays(1500);
+        auto displays = remote->DiscoverDisplays(500);
 
         if (displays.empty()) {
             return std::string("未发现投屏设备");
@@ -212,7 +212,7 @@ ReturnValue RemoteDisplayMcpTool::HandleScreenCast(const PropertyList& propertie
 
         // 如果缓存为空，先执行发现
         if (cached_displays_.empty()) {
-            cached_displays_ = remote->DiscoverDisplays(1500);
+            cached_displays_ = remote->DiscoverDisplays(500);
         }
 
         if (cached_displays_.empty()) {

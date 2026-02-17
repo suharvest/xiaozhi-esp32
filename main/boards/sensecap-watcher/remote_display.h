@@ -102,6 +102,7 @@ private:
 
     std::mutex state_mutex_;
     std::mutex send_mutex_;
+    std::mutex lifecycle_mutex_;
 };
 
 #endif // REMOTE_DISPLAY_H

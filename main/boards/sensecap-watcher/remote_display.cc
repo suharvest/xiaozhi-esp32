@@ -68,6 +68,8 @@ RemoteDisplay::~RemoteDisplay() {
 }
 
 bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+
     if (running_) {
         // 如果 URL 相同且连接正常，直接返回
         if (current_server_url_ == server_url && connected_) {
@@ -76,7 +78,16 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
         }
         // URL 不同或连接已断开，先停止再重连
         ESP_LOGI(TAG, "Reconnecting: %s (connected=%d)", server_url.c_str(), connected_.load());
-        Stop();
+        running_ = false;
+        {
+            std::lock_guard<std::mutex> send_lock(send_mutex_);
+            if (websocket_) {
+                websocket_->Close();
+                websocket_.reset();
+            }
+        }
+        connected_ = false;
+        current_server_url_.clear();
     }
 
     // 获取网络接口并创建 WebSocket
@@ -113,7 +124,10 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
 
     if (!websocket_->Connect(server_url.c_str())) {
         ESP_LOGE(TAG, "Failed to connect to remote display server");
-        websocket_.reset();
+        {
+            std::lock_guard<std::mutex> send_lock(send_mutex_);
+            websocket_.reset();
+        }
         return false;
     }
 
@@ -126,8 +140,11 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
 
     if (!connected_) {
         ESP_LOGE(TAG, "Connection timeout");
-        websocket_->Close();
-        websocket_.reset();
+        std::lock_guard<std::mutex> send_lock(send_mutex_);
+        if (websocket_) {
+            websocket_->Close();
+            websocket_.reset();
+        }
         return false;
     }
 
@@ -140,6 +157,8 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
 }
 
 void RemoteDisplay::Stop() {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+
     if (!running_) {
         return;
     }
@@ -148,9 +167,12 @@ void RemoteDisplay::Stop() {
 
     // 注意：PCM 音频转发回调的取消需要在调用方处理
 
-    if (websocket_) {
-        websocket_->Close();
-        websocket_.reset();
+    {
+        std::lock_guard<std::mutex> send_lock(send_mutex_);
+        if (websocket_) {
+            websocket_->Close();
+            websocket_.reset();
+        }
     }
 
     connected_ = false;
@@ -219,7 +241,7 @@ void RemoteDisplay::SendVolume(int volume, bool muted) {
 }
 
 void RemoteDisplay::SendUIState() {
-    if (!connected_ || !websocket_) return;
+    if (!connected_) return;
 
     // 构造 JSON
     cJSON* root = cJSON_CreateObject();
@@ -245,13 +267,15 @@ void RemoteDisplay::SendUIState() {
 
     if (json_str) {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        websocket_->Send(json_str);
+        if (running_ && connected_ && websocket_) {
+            websocket_->Send(json_str);
+        }
         free(json_str);
     }
 }
 
 void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample_rate) {
-    if (!running_ || !connected_ || !websocket_) {
+    if (!running_ || !connected_) {
         return;
     }
 
@@ -270,7 +294,9 @@ void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample
 
     memcpy(buffer.data() + sizeof(PcmAudioHeader), data, pcm_bytes);
 
-    websocket_->Send(buffer.data(), buffer.size(), true);
+    if (running_ && connected_ && websocket_) {
+        websocket_->Send(buffer.data(), buffer.size(), true);
+    }
 }
 
 void RemoteDisplay::SendHello() {
@@ -290,14 +316,16 @@ void RemoteDisplay::SendHello() {
 
     if (json_str) {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        websocket_->Send(json_str);
-        ESP_LOGI(TAG, "Sent hello: %s", json_str);
+        if (connected_ && websocket_) {
+            websocket_->Send(json_str);
+            ESP_LOGI(TAG, "Sent hello: %s", json_str);
+        }
         free(json_str);
     }
 }
 
 void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
-    if (!running_ || !connected_ || !websocket_) return;
+    if (!running_ || !connected_) return;
     if (jpeg_data == nullptr || size == 0) return;
 
     // 计算 Base64 编码后的大小
@@ -334,8 +362,10 @@ void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
 
     if (json_str) {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        websocket_->Send(json_str);
-        ESP_LOGI(TAG, "Sent preview image: %zu bytes (base64: %zu)", size, written);
+        if (running_ && connected_ && websocket_) {
+            websocket_->Send(json_str);
+            ESP_LOGI(TAG, "Sent preview image: %zu bytes (base64: %zu)", size, written);
+        }
         free(json_str);
     }
 }
