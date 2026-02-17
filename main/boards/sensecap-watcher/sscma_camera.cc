@@ -13,6 +13,7 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <cstring>
+#include <mbedtls/base64.h>
 #include "application.h"
 #include "sscma_client_commands.h"
 
@@ -69,6 +70,11 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
     sscma_client_new(sscma_client_io_handle_, &sscma_client_config, &sscma_client_handle_);
 
+    // Suppress noisy SSCMA logs that flood the USB Serial JTAG console
+    // (Invalid reply, rx buffer full, spi transmit failed) — keeps serial CRUD usable
+    esp_log_level_set("sscma_client", ESP_LOG_ERROR);
+    esp_log_level_set("sscma_client.io.spi", ESP_LOG_ERROR);
+
     sscma_data_queue_ = xQueueCreate(1, sizeof(SscmaData));
 
     sscma_client_callback_t callback = {0};
@@ -79,7 +85,9 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
     callback.on_event = [](sscma_client_handle_t client, const sscma_client_reply_t *reply, void *user_ctx) {
         SscmaCamera* self = static_cast<SscmaCamera*>(user_ctx);
         if (!self) return;
-        
+
+        ESP_LOGD(TAG, "on_event callback triggered");
+
         char *img = NULL;
         int img_size = 0;
         int box_count = 0;
@@ -103,63 +111,70 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             // Check for face recognition mode data
             cJSON *mode = cJSON_GetObjectItem(data, "mode");
             if (mode != NULL && cJSON_IsString(mode) && strcmp(mode->valuestring, "face") == 0) {
+                ESP_LOGD(TAG, "Face mode event received (res=%dx%d)", width, height);
+                auto& face_rec = FaceRecognition::GetInstance();
+
                 // Parse face recognition data
                 cJSON *faces = cJSON_GetObjectItem(data, "faces");
                 if (faces != NULL && cJSON_IsArray(faces)) {
                     int face_count = cJSON_GetArraySize(faces);
-                    ESP_LOGD(TAG, "Received %d faces in face mode", face_count);
 
-                    auto& face_rec = FaceRecognition::GetInstance();
+                    if (face_count > 0) {
+                        face_rec.NotifyFacePresent();
+                        for (int i = 0; i < face_count; i++) {
+                            cJSON *face = cJSON_GetArrayItem(faces, i);
+                            if (face == NULL) continue;
 
-                    for (int i = 0; i < face_count; i++) {
-                        cJSON *face = cJSON_GetArrayItem(faces, i);
-                        if (face == NULL) continue;
+                            HimaxFaceData face_data;
+                            memset(&face_data, 0, sizeof(face_data));
 
-                        HimaxFaceData face_data;
-                        memset(&face_data, 0, sizeof(face_data));
-
-                        // Parse bounding box
-                        cJSON *box = cJSON_GetObjectItem(face, "box");
-                        if (box != NULL && cJSON_IsArray(box) && cJSON_GetArraySize(box) == 4) {
-                            face_data.box_x = cJSON_GetArrayItem(box, 0)->valueint;
-                            face_data.box_y = cJSON_GetArrayItem(box, 1)->valueint;
-                            face_data.box_w = cJSON_GetArrayItem(box, 2)->valueint;
-                            face_data.box_h = cJSON_GetArrayItem(box, 3)->valueint;
-                        }
-
-                        // Parse score
-                        cJSON *score = cJSON_GetObjectItem(face, "score");
-                        if (score != NULL && cJSON_IsNumber(score)) {
-                            face_data.score = score->valueint;
-                        }
-
-                        // Parse quality
-                        cJSON *quality = cJSON_GetObjectItem(face, "quality");
-                        if (quality != NULL && cJSON_IsNumber(quality)) {
-                            face_data.quality = (float)quality->valuedouble;
-                        }
-
-                        // Parse embedding
-                        cJSON *embedding = cJSON_GetObjectItem(face, "embedding");
-                        if (embedding != NULL && cJSON_IsArray(embedding) &&
-                            cJSON_GetArraySize(embedding) == FACE_EMBEDDING_DIM) {
-                            for (int j = 0; j < FACE_EMBEDDING_DIM; j++) {
-                                cJSON *val = cJSON_GetArrayItem(embedding, j);
-                                if (val != NULL && cJSON_IsNumber(val)) {
-                                    face_data.embedding[j] = (float)val->valuedouble;
-                                }
+                            // Parse bounding box
+                            cJSON *box = cJSON_GetObjectItem(face, "box");
+                            if (box != NULL && cJSON_IsArray(box) && cJSON_GetArraySize(box) == 4) {
+                                face_data.box_x = cJSON_GetArrayItem(box, 0)->valueint;
+                                face_data.box_y = cJSON_GetArrayItem(box, 1)->valueint;
+                                face_data.box_w = cJSON_GetArrayItem(box, 2)->valueint;
+                                face_data.box_h = cJSON_GetArrayItem(box, 3)->valueint;
                             }
-                            face_data.has_embedding = true;
+
+                            // Parse score
+                            cJSON *score = cJSON_GetObjectItem(face, "score");
+                            if (score != NULL && cJSON_IsNumber(score)) {
+                                face_data.score = score->valueint;
+                            }
+
+                            // Parse quality
+                            cJSON *quality = cJSON_GetObjectItem(face, "quality");
+                            if (quality != NULL && cJSON_IsNumber(quality)) {
+                                face_data.quality = (float)quality->valuedouble;
+                            }
+
+                            // Parse embedding
+                            cJSON *embedding = cJSON_GetObjectItem(face, "embedding");
+                            if (embedding != NULL && cJSON_IsArray(embedding) &&
+                                cJSON_GetArraySize(embedding) == FACE_EMBEDDING_DIM) {
+                                for (int j = 0; j < FACE_EMBEDDING_DIM; j++) {
+                                    cJSON *val = cJSON_GetArrayItem(embedding, j);
+                                    if (val != NULL && cJSON_IsNumber(val)) {
+                                        face_data.embedding[j] = (float)val->valuedouble;
+                                    }
+                                }
+                                face_data.has_embedding = true;
+                            }
+
+                            ESP_LOGD(TAG, "[face %d]: box=[%d,%d,%d,%d], score=%d, quality=%.2f, has_emb=%d",
+                                     i, face_data.box_x, face_data.box_y, face_data.box_w, face_data.box_h,
+                                     face_data.score, face_data.quality, face_data.has_embedding);
+
+                            // Process face data
+                            face_rec.ProcessFaceData(face_data);
                         }
-
-                        ESP_LOGI(TAG, "[face %d]: box=[%d,%d,%d,%d], score=%d, quality=%.2f, has_emb=%d",
-                                 i, face_data.box_x, face_data.box_y, face_data.box_w, face_data.box_h,
-                                 face_data.score, face_data.quality, face_data.has_embedding);
-
-                        // Process face data
-                        face_rec.ProcessFaceData(face_data);
+                    } else {
+                        // No face in this frame - notify for cooldown state machine
+                        face_rec.NotifyNoFace();
                     }
                 }
+
                 return;  // Don't process as regular detection data
             }
         }
@@ -169,6 +184,10 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             {
                 bool is_object_detected = false;
                 bool is_need_wake = false;
+                const int detect_target = self->detect_target.load();
+                const int detect_threshold = self->detect_threshold.load();
+                const int detect_duration_sec = self->detect_duration_sec.load();
+                const int detect_invoke_interval_sec = self->detect_invoke_interval_sec.load();
                 
                 // 定期更新检测配置参数，避免频繁NVS访问
                 int64_t cur_tm = esp_timer_get_time();
@@ -178,7 +197,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     for (int i = 0; i < box_count; i++) {
                         ESP_LOGI(TAG, "[box %d]: x=%d, y=%d, w=%d, h=%d, score=%d, target=%d", i,  \
                                 boxes[i].x, boxes[i].y, boxes[i].w, boxes[i].h, boxes[i].score, boxes[i].target);
-                        if (boxes[i].target == self->detect_target && boxes[i].score > self->detect_threshold) {
+                        if (boxes[i].target == detect_target && boxes[i].score > detect_threshold) {
                            is_object_detected = true;
                            model_type = 0;
                            obj_cnt++;
@@ -191,7 +210,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     for (int i = 0; i < class_count; i++) {
                         ESP_LOGI(TAG, "[class %d]: target=%d, score=%d", i,
                                 classes[i].target, classes[i].score);
-                        if (classes[i].target == self->detect_target && classes[i].score > self->detect_threshold) {
+                        if (classes[i].target == detect_target && classes[i].score > detect_threshold) {
                            is_object_detected = true;
                            model_type = 1;
                            obj_cnt++;
@@ -203,7 +222,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     for (int i = 0; i < point_count; i++) {
                         ESP_LOGI(TAG, "[point %d]: x=%d, y=%d, z=%d, score=%d, target=%d", i, 
                                 points[i].x, points[i].y, points[i].z, points[i].score, points[i].target);
-                        if (points[i].target == self->detect_target && points[i].score > self->detect_threshold) {
+                        if (points[i].target == detect_target && points[i].score > detect_threshold) {
                            is_object_detected = true;
                            model_type = 2;
                            obj_cnt++;
@@ -236,7 +255,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                             // 更新最后检测到的时间
                             self->last_detected_time = cur_tm;
                             // 检查是否验证足够时间
-                            if ((cur_tm - self->state_start_time) >= (self->detect_duration_sec * 1000000)) {
+                            if ((cur_tm - self->state_start_time) >= (detect_duration_sec * 1000000LL)) {
                                 is_need_wake = true;
                             }
                         } else {
@@ -254,7 +273,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     case SscmaCamera::COOLDOWN:
                         // 冷却期，需要满足两个条件：1)object离开 2)过了15秒
                         if (!is_object_detected && 
-                            (cur_tm - self->state_start_time) >= (self->detect_invoke_interval_sec * 1000000LL)) {
+                            (cur_tm - self->state_start_time) >= (detect_invoke_interval_sec * 1000000LL)) {
                             // object离开且冷却时间到，回到空闲状态
                             self->detection_state = SscmaCamera::IDLE;
                             ESP_LOGI(TAG, "Cooldown complete and object left, back to idle - ready for next appearance");
@@ -265,32 +284,34 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
 
                 if( is_need_wake ) {
-                    ESP_LOGI(TAG, "Validation complete, triggering conversation (type=%d, res=%dx%d)", 
-                             self->detect_target, width, height);
+                    ESP_LOGI(TAG, "Validation complete, triggering conversation (type=%d, res=%dx%d)",
+                             detect_target, width, height);
                     
                     // 触发对话
                     std::string wake_word;
                     if ( model_type  == 0 ) {
                         std::string cached_target_name = "object";
-                        if( self->model != NULL && self->model->classes[self->detect_target] != NULL ) {
-                            cached_target_name = self->model->classes[self->detect_target];
+                        if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
+                            cached_target_name = self->model->classes[detect_target];
                         }
                         wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
                     } else if ( model_type  == 1 ) {
                         std::string cached_target_name = "object";
-                        if( self->model != NULL && self->model->classes[self->detect_target] != NULL ) {
-                            cached_target_name = self->model->classes[self->detect_target];
+                        if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
+                            cached_target_name = self->model->classes[detect_target];
                         }
                         wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
                     } else if ( model_type  == 2 ) {
                         std::string cached_target_name = "object";
-                        if( self->model != NULL && self->model->classes[self->detect_target] != NULL ) {
-                            cached_target_name = self->model->classes[self->detect_target];
+                        if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
+                            cached_target_name = self->model->classes[detect_target];
                         }
                         wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
                     }
                     printf("wake_word:%s\n", wake_word.c_str());
-                    Application::GetInstance().WakeWordInvoke(wake_word);
+                    Application::GetInstance().Schedule([wake_word]() {
+                        Application::GetInstance().WakeWordInvoke(wake_word);
+                    });
                     
                     // 进入冷却状态，标记需要开始冷却期；如下变量将在会话结束后被使用，等待回调恢复后开始计时
                     self->detection_state = SscmaCamera::COOLDOWN;
@@ -302,7 +323,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
                 if (sscma_utils_fetch_image_from_reply(reply, &img, &img_size) == ESP_OK)
                 {
-                    ESP_LOGI(TAG, "image_size: %d\n", img_size);
+                    ESP_LOGD(TAG, "image_size: %d", img_size);
                     // 将数据通过队列发送出去
                     SscmaData data;
                     data.img = (uint8_t*)img;
@@ -315,12 +336,16 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                             heap_caps_free(dummy.img);
                         }
                     }
-                    xQueueSend(self->sscma_data_queue_, &data, 0);
+                    if (xQueueSend(self->sscma_data_queue_, &data, 0) != pdPASS) {
+                        if (data.img) {
+                            heap_caps_free(data.img);
+                        }
+                    }
                     // 注意：img 的释放由接收方负责
                 }
                 break;
             default:
-                ESP_LOGI(TAG, "unknown resolution");
+                ESP_LOGD(TAG, "unknown resolution");
                 break;
         }
     };
@@ -333,7 +358,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
     };
 
     callback.on_log = [](sscma_client_handle_t client, const sscma_client_reply_t *reply, void *user_ctx) {
-        ESP_LOGI(TAG, "log: %s\n", reply->data);
+        ESP_LOGD(TAG, "log: %s", reply->data);
     };
 
     sscma_client_register_callback(sscma_client_handle_, &callback, this);
@@ -343,11 +368,23 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
     ESP_LOGI(TAG, "SSCMA client initialized");
     // 设置分辨率
     // 3 = 640x480
-    if (sscma_client_set_sensor(sscma_client_handle_, 1, 3, true)) {
-        ESP_LOGE(TAG, "Failed to set sensor");
-        sscma_client_del(sscma_client_handle_);
-        sscma_client_handle_ = NULL;
-        return;
+    {
+        int sensor_retry = 5;
+        bool sensor_ok = false;
+        while (sensor_retry-- > 0) {
+            if (sscma_client_set_sensor(sscma_client_handle_, 1, 3, true) == ESP_OK) {
+                sensor_ok = true;
+                break;
+            }
+            ESP_LOGW(TAG, "Failed to set sensor, retrying... (%d left)", sensor_retry);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (!sensor_ok) {
+            ESP_LOGE(TAG, "Failed to set sensor after retries");
+            sscma_client_del(sscma_client_handle_);
+            sscma_client_handle_ = NULL;
+            return;
+        }
     }
 
     // 获取设备信息
@@ -439,8 +476,20 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
         bool is_inference = false;
         bool is_face_mode = false;
         int64_t last_keepalive_time = esp_timer_get_time();
+        // Voice-busy watchdog: track how long device stays in speaking/listening
+        DeviceState prev_dev_state = kDeviceStateUnknown;
+        int64_t voice_busy_since = 0;
+        bool watchdog_abort_sent = false;
+        const int64_t kVoiceBusyTimeoutUs = 60 * 1000000LL;  // 60s
+        const int64_t kVoiceBusyForceIdleUs = 70 * 1000000LL;  // 70s: force idle if abort didn't help
+
         while (true)
         {
+            if (this_->capture_in_progress_) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+
             if (this_->sscma_restarted_) {
                 ESP_LOGI(TAG, "SSCMA restarted detected");
                 this_->sscma_restarted_ = false;
@@ -450,39 +499,106 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
             if (esp_timer_get_time() - last_keepalive_time > 10 * 1000000) {
                 last_keepalive_time = esp_timer_get_time();
-                if (!__himax_keepalive_check(this_->sscma_client_handle_)) {
+                bool keepalive_ok = false;
+                {
+                    std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                    keepalive_ok = __himax_keepalive_check(this_->sscma_client_handle_);
+                }
+                if (!keepalive_ok) {
                     ESP_LOGE(TAG, "restart himax");
-                    sscma_client_reset(this_->sscma_client_handle_);
+                    {
+                        std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                        sscma_client_reset(this_->sscma_client_handle_);
+                    }
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
             }
 
-            bool is_idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+            // Auto-resume inference if paused too long (browser didn't close properly)
+            if (this_->inference_paused_.load() && this_->inference_paused_at_.load() > 0) {
+                int64_t now_sec = esp_timer_get_time() / 1000000;
+                if (now_sec - this_->inference_paused_at_.load() > INFERENCE_PAUSE_TIMEOUT_SEC) {
+                    ESP_LOGW(TAG, "Inference pause timeout (%ds), auto-resuming", INFERENCE_PAUSE_TIMEOUT_SEC);
+                    this_->ResumeInference();
+                }
+            }
+
+            DeviceState dev_state = Application::GetInstance().GetDeviceState();
+            bool is_idle = (dev_state == kDeviceStateIdle);
+
+            // Voice-busy watchdog
+            if (dev_state != prev_dev_state) {
+                prev_dev_state = dev_state;
+                if (dev_state == kDeviceStateSpeaking || dev_state == kDeviceStateListening) {
+                    voice_busy_since = esp_timer_get_time();
+                } else {
+                    voice_busy_since = 0;
+                    watchdog_abort_sent = false;
+                }
+            }
+            if (voice_busy_since > 0) {
+                int64_t elapsed = esp_timer_get_time() - voice_busy_since;
+                if (!watchdog_abort_sent && elapsed > kVoiceBusyTimeoutUs) {
+                    // First stage: try graceful abort via ToggleChatState
+                    ESP_LOGW(TAG, "Voice busy watchdog: stuck in state %d for >60s, trying abort", dev_state);
+                    Application::GetInstance().ToggleChatState();
+                    watchdog_abort_sent = true;
+                } else if (watchdog_abort_sent && elapsed > kVoiceBusyForceIdleUs) {
+                    // Second stage: abort didn't help, force idle and close audio channel
+                    ESP_LOGW(TAG, "Voice busy watchdog: still stuck in state %d after abort, forcing idle", dev_state);
+                    Application::GetInstance().Schedule([]() {
+                        auto& app = Application::GetInstance();
+                        auto display = Board::GetInstance().GetDisplay();
+                        display->SetChatMessage("system", "");
+                        app.SetDeviceState(kDeviceStateIdle);
+                    });
+                    // Re-arm watchdog in case Schedule doesn't execute (main loop blocked)
+                    voice_busy_since = esp_timer_get_time();
+                    watchdog_abort_sent = false;
+                }
+            }
+            // When inference is paused (external UART enrollment in progress),
+            // skip all SPI inference management — don't start, stop, or break anything.
+            // The external camera session controls Himax via UART directly.
+            if (this_->inference_paused_.load()) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+                continue;
+            }
+
+            // Face mode can run anytime except during active voice conversations
+            bool is_voice_busy = (dev_state == kDeviceStateConnecting ||
+                                  dev_state == kDeviceStateListening ||
+                                  dev_state == kDeviceStateSpeaking);
             auto& face_rec = FaceRecognition::GetInstance();
             int face_count = FaceDatabase::GetInstance().GetFaceCount();
 
-            // Debug: print face recognition status every 10 seconds
+            // Debug: print face recognition status every 60 seconds
             static int64_t last_debug_time = 0;
-            if (esp_timer_get_time() - last_debug_time > 10000000) {
+            if (esp_timer_get_time() - last_debug_time > 60000000) {
                 last_debug_time = esp_timer_get_time();
-                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, is_idle=%d, face_count=%d, is_face_mode=%d, registering=%d",
-                         this_->face_recognition_en_, is_idle, face_count, is_face_mode, face_rec.IsRegistering());
+                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, state=%d, face_count=%d, is_face_mode=%d",
+                         this_->face_recognition_en_.load(), dev_state, face_count, is_face_mode);
             }
 
-            // Check if face recognition mode should be active
-            // Enter face mode when: enabled (even if no faces registered) OR registering
-            bool want_face_mode = is_idle && (
-                this_->face_recognition_en_ || face_rec.IsRegistering()
-            );
+            // Deliver pending face notification when device is idle
+            if (is_idle) {
+                face_rec.DeliverPendingNotification();
+            }
+
+            // Face mode runs when not in voice conversation and face recognition is enabled
+            bool want_face_mode = !is_voice_busy && this_->face_recognition_en_.load();
 
             // Check if object detection mode should be active
-            bool want_object_mode = this_->inference_en && is_idle && !want_face_mode;
+            bool want_object_mode = this_->inference_en.load() && is_idle && !want_face_mode;
 
             // Handle face recognition mode
             if (want_face_mode) {
                 if (!is_face_mode) {
                     ESP_LOGI(TAG, "Start face recognition mode");
-                    sscma_client_break(this_->sscma_client_handle_);
+                    {
+                        std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                        sscma_client_break(this_->sscma_client_handle_);
+                    }
 
                     // Send AT+FACE=1 to enable face mode on Himax
                     if (this_->SendFaceModeCommand(true)) {
@@ -491,14 +607,21 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         is_face_mode = true;
                         is_inference = false;
 
-                        // Set sensor resolution for face mode (same as object detection)
-                        sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true);
+                        // Set sensor to 240x240 (mode 0) for face mode - fits in Himax RGB buffer
+                        {
+                            std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                            sscma_client_set_sensor(this_->sscma_client_handle_, 1, 0, true);
+                        }
 
                         // Wait for Himax to process face mode command
                         vTaskDelay(pdMS_TO_TICKS(200));
 
-                        // Start face inference
-                        esp_err_t ret = sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
+                        // Start face inference (show=false → result_only=1, matches "INVOKE" response name)
+                        esp_err_t ret = ESP_FAIL;
+                        {
+                            std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                            ret = sscma_client_invoke(this_->sscma_client_handle_, -1, false, false);
+                        }
                         if (ret != ESP_OK) {
                             ESP_LOGE(TAG, "Failed to start face inference: %d", ret);
                         } else {
@@ -508,19 +631,29 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 }
             } else if (is_face_mode) {
                 ESP_LOGI(TAG, "Stop face recognition mode");
-                sscma_client_break(this_->sscma_client_handle_);
+                {
+                    std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                    sscma_client_break(this_->sscma_client_handle_);
+                }
 
                 // Send AT+FACE=0 to disable face mode on Himax
                 this_->SendFaceModeCommand(false);
                 this_->camera_mode_ = SscmaCamera::MODE_OBJECT_DETECT;
                 face_rec.SetEnabled(false);
                 is_face_mode = false;
+
+                // Restore sensor to 416x416 (mode 1) for object detection
+                {
+                    std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                    sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true);
+                }
             }
 
             // Handle object detection mode (only if not in face mode)
             if (want_object_mode && !is_face_mode) {
                 if (!is_inference) {
                     ESP_LOGI(TAG, "Start inference (enable=1)");
+                    std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_break(this_->sscma_client_handle_);
                     sscma_client_set_model(this_->sscma_client_handle_, 4);
                     sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true); // 设置分辨率 416X416
@@ -528,9 +661,12 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     is_inference = true;
                 }
             } else if (is_inference && !want_object_mode) {
-                ESP_LOGI(TAG, "Stop inference (enable=%d state=%d)", this_->inference_en, Application::GetInstance().GetDeviceState());
+                ESP_LOGI(TAG, "Stop inference (enable=%d state=%d)", this_->inference_en.load(), Application::GetInstance().GetDeviceState());
                 is_inference = false;
-                sscma_client_break(this_->sscma_client_handle_);
+                {
+                    std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
+                    sscma_client_break(this_->sscma_client_handle_);
+                }
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -573,7 +709,11 @@ bool SscmaCamera::SendFaceModeCommand(bool enable) {
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "AT+FACE=%d\r\n", enable ? 1 : 0);
 
-    esp_err_t ret = sscma_client_request(sscma_client_handle_, cmd, &reply, true, pdMS_TO_TICKS(2000));
+    esp_err_t ret = ESP_FAIL;
+    {
+        std::lock_guard<std::mutex> lock(sscma_mutex_);
+        ret = sscma_client_request(sscma_client_handle_, cmd, &reply, true, pdMS_TO_TICKS(2000));
+    }
     if (reply.payload != NULL) {
         sscma_client_reply_clear(&reply);
     }
@@ -591,10 +731,15 @@ void SscmaCamera::InitializeMcpTools() {
     
     Settings settings("model", false);
     detect_threshold = settings.GetInt("threshold", 75);
-    detect_invoke_interval_sec = settings.GetInt("interval", 8);
-    detect_duration_sec = settings.GetInt("duration", 2);
+    detect_invoke_interval_sec = settings.GetInt("interval", 5);
+    detect_duration_sec = settings.GetInt("duration", 3);
     detect_target = settings.GetInt("target", 0);
     inference_en = settings.GetInt("enable", 0);
+
+    // Sync timing parameters to face recognition (shared duration/interval)
+    auto& face_rec = FaceRecognition::GetInstance();
+    face_rec.SetValidationDuration(detect_duration_sec.load());
+    face_rec.SetCooldownInterval(detect_invoke_interval_sec.load());
 
     auto& mcp_server = McpServer::GetInstance();
         // 获取模型参数配置
@@ -609,8 +754,8 @@ void SscmaCamera::InitializeMcpTools() {
         [this](const PropertyList& properties) -> ReturnValue {
             Settings settings("model", false);
             int threshold = settings.GetInt("threshold", 75);
-            int interval = settings.GetInt("interval", 8);
-            int duration = settings.GetInt("duration", 2);
+            int interval = settings.GetInt("interval", 5);
+            int duration = settings.GetInt("duration", 3);
             int target_type = settings.GetInt("target", 0);
             
             std::string result = "{\"threshold\":" + std::to_string(threshold) + 
@@ -655,18 +800,20 @@ void SscmaCamera::InitializeMcpTools() {
                 if (interval != -1) {
                     settings.SetInt("interval", interval);
                     this->detect_invoke_interval_sec = interval;
+                    FaceRecognition::GetInstance().SetCooldownInterval(interval);
                     ESP_LOGI(TAG, "Set detection interval to %d", interval);
                 }
             } catch (const std::runtime_error&) {
                 // interval parameter not provided, skip
             }
-            
+
             try {
                 const Property& duration_prop = properties["duration"];
                 int duration = duration_prop.value<int>();
                 if (duration != -1) {
                     settings.SetInt("duration", duration);
                     this->detect_duration_sec = duration;
+                    FaceRecognition::GetInstance().SetValidationDuration(duration);
                 }
             } catch (const std::runtime_error&) {
                 // duration parameter not provided, skip
@@ -694,7 +841,7 @@ void SscmaCamera::InitializeMcpTools() {
         "参数：\n"
         "  `enable`: (可选) 整数。1=开启推理，0=关闭推理。若省略则返回当前开关状态。",
         PropertyList({
-            Property("enable", kPropertyTypeInteger, inference_en, 0, 1)
+            Property("enable", kPropertyTypeInteger, inference_en.load(), 0, 1)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             Settings settings("model", true);
@@ -708,11 +855,13 @@ void SscmaCamera::InitializeMcpTools() {
                 // enable not provided -> treat as query
             }
             // 返回当前配置
-            int cur_en = settings.GetInt("enable", this->inference_en);
+            int cur_en = settings.GetInt("enable", this->inference_en.load());
             return std::string("{\"enable\":") + std::to_string(cur_en) + "}";
         });
 
-    // Face recognition tool
+    // Face recognition tool — disabled: depends on hardcoded LAN server (192.168.10.181:8001)
+    // TODO: re-enable with a configurable and more robust verification scheme
+#if 0
     mcp_server.AddTool("self.camera.face_rec",
         "Perform face recognition.\n"
         "Args:\n"
@@ -733,6 +882,7 @@ void SscmaCamera::InitializeMcpTools() {
             // Perform face recognition
             return this->FaceRecognition();
         });
+#endif
 }
 
 void SscmaCamera::SetExplainUrl(const std::string& url, const std::string& token) {
@@ -744,30 +894,56 @@ bool SscmaCamera::Capture() {
 
     SscmaData data;
     int ret = 0;
-    
+
     if (sscma_client_handle_ == nullptr) {
         ESP_LOGE(TAG, "SSCMA client handle is not initialized");
         return false;
     }
 
-    if (sscma_client_set_sensor(sscma_client_handle_, 1, 3, true)) {
+    capture_in_progress_ = true;
+
+    // 清空队列中的残留数据
+    SscmaData stale;
+    while (xQueueReceive(sscma_data_queue_, &stale, 0) == pdPASS) {
+        if (stale.img) {
+            heap_caps_free(stale.img);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(sscma_mutex_);
+        // 停止可能残留的推理，确保拍照不冲突
+        sscma_client_break(sscma_client_handle_);
+    }
+
+    if ([this]() {
+            std::lock_guard<std::mutex> lock(sscma_mutex_);
+            return sscma_client_set_sensor(sscma_client_handle_, 1, 3, true);
+        }()) {
         ESP_LOGE(TAG, "Failed to set sensor");
+        capture_in_progress_ = false;
         return false;
     }
     ESP_LOGI(TAG, "Capturing image...");
-    // himax 可能有缓存数据, 只获取最新的照片即可.
-    if (sscma_client_sample(sscma_client_handle_, 1) ) {
+    // himax 可能有缓存数据, 拍两张取最新的.
+    if ([this]() {
+            std::lock_guard<std::mutex> lock(sscma_mutex_);
+            return sscma_client_sample(sscma_client_handle_, 2);
+        }()) {
         ESP_LOGE(TAG, "Failed to capture image from SSCMA client");
+        capture_in_progress_ = false;
         return false;
     }
     vTaskDelay(pdMS_TO_TICKS(500)); // 等待SSCMA客户端处理数据
-    if (xQueueReceive(sscma_data_queue_, &data, pdMS_TO_TICKS(1000)) != pdPASS) {
+    if (xQueueReceive(sscma_data_queue_, &data, pdMS_TO_TICKS(2000)) != pdPASS) {
         ESP_LOGE(TAG, "Failed to receive JPEG data from SSCMA client");
+        capture_in_progress_ = false;
         return false;
     }
 
     if (jpeg_data_.buf == nullptr) {
         heap_caps_free(data.img);
+        capture_in_progress_ = false;
         return false;
     }
 
@@ -775,6 +951,7 @@ bool SscmaCamera::Capture() {
     if (ret != 0 || jpeg_data_.len == 0) {
         ESP_LOGE(TAG, "Failed to decode base64 image data, ret: %d, output_len: %zu", ret, jpeg_data_.len);
         heap_caps_free(data.img);
+        capture_in_progress_ = false;
         return false;
     }
     heap_caps_free(data.img);
@@ -787,6 +964,7 @@ bool SscmaCamera::Capture() {
 
     //DECODE JPEG
     if (!jpeg_dec_ || !jpeg_io_ || !jpeg_out_ || !preview_image_.data) {
+        capture_in_progress_ = false;
         return true;
     }
     jpeg_io_->inbuf = jpeg_data_.buf;
@@ -794,6 +972,7 @@ bool SscmaCamera::Capture() {
     ret = jpeg_dec_parse_header(jpeg_dec_, jpeg_io_, jpeg_out_);
     if (ret < 0) {
         ESP_LOGE(TAG, "Failed to parse JPEG header, ret: %d", ret);
+        capture_in_progress_ = false;
         return true;
     }
     jpeg_io_->outbuf = (unsigned char*)preview_image_.data;
@@ -804,6 +983,7 @@ bool SscmaCamera::Capture() {
     ret = jpeg_dec_process(jpeg_dec_, jpeg_io_);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to decode JPEG image, ret: %d", ret);
+        capture_in_progress_ = false;
         return true;
     }
 
@@ -818,6 +998,7 @@ bool SscmaCamera::Capture() {
         uint8_t* data = (uint8_t*)heap_caps_malloc(image_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (data == nullptr) {
             ESP_LOGE(TAG, "Failed to allocate memory for display image");
+            capture_in_progress_ = false;
             return true;
         }
         memcpy(data, preview_image_.data, image_size);
@@ -825,6 +1006,7 @@ bool SscmaCamera::Capture() {
         auto image = std::make_unique<LvglAllocatedImage>(data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
         display->SetPreviewImage(std::move(image));
     }
+    capture_in_progress_ = false;
     return true;
 }
 bool SscmaCamera::SetHMirror(bool enabled) {
@@ -1060,7 +1242,10 @@ bool SscmaCamera::SetCameraMode(CameraMode mode) {
              mode == MODE_OBJECT_DETECT ? "OBJECT_DETECT" : "FACE_RECOGNITION");
 
     // Stop current inference
-    sscma_client_break(sscma_client_handle_);
+    {
+        std::lock_guard<std::mutex> lock(sscma_mutex_);
+        sscma_client_break(sscma_client_handle_);
+    }
 
     if (mode == MODE_FACE_RECOGNITION) {
         // Switch to face recognition mode
@@ -1072,6 +1257,7 @@ bool SscmaCamera::SetCameraMode(CameraMode mode) {
         // Switch back to object detection mode
         SendFaceModeCommand(false);
         camera_mode_ = MODE_OBJECT_DETECT;
+        std::lock_guard<std::mutex> lock(sscma_mutex_);
         sscma_client_set_model(sscma_client_handle_, 4);
     }
 
@@ -1089,50 +1275,10 @@ void SscmaCamera::InitializeFaceMcpTools() {
     float threshold = (float)settings.GetInt("threshold", 60) / 100.0f;
     face_rec.SetMatchThreshold(threshold);
 
-    // Tool: Register a face
-    mcp_server.AddTool("self.face.register",
-        "录入一张新的人脸到本地数据库。\n"
-        "使用场景：当用户说'记住我的脸'、'录入人脸'、'把我的脸存起来叫xxx'时调用。\n"
-        "参数：\n"
-        "  `name`: 要录入的人脸名称（必填，最长31个字符）\n"
-        "返回：录入成功/失败信息",
-        PropertyList({
-            Property("name", kPropertyTypeString)
-        }),
-        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
-            std::string name = properties["name"].value<std::string>();
-
-            if (name.empty()) {
-                return std::string("{\"success\": false, \"message\": \"请提供要录入的名字\"}");
-            }
-
-            if (name.length() >= FACE_NAME_MAX_LEN) {
-                return std::string("{\"success\": false, \"message\": \"名字太长，请使用较短的名字\"}");
-            }
-
-            // Start registration mode
-            if (!face_rec.StartRegistration(name)) {
-                auto& db = FaceDatabase::GetInstance();
-                auto faces = db.ListFaces();
-                for (const auto& face : faces) {
-                    if (face == name) {
-                        return std::string("{\"success\": false, \"message\": \"名字 '" + name + "' 已存在\"}");
-                    }
-                }
-                if (db.GetFaceCount() >= FACE_MAX_COUNT) {
-                    return std::string("{\"success\": false, \"message\": \"人脸数据库已满，最多" +
-                                       std::to_string(FACE_MAX_COUNT) + "张\"}");
-                }
-                return std::string("{\"success\": false, \"message\": \"无法开始录入\"}");
-            }
-
-            // Switch to face mode and capture
-            SetCameraMode(MODE_FACE_RECOGNITION);
-
-            // For now, return a message that registration has started
-            // The actual registration will be completed when face data is received
-            return std::string("{\"success\": true, \"message\": \"请正对摄像头，开始录入人脸: " + name + "\"}");
-        });
+    // Load familiar DND mode setting (熟人免打扰)
+    bool familiar_mode = settings.GetInt("familiar_mode", 0) != 0;
+    face_rec.SetFamiliarMode(familiar_mode);
+    ESP_LOGI(TAG, "Familiar DND mode: %s", familiar_mode ? "ON" : "OFF");
 
     // Tool: Delete a face
     mcp_server.AddTool("self.face.delete",
@@ -1148,13 +1294,14 @@ void SscmaCamera::InitializeFaceMcpTools() {
             std::string name = properties["name"].value<std::string>();
 
             if (name.empty()) {
-                return std::string("{\"success\": false, \"message\": \"请提供要删除的名字\"}");
+                return std::string("删除失败: 请提供要删除的名字");
             }
 
+            std::string display_name = FaceDatabase::DecodeName(name);
             if (face_db.DeleteFace(name)) {
-                return std::string("{\"success\": true, \"message\": \"已删除人脸: " + name + "\"}");
+                return std::string("已删除人脸: " + display_name);
             } else {
-                return std::string("{\"success\": false, \"message\": \"未找到名为 '" + name + "' 的人脸\"}");
+                return std::string("未找到名为 '" + display_name + "' 的人脸");
             }
         });
 
@@ -1166,16 +1313,14 @@ void SscmaCamera::InitializeFaceMcpTools() {
         PropertyList(),
         [&face_db](const PropertyList& properties) -> ReturnValue {
             auto faces = face_db.ListFaces();
-
-            cJSON* result = cJSON_CreateObject();
-            cJSON_AddNumberToObject(result, "count", (int)faces.size());
-
-            cJSON* names = cJSON_CreateArray();
-            for (const auto& name : faces) {
-                cJSON_AddItemToArray(names, cJSON_CreateString(name.c_str()));
+            if (faces.empty()) {
+                return std::string("当前没有已录入的人脸。");
             }
-            cJSON_AddItemToObject(result, "faces", names);
-
+            std::string result = "已录入 " + std::to_string(faces.size()) + " 张人脸: ";
+            for (size_t i = 0; i < faces.size(); i++) {
+                if (i > 0) result += ", ";
+                result += FaceDatabase::DecodeName(faces[i]);
+            }
             return result;
         });
 
@@ -1187,7 +1332,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
         "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。\n"
         "返回：当前开关状态",
         PropertyList({
-            Property("enable", kPropertyTypeInteger, face_recognition_en_, 0, 1)
+            Property("enable", kPropertyTypeInteger, face_recognition_en_.load() ? 1 : 0, 0, 1)
         }),
         [this, &face_rec](const PropertyList& properties) -> ReturnValue {
             Settings settings("face", true);
@@ -1201,7 +1346,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
             } catch (const std::runtime_error&) {
                 // enable not provided -> treat as query
             }
-            int cur_en = settings.GetInt("enable", this->face_recognition_en_);
+            int cur_en = settings.GetInt("enable", this->face_recognition_en_.load() ? 1 : 0);
             return std::string("{\"enable\":" + std::to_string(cur_en) + "}");
         });
 
@@ -1229,5 +1374,69 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return std::string("{\"threshold\":" + std::to_string(cur_threshold) + "}");
         });
 
+    // Tool: Set familiar DND mode (熟人免打扰)
+    mcp_server.AddTool("self.face.familiar_mode",
+        "开启或关闭熟人免打扰模式。\n"
+        "开启时：熟人不打扰（忽略已录入的人脸），仅陌生人触发唤醒警报 (stranger detected)\n"
+        "关闭时：任何人脸都会唤醒（熟人报名字，陌生人报 person detected）\n"
+        "参数：\n"
+        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。",
+        PropertyList({
+            Property("enable", kPropertyTypeInteger, familiar_mode ? 1 : 0, 0, 1)
+        }),
+        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
+            Settings settings("face", true);
+            try {
+                const Property& enable_prop = properties["enable"];
+                int en = enable_prop.value<int>();
+                settings.SetInt("familiar_mode", en);
+                face_rec.SetFamiliarMode(en != 0);
+                ESP_LOGI(TAG, "Set familiar mode to %d", en);
+            } catch (const std::runtime_error&) {
+                // enable not provided -> treat as query
+            }
+            int cur_mode = settings.GetInt("familiar_mode", 0);
+            return std::string("{\"familiar_mode\":" + std::to_string(cur_mode) + "}");
+        });
+
+
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
+}
+
+void SscmaCamera::PauseInference() {
+    std::lock_guard<std::mutex> lock(pause_state_mutex_);
+    if (inference_paused_.load()) return;
+
+    // Save current state
+    paused_inference_en_ = inference_en.load();
+    paused_face_recognition_en_ = face_recognition_en_.load();
+
+    // Disable both inference modes so the monitor task stops sending SPI commands.
+    // Don't call sscma_client_break() here — it blocks on SPI and would freeze
+    // the console REPL. The monitor task will detect the flag change and call
+    // sscma_client_break itself on the next iteration.
+    inference_en = 0;
+    face_recognition_en_ = false;
+
+    inference_paused_ = true;
+    inference_paused_at_ = esp_timer_get_time() / 1000000;  // seconds
+    ESP_LOGI(TAG, "Inference paused (was: inference=%d, face=%d), auto-resume in %ds",
+             paused_inference_en_, paused_face_recognition_en_, INFERENCE_PAUSE_TIMEOUT_SEC);
+}
+
+void SscmaCamera::ResumeInference() {
+    std::lock_guard<std::mutex> lock(pause_state_mutex_);
+    if (!inference_paused_.load()) return;
+
+    // Restore saved state
+    inference_en = paused_inference_en_;
+    face_recognition_en_ = paused_face_recognition_en_;
+
+    // Mark SSCMA as restarted so monitor task resets its local is_face_mode/is_inference
+    // flags — the external UART session may have left Himax in an unknown state.
+    sscma_restarted_ = true;
+
+    inference_paused_ = false;
+    ESP_LOGI(TAG, "Inference resumed (inference=%d, face=%d)",
+             inference_en.load(), face_recognition_en_.load());
 }

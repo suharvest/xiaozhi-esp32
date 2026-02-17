@@ -5,6 +5,8 @@
 #include <lvgl.h>
 #include <thread>
 #include <memory>
+#include <atomic>
+#include <mutex>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -56,20 +58,20 @@ private:
     bool need_start_cooldown = false; // 是否需要开始冷却期
     int64_t last_detected_time = 0; // 验证期间最后一次检测到物体的时间
     
-    int detect_target = 0;
-    int detect_threshold = 75;
-    int detect_duration_sec = 2; // 检测持续时间2秒，确认人员持续存在
-    int detect_invoke_interval_sec = 8; // 默认15秒冷却期，避免频繁开始会话
+    std::atomic<int> detect_target{0};
+    std::atomic<int> detect_threshold{75};
+    std::atomic<int> detect_duration_sec{3}; // 检测持续时间3秒，确认人员持续存在
+    std::atomic<int> detect_invoke_interval_sec{5}; // 默认5秒冷却期，避免频繁开始会话
     int detect_debounce_sec = 1; // 验证期间人员离开的去抖动时间1秒
-    int inference_en = 0; // 推理使能开关（0: 关闭, 1: 开启）
-    bool sscma_restarted_ = false;
+    std::atomic<int> inference_en{0}; // 推理使能开关（0: 关闭, 1: 开启）
+    std::atomic<bool> sscma_restarted_{false};
     
     sscma_client_model_t *model;
     int model_class_cnt = 0;
 
     // 人脸识别相关
     CameraMode camera_mode_ = MODE_OBJECT_DETECT;
-    bool face_recognition_en_ = 0;  // 待命时人脸识别开关
+    std::atomic<bool> face_recognition_en_{false};  // 待命时人脸识别开关
 public:
     SscmaCamera(esp_io_expander_handle_t io_exp_handle);
     ~SscmaCamera();
@@ -87,6 +89,20 @@ public:
     bool SetCameraMode(CameraMode mode);
     bool SendFaceModeCommand(bool enable);
     void InitializeFaceMcpTools();
+
+    // Pause/resume all SPI inference so external UART enrollment can take over Himax
+    void PauseInference();
+    void ResumeInference();
+
+private:
+    bool paused_inference_en_ = false;
+    bool paused_face_recognition_en_ = false;
+    std::atomic<bool> inference_paused_{false};
+    std::atomic<int64_t> inference_paused_at_{0};
+    std::atomic<bool> capture_in_progress_{false};
+    std::mutex sscma_mutex_;
+    std::mutex pause_state_mutex_;
+    static constexpr int INFERENCE_PAUSE_TIMEOUT_SEC = 300;  // 5 min auto-resume
 };
 
 #endif // ESP32_CAMERA_H
