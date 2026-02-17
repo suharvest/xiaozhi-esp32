@@ -33,6 +33,7 @@ from .doa_tracker import HeadTracker
 from .emotion_mapper import EmotionMapper
 from .mcp_server import McpServer
 from .robot_controller import RobotController
+from .wake_word_detector import WakeWordDetector
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,21 @@ class ReachyXiaozhiBridge:
             no_speech_timeout=config.motion.head_tracking_no_speech_timeout,
         ) if config.motion.enable_head_tracking else None
 
+        # Wake word detector (only when mode == "wake_word")
+        self._wake_word: Optional[WakeWordDetector] = None
+        if config.wake_word.mode == "wake_word":
+            self._wake_word = WakeWordDetector(
+                keyword=config.wake_word.keyword,
+                model_dir=config.wake_word.model_dir,
+                sample_rate=config.audio.input_sample_rate,
+                sensitivity=config.wake_word.sensitivity,
+            )
+            self._wake_word.on_detected = self._on_wake_word_detected
+
+        # In wake_word mode, audio is only forwarded after detection.
+        # In always_on mode, audio is always forwarded.
+        self._audio_forwarding = config.wake_word.mode != "wake_word"
+
         # Wire up protocol callbacks
         self._protocol.on_audio(self._on_server_audio)
         self._protocol.on_tts_start(self._on_tts_start)
@@ -119,12 +135,19 @@ class ReachyXiaozhiBridge:
         """Server starts sending TTS audio."""
         logger.info("TTS started - begin playback")
         self._is_speaking = True
+        if self._head_tracker:
+            self._head_tracker.pause()
         self._robot.start_playing()
 
     def _on_tts_stop(self):
         """Server finished TTS."""
         logger.info("TTS stopped")
         self._is_speaking = False
+        if self._head_tracker:
+            self._head_tracker.resume()
+        # In wake_word mode, stop forwarding audio until next detection
+        if self._wake_word:
+            self._audio_forwarding = False
         asyncio.get_event_loop().call_soon(self._flush_playback)
 
     def _on_tts_sentence(self, text: str):
@@ -162,6 +185,23 @@ class ReachyXiaozhiBridge:
         if emotion and self._config.motion.enable_emotions:
             self._emotions.queue_emotion(emotion)
 
+    def _on_wake_word_detected(self, keyword: str):
+        """Called by WakeWordDetector when the keyword is heard."""
+        logger.info(f"Wake word detected: '{keyword}'")
+        self._audio_forwarding = True
+        # Schedule the async server notification on the event loop
+        loop = asyncio.get_event_loop()
+        if self._is_speaking:
+            # Interrupt current TTS and start new conversation
+            loop.call_soon_threadsafe(
+                asyncio.ensure_future,
+                self._protocol.send_abort_speaking(AbortReason.WAKE_WORD_DETECTED),
+            )
+        loop.call_soon_threadsafe(
+            asyncio.ensure_future,
+            self._protocol.send_wake_word_detected(keyword),
+        )
+
     def _flush_playback(self):
         """Play remaining audio and stop."""
         remaining = self._audio.drain_playback()
@@ -173,9 +213,20 @@ class ReachyXiaozhiBridge:
     # -- Main async loops --
 
     async def _audio_capture_loop(self):
-        """Continuously capture mic audio and feed to audio bridge."""
+        """Continuously capture mic audio and feed to audio bridge.
+
+        In wake_word mode, audio is always fed to the wake word detector
+        but only forwarded to the server after the keyword is detected.
+        """
         logger.info("Audio capture loop started")
         self._robot.start_recording()
+
+        # Start wake word detector if configured
+        if self._wake_word:
+            if not self._wake_word.start():
+                logger.warning("Wake word detector failed to start, falling back to always_on")
+                self._wake_word = None
+                self._audio_forwarding = True
 
         while self._running:
             sample = self._robot.get_audio_sample()
@@ -187,10 +238,17 @@ class ReachyXiaozhiBridge:
                         sample,
                         int(len(sample) * self._config.audio.input_sample_rate / robot_rate),
                     )
-                self._audio.feed_captured_audio(sample)
+                # Always feed wake word detector (it needs continuous audio)
+                if self._wake_word and not self._audio_forwarding:
+                    self._wake_word.feed_audio(sample)
+                # Only forward to server when allowed
+                if self._audio_forwarding:
+                    self._audio.feed_captured_audio(sample)
             else:
                 await asyncio.sleep(0.02)
 
+        if self._wake_word:
+            self._wake_word.stop()
         self._robot.stop_recording()
         logger.info("Audio capture loop stopped")
 
@@ -262,11 +320,9 @@ class ReachyXiaozhiBridge:
         logger.info("Head tracking loop started")
         try:
             while self._running:
-                # Only track when idle or listening (not during TTS)
-                if self._protocol.state in (DeviceState.IDLE, DeviceState.LISTENING):
-                    yaw = self._head_tracker.update()
-                    if yaw is not None:
-                        self._robot.set_head_yaw(yaw)
+                yaw = self._head_tracker.update()
+                if yaw is not None:
+                    self._robot.set_head_yaw(yaw)
                 await asyncio.sleep(self._head_tracker._poll_interval)
         finally:
             self._head_tracker.stop()

@@ -163,6 +163,7 @@ class HeadTracker:
 
         self._doa_reader = Xvf3800DoaReader()
         self._enabled = False
+        self._paused = False
         self._current_yaw = 0.0
         self._target_yaw = 0.0
         self._last_speech_time = 0.0
@@ -178,6 +179,7 @@ class HeadTracker:
             logger.warning("Head tracking disabled: XVF3800 DOA unavailable")
             return False
         self._enabled = True
+        self._paused = False
         self._current_yaw = 0.0
         self._target_yaw = 0.0
         self._last_speech_time = time.monotonic()
@@ -190,6 +192,23 @@ class HeadTracker:
         self._doa_reader.close()
         logger.info("Head tracking stopped")
 
+    def pause(self):
+        """Pause tracking (e.g. during TTS playback).
+
+        Freezes the no-speech timer so that TTS duration doesn't
+        count as silence.  The head stays at its last position.
+        """
+        self._paused = True
+
+    def resume(self):
+        """Resume tracking after a pause.
+
+        Resets the no-speech timer so the head won't immediately
+        snap back to neutral.
+        """
+        self._paused = False
+        self._last_speech_time = time.monotonic()
+
     def update(self) -> Optional[float]:
         """Read DOA and return smoothed target yaw in degrees, or None if no update needed.
 
@@ -197,7 +216,7 @@ class HeadTracker:
         Returns the yaw angle the head should turn to, or None if
         no movement is needed.
         """
-        if not self._enabled:
+        if not self._enabled or self._paused:
             return None
 
         now = time.monotonic()

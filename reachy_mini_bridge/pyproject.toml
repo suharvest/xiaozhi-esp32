@@ -25,8 +25,11 @@ mqtt = [
 doa = [
     "pyusb>=1.2",
 ]
+wake_word = [
+    "sherpa-onnx>=1.10",
+]
 all = [
-    "reachy-mini-xiaozhi-bridge[mqtt,doa]",
+    "reachy-mini-xiaozhi-bridge[mqtt,doa,wake_word]",
 ]
 
 [project.scripts]
