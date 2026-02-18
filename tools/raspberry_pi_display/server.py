@@ -37,13 +37,15 @@ import shutil
 
 # Optional mDNS support
 try:
-    from zeroconf import ServiceInfo
+    from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceStateChange
     from zeroconf.asyncio import AsyncZeroconf
     MDNS_AVAILABLE = True
 except ImportError:
     MDNS_AVAILABLE = False
     logger = logging.getLogger(__name__)
     logger.warning("zeroconf not installed, mDNS service discovery disabled. Install with: pip install zeroconf")
+
+import aiohttp
 
 # Setup logging
 logging.basicConfig(
@@ -339,6 +341,11 @@ class RemoteDisplayServer:
             if self.device_ws == ws:
                 self.device_ws = None
                 logger.info(f"Device disconnected: {client_addr}")
+                # Notify browsers that device disconnected
+                await self._broadcast_to_browsers({
+                    "type": "device_status",
+                    "connected": False,
+                })
             elif ws in self.browser_clients:
                 self.browser_clients.discard(ws)
                 logger.info(f"Browser client disconnected: {client_addr}")
@@ -396,6 +403,13 @@ class RemoteDisplayServer:
                 }
                 await ws.send_json(response)
                 logger.info("Sent hello_ack to device")
+
+                # Notify browsers that a device connected
+                await self._broadcast_to_browsers({
+                    "type": "device_status",
+                    "connected": True,
+                    "address": client_addr
+                })
 
             elif msg_type == "ui_state":
                 # UI state update from device
@@ -732,6 +746,114 @@ class RemoteDisplayServer:
         }
         await self._broadcast_to_browsers(msg)
 
+    # ========== Cast Control APIs ==========
+
+    async def handle_get_devices(self, request: web.Request) -> web.Response:
+        """GET /api/devices - Discover ESP32 devices via mDNS"""
+        if not MDNS_AVAILABLE:
+            return web.json_response({
+                "success": False,
+                "error": "zeroconf not installed"
+            }, status=500)
+
+        devices = []
+        found_event = asyncio.Event()
+
+        def on_service_state_change(zeroconf: Zeroconf, service_type: str,
+                                    name: str, state_change: ServiceStateChange):
+            if state_change != ServiceStateChange.Added:
+                return
+            info = zeroconf.get_service_info(service_type, name)
+            if info is None:
+                return
+            addresses = info.parsed_addresses()
+            if not addresses:
+                return
+            ip = addresses[0]
+            port = info.port
+            props = {k.decode(): v.decode() if isinstance(v, bytes) else v
+                     for k, v in info.properties.items()}
+            instance_name = name.replace(f".{service_type}", "")
+            devices.append({
+                "name": instance_name,
+                "ip": ip,
+                "port": port,
+                "board": props.get("board", ""),
+                "version": props.get("version", ""),
+            })
+
+        try:
+            zc = Zeroconf()
+            browser = ServiceBrowser(zc, "_xiaozhi-watcher._tcp.local.",
+                                     handlers=[on_service_state_change])
+            # Wait up to 3 seconds for discovery
+            await asyncio.sleep(3)
+            browser.cancel()
+            zc.close()
+        except Exception as e:
+            logger.error(f"mDNS discovery failed: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+        logger.info(f"Discovered {len(devices)} device(s)")
+        return web.json_response({"success": True, "devices": devices})
+
+    async def handle_cast_start(self, request: web.Request) -> web.Response:
+        """POST /api/cast/start - Tell ESP32 to connect back to our WS"""
+        try:
+            data = await request.json()
+            ip = data.get("ip")
+            port = data.get("port", 80)
+
+            if not ip:
+                return web.json_response({"success": False, "error": "Missing ip"}, status=400)
+
+            # Build our WS URL that ESP32 should connect to
+            local_ip = self._get_local_ip()
+            ws_url = f"ws://{local_ip}:{self.config.PORT}"
+
+            # POST to ESP32's HTTP server
+            esp32_url = f"http://{ip}:{port}/api/start_cast"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(esp32_url,
+                                        json={"ws_url": ws_url},
+                                        timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    result = await resp.json()
+                    return web.json_response(result)
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to reach ESP32: {e}")
+            return web.json_response({"success": False, "error": f"Cannot reach device: {e}"}, status=502)
+        except Exception as e:
+            logger.error(f"Cast start failed: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_cast_stop(self, request: web.Request) -> web.Response:
+        """POST /api/cast/stop - Tell ESP32 to stop casting"""
+        try:
+            data = await request.json()
+            ip = data.get("ip")
+            port = data.get("port", 80)
+
+            if not ip:
+                return web.json_response({"success": False, "error": "Missing ip"}, status=400)
+
+            esp32_url = f"http://{ip}:{port}/api/stop_cast"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(esp32_url,
+                                        timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    result = await resp.json()
+                    return web.json_response(result)
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to reach ESP32: {e}")
+            return web.json_response({"success": False, "error": f"Cannot reach device: {e}"}, status=502)
+        except Exception as e:
+            logger.error(f"Cast stop failed: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
     async def cleanup(self):
         """Cleanup resources"""
         await self.stop_mdns()
@@ -785,6 +907,11 @@ async def main():
     app.router.add_post("/api/config", server.handle_post_config)
     app.router.add_post("/api/narrate", server.handle_narrate)
     app.router.add_post("/api/mcp", server.handle_mcp_control)
+
+    # Cast control APIs (RPi discovers ESP32, sends HTTP to start/stop casting)
+    app.router.add_get("/api/devices", server.handle_get_devices)
+    app.router.add_post("/api/cast/start", server.handle_cast_start)
+    app.router.add_post("/api/cast/stop", server.handle_cast_stop)
 
     # Image upload APIs
     app.router.add_post("/api/upload", server.handle_upload_image)
