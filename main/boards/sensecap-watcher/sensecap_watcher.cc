@@ -11,7 +11,7 @@
 #include "sscma_camera.h"
 #include "lvgl_theme.h"
 #include "remote_display.h"
-#include "remote_display_mcp_tool.h"
+#include "remote_display_http_server.h"
 #include "face_serial_handler.h"
 #include <wifi_manager.h>
 
@@ -147,7 +147,7 @@ private:
     button_driver_t* btn_driver_ = nullptr;
     static SensecapWatcher* instance_;
     SscmaCamera* camera_ = nullptr;
-    RemoteDisplayMcpTool remote_display_mcp_tool_;
+    RemoteDisplayHttpServer remote_display_http_server_;
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -713,20 +713,9 @@ private:
     }
 
     void InitializeRemoteDisplay() {
-        // 启动一个任务，等待网络连接后再尝试连接远程显示服务器
+        // 启动一个任务，等待网络连接后启动 HTTP 服务器和自动重连
         xTaskCreate([](void* arg) {
-            // 先检查配置是否启用
-            auto config = RemoteDisplay::LoadConfig();
-            if (!config.enabled) {
-                ESP_LOGI(TAG, "Remote display disabled in config");
-                vTaskDelete(nullptr);
-                return;
-            }
-            if (config.server_url.empty()) {
-                ESP_LOGW(TAG, "Remote display URL not configured");
-                vTaskDelete(nullptr);
-                return;
-            }
+            auto* self = static_cast<SensecapWatcher*>(arg);
 
             // 等待 WiFi 真正连接（最多等待 30 秒）
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
@@ -740,16 +729,18 @@ private:
             }
 
             if (!wifi.IsConnected()) {
-                ESP_LOGW(TAG, "WiFi not connected after 30s, remote display disabled");
+                ESP_LOGW(TAG, "WiFi not connected after 30s, remote display init skipped");
                 vTaskDelete(nullptr);
                 return;
             }
 
-            // 再等待一小段时间确保网络稳定
+            // 等待网络稳定
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            // 无条件注册 PCM 转发回调（回调内部有 IsRunning() 保护）
-            // 这样即使后续通过 MCP 工具连接投屏，音频也能正常转发
+            // 启动 HTTP 控制服务器 + mDNS（供 RPi 主动发起投屏）
+            self->remote_display_http_server_.Start(80);
+
+            // 注册 PCM 转发回调（回调内部有 IsRunning() 保护）
             auto* codec = static_cast<SensecapAudioCodec*>(Board::GetInstance().GetAudioCodec());
             codec->SetPcmForwardCallback(
                 [](const int16_t* data, int samples, int sample_rate) {
@@ -760,16 +751,19 @@ private:
                 });
             ESP_LOGI(TAG, "PCM audio forwarding callback registered");
 
-            // 尝试使用 NVS 配置启动远程显示
-            auto* remote = RemoteDisplay::GetInstance();
-            if (!remote->StartWithConfig()) {
-                ESP_LOGW(TAG, "Remote display not available at boot, can connect later via voice command");
-            } else {
-                ESP_LOGI(TAG, "Remote display started successfully");
+            // 如果 NVS 中有保存的配置，尝试自动重连
+            auto config = RemoteDisplay::LoadConfig();
+            if (config.enabled && !config.server_url.empty()) {
+                auto* remote = RemoteDisplay::GetInstance();
+                if (remote->StartWithConfig()) {
+                    ESP_LOGI(TAG, "Remote display auto-reconnected to %s", config.server_url.c_str());
+                } else {
+                    ESP_LOGW(TAG, "Remote display auto-reconnect failed, waiting for RPi HTTP request");
+                }
             }
 
             vTaskDelete(nullptr);
-        }, "remote_disp_init", 4096, nullptr, 1, nullptr);
+        }, "remote_disp_init", 4096, this, 1, nullptr);
     }
 
 public:
@@ -790,9 +784,6 @@ public:
         GetBacklight()->RestoreBrightness();  // 对于不带摄像头的版本，InitializeCamera需要3s, 所以先恢复背光亮度
         InitializeCamera();
         InitializeRemoteDisplay();
-
-        // 初始化远程显示 MCP 工具（允许通过语音/AI交互配置远程显示）
-        remote_display_mcp_tool_.Initialize();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
