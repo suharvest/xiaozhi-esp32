@@ -996,6 +996,160 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
+        /* Cast control */
+        .cast-section {
+            margin-bottom: 24px;
+            padding: 16px 20px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .cast-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .cast-header label {
+            color: #cdd6f4;
+            font-size: 15px;
+            font-weight: 500;
+            text-transform: none !important;
+            letter-spacing: 0 !important;
+            margin-bottom: 0 !important;
+        }
+
+        .cast-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: rgba(108, 112, 134, 0.2);
+            color: #6c7086;
+            letter-spacing: 0.3px;
+        }
+
+        .cast-badge.connected {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.2) 0%, rgba(148, 226, 213, 0.2) 100%);
+            color: #a6e3a1;
+        }
+
+        .cast-badge.searching {
+            background: rgba(249, 226, 175, 0.2);
+            color: #f9e2af;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .cast-search-btn {
+            width: 100%;
+            padding: 10px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(137, 180, 250, 0.25);
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.1) 0%, rgba(116, 199, 236, 0.1) 100%);
+            color: #89b4fa;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .cast-search-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(137, 180, 250, 0.2) 0%, rgba(116, 199, 236, 0.2) 100%);
+            border-color: rgba(137, 180, 250, 0.4);
+        }
+
+        .cast-search-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .cast-device-list {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .cast-device-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .cast-device-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            flex: 1;
+        }
+
+        .cast-device-name {
+            color: #cdd6f4;
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .cast-device-addr {
+            color: #6c7086;
+            font-size: 12px;
+        }
+
+        .cast-connect-btn {
+            padding: 6px 16px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            margin-left: 10px;
+        }
+
+        .cast-connect-btn.connect {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.15) 0%, rgba(148, 226, 213, 0.15) 100%);
+            border-color: rgba(166, 227, 161, 0.25);
+            color: #a6e3a1;
+        }
+
+        .cast-connect-btn.connect:hover {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.25) 0%, rgba(148, 226, 213, 0.25) 100%);
+            border-color: rgba(166, 227, 161, 0.4);
+        }
+
+        .cast-connect-btn.disconnect {
+            background: rgba(243, 139, 168, 0.15);
+            border-color: rgba(243, 139, 168, 0.25);
+            color: #f38ba8;
+        }
+
+        .cast-connect-btn.disconnect:hover {
+            background: rgba(243, 139, 168, 0.25);
+            border-color: rgba(243, 139, 168, 0.4);
+        }
+
+        .cast-connect-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .cast-empty {
+            color: #585b70;
+            font-size: 13px;
+            text-align: center;
+            padding: 12px;
+        }
+
     </style>
 </head>
 <body>
@@ -1026,6 +1180,16 @@
             <button id="config-close">&times;</button>
         </div>
         <div class="config-body">
+            <!-- Cast control -->
+            <div class="cast-section">
+                <div class="cast-header">
+                    <label>投屏控制</label>
+                    <span id="cast-badge" class="cast-badge">未连接</span>
+                </div>
+                <button id="cast-search-btn" class="cast-search-btn">搜索设备...</button>
+                <div id="cast-device-list" class="cast-device-list"></div>
+            </div>
+
             <div class="mode-toggle">
                 <label>启用讲述模式</label>
                 <label class="toggle-switch">
@@ -1259,6 +1423,8 @@
             } else if (data.type === 'emoji_list') {
                 // Server sends list of available emojis
                 data.emojis.forEach(name => availableEmojis.add(name));
+            } else if (data.type === 'device_status') {
+                updateCastBadge(data.connected);
             }
         }
 
@@ -1989,6 +2155,128 @@
                 updateMcpStatus(data.mcpConnected || false);
             }
         }
+
+        // ========== Cast Control ==========
+        const castBadge = document.getElementById('cast-badge');
+        const castSearchBtn = document.getElementById('cast-search-btn');
+        const castDeviceList = document.getElementById('cast-device-list');
+        let castConnectedDevice = null; // {ip, port} of currently connected device
+
+        function updateCastBadge(connected) {
+            if (connected) {
+                castBadge.textContent = '已连接';
+                castBadge.className = 'cast-badge connected';
+            } else {
+                castBadge.textContent = '未连接';
+                castBadge.className = 'cast-badge';
+                castConnectedDevice = null;
+                // Re-render device list to reset buttons
+                renderDeviceList(lastDiscoveredDevices);
+            }
+        }
+
+        let lastDiscoveredDevices = [];
+
+        function renderDeviceList(devices) {
+            lastDiscoveredDevices = devices;
+            castDeviceList.innerHTML = '';
+            if (!devices || devices.length === 0) {
+                castDeviceList.innerHTML = '<div class="cast-empty">未发现设备</div>';
+                return;
+            }
+            devices.forEach(dev => {
+                const item = document.createElement('div');
+                item.className = 'cast-device-item';
+
+                const isConnected = castConnectedDevice &&
+                    castConnectedDevice.ip === dev.ip &&
+                    castConnectedDevice.port === dev.port;
+
+                item.innerHTML = `
+                    <div class="cast-device-info">
+                        <span class="cast-device-name">${dev.name || 'SenseCAP Watcher'}</span>
+                        <span class="cast-device-addr">${dev.ip}:${dev.port}</span>
+                    </div>
+                    <button class="cast-connect-btn ${isConnected ? 'disconnect' : 'connect'}"
+                            data-ip="${dev.ip}" data-port="${dev.port}">
+                        ${isConnected ? '断开' : '连接'}
+                    </button>
+                `;
+                const btn = item.querySelector('.cast-connect-btn');
+                btn.addEventListener('click', () => {
+                    if (isConnected) {
+                        stopCast(dev.ip, dev.port);
+                    } else {
+                        startCast(dev.ip, dev.port);
+                    }
+                });
+                castDeviceList.appendChild(item);
+            });
+        }
+
+        async function searchDevices() {
+            castSearchBtn.disabled = true;
+            castSearchBtn.textContent = '搜索中...';
+            castBadge.className = 'cast-badge searching';
+            castBadge.textContent = '搜索中';
+
+            const result = await apiCall('/api/devices');
+            castSearchBtn.disabled = false;
+            castSearchBtn.textContent = '搜索设备...';
+
+            // Restore badge state
+            if (castConnectedDevice) {
+                updateCastBadge(true);
+            } else {
+                castBadge.textContent = '未连接';
+                castBadge.className = 'cast-badge';
+            }
+
+            if (result.success) {
+                renderDeviceList(result.devices);
+            } else {
+                castDeviceList.innerHTML = `<div class="cast-empty">搜索失败: ${result.error || '未知错误'}</div>`;
+            }
+        }
+
+        async function startCast(ip, port) {
+            // Disable all buttons during operation
+            castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = true);
+
+            const result = await apiCall('/api/cast/start', {
+                method: 'POST',
+                body: JSON.stringify({ ip, port })
+            });
+
+            if (result.success) {
+                castConnectedDevice = { ip, port };
+                updateCastBadge(true);
+                renderDeviceList(lastDiscoveredDevices);
+            } else {
+                alert('连接失败: ' + (result.error || '未知错误'));
+                castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = false);
+            }
+        }
+
+        async function stopCast(ip, port) {
+            castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = true);
+
+            const result = await apiCall('/api/cast/stop', {
+                method: 'POST',
+                body: JSON.stringify({ ip, port })
+            });
+
+            if (result.success) {
+                castConnectedDevice = null;
+                updateCastBadge(false);
+                renderDeviceList(lastDiscoveredDevices);
+            } else {
+                alert('断开失败: ' + (result.error || '未知错误'));
+                castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = false);
+            }
+        }
+
+        castSearchBtn.addEventListener('click', searchDevices);
 
     </script>
 </body>
