@@ -362,6 +362,16 @@ class RemoteDisplayServer:
 
         self.browser_clients.add(ws)
 
+        # Send current device connection status to new client
+        try:
+            device_connected = self.device_ws is not None and not self.device_ws.closed
+            await ws.send_json({
+                "type": "device_status",
+                "connected": device_connected,
+            })
+        except Exception as e:
+            logger.error(f"Failed to send device status: {e}")
+
         # Send current UI state to new client
         if self.current_ui_state:
             try:
@@ -756,8 +766,26 @@ class RemoteDisplayServer:
                 "error": "zeroconf not installed"
             }, status=500)
 
+        try:
+            loop = asyncio.get_event_loop()
+            devices = await loop.run_in_executor(None, self._discover_devices_sync)
+        except Exception as e:
+            logger.error(f"mDNS discovery failed: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+        logger.info(f"Discovered {len(devices)} device(s)")
+        return web.json_response({"success": True, "devices": devices})
+
+    def _discover_devices_sync(self) -> list:
+        """Synchronous mDNS browse (runs in thread executor)"""
+        import time
+        import threading
+
         devices = []
-        found_event = asyncio.Event()
+        event = threading.Event()
 
         def on_service_state_change(zeroconf: Zeroconf, service_type: str,
                                     name: str, state_change: ServiceStateChange):
@@ -781,24 +809,19 @@ class RemoteDisplayServer:
                 "board": props.get("board", ""),
                 "version": props.get("version", ""),
             })
+            event.set()
 
-        try:
-            zc = Zeroconf()
-            browser = ServiceBrowser(zc, "_xiaozhi-watcher._tcp.local.",
-                                     handlers=[on_service_state_change])
-            # Wait up to 3 seconds for discovery
-            await asyncio.sleep(3)
-            browser.cancel()
-            zc.close()
-        except Exception as e:
-            logger.error(f"mDNS discovery failed: {e}")
-            return web.json_response({
-                "success": False,
-                "error": str(e)
-            }, status=500)
-
-        logger.info(f"Discovered {len(devices)} device(s)")
-        return web.json_response({"success": True, "devices": devices})
+        zc = Zeroconf()
+        browser = ServiceBrowser(zc, "_xiaozhi-watcher._tcp.local.",
+                                 handlers=[on_service_state_change])
+        # Wait: up to 3s total, but return early if at least one device found
+        event.wait(timeout=3)
+        if devices:
+            # Give a short extra window for more devices
+            time.sleep(0.5)
+        browser.cancel()
+        zc.close()
+        return devices
 
     async def handle_cast_start(self, request: web.Request) -> web.Response:
         """POST /api/cast/start - Tell ESP32 to connect back to our WS"""
@@ -863,6 +886,61 @@ class RemoteDisplayServer:
         logger.info(f"Server stopped. Total UI states: {self.ui_state_count}, audio packets: {self.audio_count}")
 
 
+def _kill_previous_instance(port: int):
+    """Kill any previous server process listening on the same port"""
+    import signal
+    my_pid = os.getpid()
+    try:
+        # lsof works on macOS and Linux
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().splitlines():
+            pid = int(line.strip())
+            if pid != my_pid:
+                logger.info(f"Killing previous server process (PID {pid}) on port {port}")
+                os.kill(pid, signal.SIGTERM)
+        # Wait for port release (up to 3s)
+        if result.stdout.strip():
+            import time
+            for _ in range(6):
+                time.sleep(0.5)
+                check = subprocess.run(
+                    ["lsof", "-ti", f":{port}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                remaining = [int(p) for p in check.stdout.strip().splitlines() if int(p) != my_pid]
+                if not remaining:
+                    break
+            else:
+                # Force kill if still alive
+                for pid in remaining:
+                    logger.warning(f"Force killing PID {pid}")
+                    os.kill(pid, signal.SIGKILL)
+                time.sleep(0.5)
+    except FileNotFoundError:
+        # lsof not available (e.g. minimal Docker image), try ss
+        try:
+            result = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{port}"],
+                capture_output=True, text=True, timeout=5
+            )
+            import re
+            for match in re.finditer(r'pid=(\d+)', result.stdout):
+                pid = int(match.group(1))
+                if pid != my_pid:
+                    logger.info(f"Killing previous server process (PID {pid}) on port {port}")
+                    os.kill(pid, signal.SIGTERM)
+            if 'pid=' in result.stdout:
+                import time
+                time.sleep(0.5)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Failed to check for previous instance: {e}")
+
+
 async def main():
     """Main entry point"""
     print("""
@@ -876,6 +954,9 @@ async def main():
     """)
 
     server = RemoteDisplayServer()
+
+    # Kill any previous instance on the same port
+    _kill_previous_instance(server.config.PORT)
 
     # Initialize audio player (skip by default, enable with RD_LOCAL_AUDIO=1)
     # Audio is played via browser by default for consistent behavior
