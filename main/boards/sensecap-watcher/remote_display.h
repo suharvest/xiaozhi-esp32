@@ -89,6 +89,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
+    std::atomic<uint32_t> connect_generation_{0};
     std::string current_server_url_;  // 当前连接的服务器 URL
 
     // UI 状态缓存

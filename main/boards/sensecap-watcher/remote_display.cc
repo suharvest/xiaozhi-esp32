@@ -97,6 +97,9 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
         return false;
     }
 
+    connected_ = false;
+    uint32_t generation = connect_generation_.fetch_add(1) + 1;
+
     websocket_ = network->CreateWebSocket(2);  // 使用 connect_id 2
     if (!websocket_) {
         ESP_LOGE(TAG, "Failed to create WebSocket");
@@ -104,13 +107,19 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     }
 
     // 设置回调
-    websocket_->OnConnected([this]() {
+    websocket_->OnConnected([this, generation]() {
+        if (generation != connect_generation_.load()) {
+            return;
+        }
         ESP_LOGI(TAG, "Connected to remote display server");
         connected_ = true;
         SendHello();
     });
 
-    websocket_->OnDisconnected([this]() {
+    websocket_->OnDisconnected([this, generation]() {
+        if (generation != connect_generation_.load()) {
+            return;
+        }
         ESP_LOGW(TAG, "Disconnected from remote display server");
         connected_ = false;
     });
@@ -164,6 +173,7 @@ void RemoteDisplay::Stop() {
     }
 
     running_ = false;
+    connect_generation_.fetch_add(1);
 
     // 注意：PCM 音频转发回调的取消需要在调用方处理
 
@@ -375,12 +385,16 @@ std::vector<DiscoveredDisplay> RemoteDisplay::DiscoverDisplays(int timeout_ms) {
 
     // 初始化 mDNS（如果尚未初始化）
     static bool mdns_initialized = false;
-    if (!mdns_initialized) {
-        if (mdns_init() != ESP_OK) {
-            ESP_LOGE(TAG, "mDNS init failed");
-            return displays;
+    static std::mutex mdns_init_mutex;
+    {
+        std::lock_guard<std::mutex> init_lock(mdns_init_mutex);
+        if (!mdns_initialized) {
+            if (mdns_init() != ESP_OK) {
+                ESP_LOGE(TAG, "mDNS init failed");
+                return displays;
+            }
+            mdns_initialized = true;
         }
-        mdns_initialized = true;
     }
 
     ESP_LOGI(TAG, "Discovering display services via mDNS (timeout: %dms)...", timeout_ms);
