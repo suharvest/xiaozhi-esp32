@@ -996,26 +996,24 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Cast control */
+        /* Cast control — sits between config-header and config-body */
         .cast-section {
-            margin-bottom: 24px;
-            padding: 16px 20px;
+            padding: 16px 24px;
             background: rgba(255, 255, 255, 0.03);
-            border-radius: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .cast-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 12px;
+            margin-bottom: 10px;
         }
 
         .cast-header label {
-            color: #cdd6f4;
-            font-size: 15px;
-            font-weight: 500;
+            color: #cdd6f4 !important;
+            font-size: 15px !important;
+            font-weight: 500 !important;
             text-transform: none !important;
             letter-spacing: 0 !important;
             margin-bottom: 0 !important;
@@ -1042,8 +1040,13 @@
             animation: pulse 1.5s ease-in-out infinite;
         }
 
+        .cast-controls {
+            display: flex;
+            gap: 8px;
+        }
+
         .cast-search-btn {
-            width: 100%;
+            flex: 1;
             padding: 10px 16px;
             border-radius: 10px;
             border: 1px solid rgba(137, 180, 250, 0.25);
@@ -1065,18 +1068,74 @@
             cursor: not-allowed;
         }
 
+        .cast-manual-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .cast-manual-row input[type="text"] {
+            flex: 1;
+            min-width: 0;
+            padding: 9px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.25);
+            color: #cdd6f4;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+
+        .cast-manual-row input[type="text"]:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .cast-manual-row input[type="text"]:focus {
+            outline: none;
+            border-color: #89b4fa;
+            background: rgba(0, 0, 0, 0.35);
+            box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.15);
+        }
+
+        .cast-manual-row input[type="text"]::placeholder {
+            color: rgba(166, 173, 200, 0.5);
+        }
+
+        .cast-manual-btn {
+            padding: 9px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(166, 227, 161, 0.25);
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.15) 0%, rgba(148, 226, 213, 0.15) 100%);
+            color: #a6e3a1;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .cast-manual-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(166, 227, 161, 0.25) 0%, rgba(148, 226, 213, 0.25) 100%);
+            border-color: rgba(166, 227, 161, 0.4);
+        }
+
+        .cast-manual-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
         .cast-device-list {
-            margin-top: 10px;
+            margin-top: 8px;
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 6px;
         }
 
         .cast-device-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 10px 14px;
+            padding: 8px 12px;
             background: rgba(0, 0, 0, 0.2);
             border-radius: 10px;
             border: 1px solid rgba(255, 255, 255, 0.04);
@@ -1105,7 +1164,7 @@
         }
 
         .cast-connect-btn {
-            padding: 6px 16px;
+            padding: 5px 14px;
             border-radius: 8px;
             border: 1px solid transparent;
             font-size: 13px;
@@ -1147,7 +1206,16 @@
             color: #585b70;
             font-size: 13px;
             text-align: center;
-            padding: 12px;
+            padding: 8px;
+        }
+
+        .cast-empty a {
+            color: #89b4fa;
+            text-decoration: none;
+        }
+
+        .cast-empty a:hover {
+            text-decoration: underline;
         }
 
     </style>
@@ -1179,17 +1247,20 @@
             <h3>讲述模式配置</h3>
             <button id="config-close">&times;</button>
         </div>
-        <div class="config-body">
-            <!-- Cast control -->
-            <div class="cast-section">
-                <div class="cast-header">
-                    <label>投屏控制</label>
-                    <span id="cast-badge" class="cast-badge">未连接</span>
-                </div>
-                <button id="cast-search-btn" class="cast-search-btn">搜索设备...</button>
-                <div id="cast-device-list" class="cast-device-list"></div>
+        <!-- Cast control (between header and scrollable body) -->
+        <div class="cast-section">
+            <div class="cast-header">
+                <label>投屏控制</label>
+                <span id="cast-badge" class="cast-badge">未连接</span>
             </div>
-
+            <button id="cast-search-btn" class="cast-search-btn">搜索设备</button>
+            <div id="cast-device-list" class="cast-device-list"></div>
+            <div id="cast-manual-section" class="cast-manual-row" style="display:none;">
+                <input type="text" id="cast-manual-ip" placeholder="IP 地址，如 192.168.1.100">
+                <button id="cast-manual-btn" class="cast-manual-btn">连接</button>
+            </div>
+        </div>
+        <div class="config-body">
             <div class="mode-toggle">
                 <label>启用讲述模式</label>
                 <label class="toggle-switch">
@@ -2160,7 +2231,22 @@
         const castBadge = document.getElementById('cast-badge');
         const castSearchBtn = document.getElementById('cast-search-btn');
         const castDeviceList = document.getElementById('cast-device-list');
-        let castConnectedDevice = null; // {ip, port} of currently connected device
+
+        // Restore last connected device from localStorage
+        let castConnectedDevice = null;
+        try {
+            const saved = localStorage.getItem('cast-device');
+            if (saved) castConnectedDevice = JSON.parse(saved);
+        } catch (e) {}
+
+        function saveCastDevice(dev) {
+            castConnectedDevice = dev;
+            if (dev) {
+                localStorage.setItem('cast-device', JSON.stringify(dev));
+            } else {
+                localStorage.removeItem('cast-device');
+            }
+        }
 
         function updateCastBadge(connected) {
             if (connected) {
@@ -2169,19 +2255,26 @@
             } else {
                 castBadge.textContent = '未连接';
                 castBadge.className = 'cast-badge';
-                castConnectedDevice = null;
-                // Re-render device list to reset buttons
+                saveCastDevice(null);
                 renderDeviceList(lastDiscoveredDevices);
             }
         }
 
         let lastDiscoveredDevices = [];
 
-        function renderDeviceList(devices) {
+        function renderDeviceList(devices, afterSearch) {
             lastDiscoveredDevices = devices;
             castDeviceList.innerHTML = '';
+            castManualSection.style.display = 'none';
             if (!devices || devices.length === 0) {
-                castDeviceList.innerHTML = '<div class="cast-empty">未发现设备</div>';
+                if (afterSearch) {
+                    castDeviceList.innerHTML = '<div class="cast-empty">未发现设备，<a href="#" id="cast-manual-link">手动输入 IP</a></div>';
+                    document.getElementById('cast-manual-link').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        castManualSection.style.display = 'flex';
+                        castManualIp.focus();
+                    });
+                }
                 return;
             }
             devices.forEach(dev => {
@@ -2222,7 +2315,7 @@
 
             const result = await apiCall('/api/devices');
             castSearchBtn.disabled = false;
-            castSearchBtn.textContent = '搜索设备...';
+            castSearchBtn.textContent = '搜索设备';
 
             // Restore badge state
             if (castConnectedDevice) {
@@ -2233,7 +2326,7 @@
             }
 
             if (result.success) {
-                renderDeviceList(result.devices);
+                renderDeviceList(result.devices, true);
             } else {
                 castDeviceList.innerHTML = `<div class="cast-empty">搜索失败: ${result.error || '未知错误'}</div>`;
             }
@@ -2249,7 +2342,7 @@
             });
 
             if (result.success) {
-                castConnectedDevice = { ip, port };
+                saveCastDevice({ ip, port });
                 updateCastBadge(true);
                 renderDeviceList(lastDiscoveredDevices);
             } else {
@@ -2267,7 +2360,7 @@
             });
 
             if (result.success) {
-                castConnectedDevice = null;
+                saveCastDevice(null);
                 updateCastBadge(false);
                 renderDeviceList(lastDiscoveredDevices);
             } else {
@@ -2277,6 +2370,27 @@
         }
 
         castSearchBtn.addEventListener('click', searchDevices);
+
+        // Manual IP connect
+        const castManualSection = document.getElementById('cast-manual-section');
+        const castManualIp = document.getElementById('cast-manual-ip');
+        const castManualBtn = document.getElementById('cast-manual-btn');
+
+        castManualBtn.addEventListener('click', () => {
+            const raw = castManualIp.value.trim();
+            if (!raw) return;
+            let ip = raw, port = 80;
+            if (raw.includes(':')) {
+                const parts = raw.split(':');
+                ip = parts[0];
+                port = parseInt(parts[1], 10) || 80;
+            }
+            startCast(ip, port);
+        });
+
+        castManualIp.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') castManualBtn.click();
+        });
 
     </script>
 </body>
