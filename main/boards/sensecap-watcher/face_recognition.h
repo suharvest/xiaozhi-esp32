@@ -33,7 +33,7 @@ public:
     bool GetConsensusEmbedding(float* out_embedding);
     void Clear();
     int GetVoteCount();
-    void SetWindow(int64_t window_us) { window_us_ = window_us; }
+    void SetWindow(int64_t window_us);
 
 private:
     struct VoteEntry {

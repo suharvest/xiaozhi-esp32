@@ -119,6 +119,12 @@ int FaceVotingBuffer::GetVoteCount() {
     return count;
 }
 
+void FaceVotingBuffer::SetWindow(int64_t window_us) {
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    window_us_ = window_us;
+    xSemaphoreGive(mutex_);
+}
+
 // ============== FaceRecognition Implementation ==============
 
 FaceRecognition& FaceRecognition::GetInstance() {
