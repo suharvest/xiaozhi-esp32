@@ -4,11 +4,47 @@
 #include "board.h"
 
 #include <esp_log.h>
+#include <mbedtls/base64.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 
 static const char* TAG = "FaceSerial";
+
+/**
+ * Convert IEEE 754 half-precision (float16) to single-precision (float32).
+ * Pure bit manipulation, no hardware FP16 support needed.
+ */
+static float half_to_float(uint16_t h) {
+    uint32_t sign = (uint32_t)(h >> 15) << 31;
+    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    uint32_t f;
+
+    if (exp == 0) {
+        if (mant == 0) {
+            f = sign;  // ±0
+        } else {
+            // Denormalized: convert to normalized float32
+            exp = 127 - 14;
+            while (!(mant & 0x400)) {
+                mant <<= 1;
+                exp--;
+            }
+            mant &= 0x3FF;
+            f = sign | (exp << 23) | (mant << 13);
+        }
+    } else if (exp == 31) {
+        f = sign | 0x7F800000 | (mant << 13);  // Inf/NaN
+    } else {
+        f = sign | ((exp + 112) << 23) | (mant << 13);  // Normal
+    }
+
+    float result;
+    memcpy(&result, &f, sizeof(result));
+    return result;
+}
 
 FaceSerialHandler& FaceSerialHandler::GetInstance() {
     static FaceSerialHandler instance;
@@ -27,7 +63,7 @@ void FaceSerialHandler::RegisterCommands() {
         },
         {
             .command = "face_add",
-            .help = "Add face: face_add <name> <f0,f1,...,f127>",
+            .help = "Add face: face_add <name> <csv_floats|base64_fp16>",
             .hint = "<name> <embedding>",
             .func = CmdAdd,
             .argtable = nullptr,
@@ -89,7 +125,7 @@ int FaceSerialHandler::CmdList(int argc, char** argv) {
 
 int FaceSerialHandler::CmdAdd(int argc, char** argv) {
     if (argc < 3) {
-        printf("{\"ok\":false,\"error\":\"Usage: face_add <name> <f0,f1,...,f127>\"}\n");
+        printf("{\"ok\":false,\"error\":\"Usage: face_add <name> <csv_floats|base64_fp16>\"}\n");
         return 1;
     }
 
@@ -111,25 +147,53 @@ int FaceSerialHandler::CmdAdd(int argc, char** argv) {
         return 1;
     }
 
-    // Parse comma-separated floats
     float embedding[FACE_EMBEDDING_DIM];
-    int count = 0;
-    const char* p = emb_str;
-    while (count < FACE_EMBEDDING_DIM && *p) {
-        char* end;
-        embedding[count] = strtof(p, &end);
-        if (end == p) {
-            printf("{\"ok\":false,\"error\":\"Invalid float at position %d\"}\n", count);
+
+    // Detect format: comma present → legacy CSV, otherwise → base64(float16)
+    if (strchr(emb_str, ',') != nullptr) {
+        // Legacy CSV: parse comma-separated float32 values
+        int count = 0;
+        const char* p = emb_str;
+        while (count < FACE_EMBEDDING_DIM && *p) {
+            char* end;
+            embedding[count] = strtof(p, &end);
+            if (end == p) {
+                printf("{\"ok\":false,\"error\":\"Invalid float at position %d\"}\n", count);
+                return 1;
+            }
+            count++;
+            p = end;
+            if (*p == ',') p++;
+        }
+
+        if (count != FACE_EMBEDDING_DIM) {
+            printf("{\"ok\":false,\"error\":\"Expected %d floats, got %d\"}\n", FACE_EMBEDDING_DIM, count);
             return 1;
         }
-        count++;
-        p = end;
-        if (*p == ',') p++;
-    }
+    } else {
+        // Base64-encoded float16: decode → 256 bytes → 128 half-floats
+        const size_t expected_bytes = FACE_EMBEDDING_DIM * sizeof(uint16_t);  // 256
+        uint8_t decoded[256];
+        size_t decoded_len = 0;
 
-    if (count != FACE_EMBEDDING_DIM) {
-        printf("{\"ok\":false,\"error\":\"Expected %d floats, got %d\"}\n", FACE_EMBEDDING_DIM, count);
-        return 1;
+        int ret = mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_len,
+                                        (const unsigned char*)emb_str, strlen(emb_str));
+        if (ret != 0) {
+            printf("{\"ok\":false,\"error\":\"Base64 decode failed (ret=%d)\"}\n", ret);
+            return 1;
+        }
+
+        if (decoded_len != expected_bytes) {
+            printf("{\"ok\":false,\"error\":\"Expected %d bytes, got %d\"}\n",
+                   (int)expected_bytes, (int)decoded_len);
+            return 1;
+        }
+
+        // Convert float16 → float32
+        const uint16_t* fp16 = (const uint16_t*)decoded;
+        for (int i = 0; i < FACE_EMBEDDING_DIM; i++) {
+            embedding[i] = half_to_float(fp16[i]);
+        }
     }
 
     if (db.AddFace(name, embedding)) {
