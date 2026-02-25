@@ -8,10 +8,67 @@
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <mbedtls/base64.h>
+#include <esp_heap_caps.h>
 #include <mdns.h>
 #include <esp_netif.h>
+#include <sys/socket.h>
+#include <fcntl.h>
 
 #define TAG "RemoteDisplay"
+
+// Parse ws://host:port/path → host, port
+static bool ParseWsUrl(const std::string& url, std::string& host, uint16_t& port) {
+    auto pos = url.find("://");
+    if (pos == std::string::npos) return false;
+    std::string rest = url.substr(pos + 3);
+    auto slash = rest.find('/');
+    if (slash != std::string::npos) rest = rest.substr(0, slash);
+    auto colon = rest.rfind(':');
+    if (colon != std::string::npos) {
+        host = rest.substr(0, colon);
+        port = (uint16_t)atoi(rest.substr(colon + 1).c_str());
+    } else {
+        host = rest;
+        port = 80;
+    }
+    return !host.empty();
+}
+
+// Quick non-blocking TCP connect to check reachability (avoids 18s LWIP SYN timeout)
+static bool IsTcpReachable(const char* host, uint16_t port, int timeout_ms) {
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) return false;
+
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) return false;
+
+    // Set non-blocking
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+    int ret = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+    if (ret == 0) { close(sock); return true; }
+    if (errno != EINPROGRESS) { close(sock); return false; }
+
+    // Wait with select()
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(sock, &wfds);
+    struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
+    ret = select(sock + 1, nullptr, &wfds, nullptr, &tv);
+
+    bool ok = false;
+    if (ret > 0) {
+        int err = 0;
+        socklen_t len = sizeof(err);
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len);
+        ok = (err == 0);
+    }
+    close(sock);
+    return ok;
+}
 
 // NVS 存储 key
 #define NVS_NAMESPACE "remote_disp"
@@ -19,12 +76,12 @@
 #define NVS_KEY_URL "url"
 #define NVS_KEY_TIMEOUT "timeout"
 
-// PCM 音频帧头结构 (little-endian, ESP32 native)
-struct __attribute__((packed)) PcmAudioHeader {
-    uint8_t type;           // MSG_TYPE_AUDIO_PCM (0x03)
-    uint32_t sample_rate;   // 采样率
-    uint32_t samples;       // 采样数
-    // 后跟 PCM 数据: samples * sizeof(int16_t) 字节
+// Opus 音频帧头结构 (little-endian)
+struct __attribute__((packed)) OpusAudioHeader {
+    uint8_t type;            // MSG_TYPE_AUDIO_FRAME (0x02)
+    uint16_t sample_rate;    // 采样率
+    uint8_t frame_duration;  // 帧时长 (ms)
+    // 后跟 Opus 编码数据
 };
 
 RemoteDisplay* RemoteDisplay::GetInstance() {
@@ -37,7 +94,7 @@ RemoteDisplayConfig RemoteDisplay::LoadConfig() {
     Settings settings(NVS_NAMESPACE, false);
     config.enabled = settings.GetBool(NVS_KEY_ENABLED, false);
     config.server_url = settings.GetString(NVS_KEY_URL, "");
-    config.timeout_ms = settings.GetInt(NVS_KEY_TIMEOUT, 3000);
+    config.timeout_ms = settings.GetInt(NVS_KEY_TIMEOUT, 4000);
     return config;
 }
 
@@ -65,6 +122,24 @@ bool RemoteDisplay::StartWithConfig() {
 
 RemoteDisplay::~RemoteDisplay() {
     Stop();
+    if (cleanup_timer_) {
+        xTimerDelete(cleanup_timer_, portMAX_DELAY);
+        cleanup_timer_ = nullptr;
+    }
+}
+
+void RemoteDisplay::OnCleanupTimer(TimerHandle_t timer) {
+    auto* self = static_cast<RemoteDisplay*>(pvTimerGetTimerID(timer));
+    std::lock_guard<std::mutex> lifecycle_lock(self->lifecycle_mutex_);
+    if (!self->running_ && !self->connected_ && self->websocket_) {
+        {
+            std::lock_guard<std::mutex> send_lock(self->send_mutex_);
+            self->websocket_.reset();
+        }
+        self->current_server_url_.clear();
+        ESP_LOGI(TAG, "WebSocket resources freed after disconnect, free internal: %lu",
+            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
 }
 
 bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
@@ -97,8 +172,16 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
         return false;
     }
 
+    // Create cleanup timer once (one-shot, 1s delay)
+    if (!cleanup_timer_) {
+        cleanup_timer_ = xTimerCreate("ws_clean", pdMS_TO_TICKS(1000), pdFALSE, this, OnCleanupTimer);
+    }
+
     connected_ = false;
     uint32_t generation = connect_generation_.fetch_add(1) + 1;
+
+    ESP_LOGI(TAG, "Free internal RAM before WebSocket create: %lu",
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
     websocket_ = network->CreateWebSocket(2);  // 使用 connect_id 2
     if (!websocket_) {
@@ -120,13 +203,33 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
         if (generation != connect_generation_.load()) {
             return;
         }
-        ESP_LOGW(TAG, "Disconnected from remote display server");
+        ESP_LOGW(TAG, "Disconnected, free internal: %lu",
+            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         connected_ = false;
+        running_ = false;
+        // Defer WebSocket cleanup to free internal RAM
+        // Can't destroy from within its own callback chain (TCP receive task UAF)
+        if (cleanup_timer_) {
+            xTimerReset(cleanup_timer_, 0);
+        }
     });
 
     websocket_->OnError([](int error) {
         ESP_LOGE(TAG, "WebSocket error: %d", error);
     });
+
+    // Quick TCP reachability check to avoid 18s LWIP SYN retry timeout
+    std::string host;
+    uint16_t port;
+    if (ParseWsUrl(server_url, host, port)) {
+        int check_ms = std::min(timeout_ms, 2000);
+        if (!IsTcpReachable(host.c_str(), port, check_ms)) {
+            ESP_LOGW(TAG, "Server not reachable: %s:%d (checked in %dms)", host.c_str(), port, check_ms);
+            std::lock_guard<std::mutex> send_lock(send_mutex_);
+            websocket_.reset();
+            return false;
+        }
+    }
 
     // 尝试连接
     ESP_LOGI(TAG, "Connecting to %s (timeout %dms)...", server_url.c_str(), timeout_ms);
@@ -160,22 +263,25 @@ bool RemoteDisplay::Start(const std::string& server_url, int timeout_ms) {
     running_ = true;
     current_server_url_ = server_url;
 
-    // 注意：PCM 音频转发回调需要在 sensecap_watcher.cc 中通过 AudioCodec 注册
-    ESP_LOGI(TAG, "Remote display started (UI state sync mode)");
+    ESP_LOGI(TAG, "Remote display started, free internal: %lu",
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     return true;
 }
 
 void RemoteDisplay::Stop() {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
 
-    if (!running_) {
+    if (!running_ && !websocket_) {
         return;
     }
 
     running_ = false;
     connect_generation_.fetch_add(1);
 
-    // 注意：PCM 音频转发回调的取消需要在调用方处理
+    // Cancel any pending cleanup timer
+    if (cleanup_timer_) {
+        xTimerStop(cleanup_timer_, 0);
+    }
 
     {
         std::lock_guard<std::mutex> send_lock(send_mutex_);
@@ -276,33 +382,35 @@ void RemoteDisplay::SendUIState() {
     cJSON_Delete(root);
 
     if (json_str) {
-        std::lock_guard<std::mutex> lock(send_mutex_);
-        if (running_ && connected_ && websocket_) {
+        std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
+        if (lock.owns_lock() && running_ && connected_ && websocket_) {
             websocket_->Send(json_str);
         }
         free(json_str);
     }
 }
 
-void RemoteDisplay::ForwardPcmAudio(const int16_t* data, int samples, int sample_rate) {
+void RemoteDisplay::ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration) {
     if (!running_ || !connected_) {
         return;
     }
 
-    // 使用阻塞锁确保所有音频包都被发送
-    std::lock_guard<std::mutex> lock(send_mutex_);
+    // Non-blocking: drop audio frames if send is busy, to avoid blocking the protocol callback
+    std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;  // Previous send still in progress, drop this frame
+    }
 
-    // 构建二进制消息：[type(1B)][sample_rate(4B)][samples(4B)][pcm_data]
-    size_t pcm_bytes = samples * sizeof(int16_t);
-    size_t total_size = sizeof(PcmAudioHeader) + pcm_bytes;
+    // 构建二进制消息：[type(1B)][sample_rate(2B)][frame_duration(1B)][opus_data]
+    size_t total_size = sizeof(OpusAudioHeader) + opus_data.size();
     std::vector<uint8_t> buffer(total_size);
 
-    auto* header = reinterpret_cast<PcmAudioHeader*>(buffer.data());
-    header->type = MSG_TYPE_AUDIO_PCM;
-    header->sample_rate = sample_rate;  // Little-endian (ESP32 native)
-    header->samples = samples;          // Little-endian (ESP32 native)
+    auto* header = reinterpret_cast<OpusAudioHeader*>(buffer.data());
+    header->type = MSG_TYPE_AUDIO_FRAME;
+    header->sample_rate = (uint16_t)sample_rate;
+    header->frame_duration = (uint8_t)frame_duration;
 
-    memcpy(buffer.data() + sizeof(PcmAudioHeader), data, pcm_bytes);
+    memcpy(buffer.data() + sizeof(OpusAudioHeader), opus_data.data(), opus_data.size());
 
     if (running_ && connected_ && websocket_) {
         websocket_->Send(buffer.data(), buffer.size(), true);
@@ -317,8 +425,7 @@ void RemoteDisplay::SendHello() {
     cJSON_AddStringToObject(root, "mode", "ui_state");
 
     cJSON* audio = cJSON_CreateObject();
-    cJSON_AddStringToObject(audio, "format", "pcm");
-    cJSON_AddStringToObject(audio, "encoding", "s16le");  // signed 16-bit little-endian
+    cJSON_AddStringToObject(audio, "format", "opus");
     cJSON_AddItemToObject(root, "audio", audio);
 
     char* json_str = cJSON_PrintUnformatted(root);
@@ -342,8 +449,8 @@ void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
     size_t base64_len = 0;
     mbedtls_base64_encode(nullptr, 0, &base64_len, jpeg_data, size);
 
-    // 分配 Base64 缓冲区
-    char* base64_buf = (char*)malloc(base64_len + 1);
+    // 分配 Base64 缓冲区（使用 PSRAM 避免占用内部 RAM）
+    char* base64_buf = (char*)heap_caps_malloc(base64_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (base64_buf == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate memory for base64 encoding");
         return;
@@ -371,8 +478,8 @@ void RemoteDisplay::SendPreviewImage(const uint8_t* jpeg_data, size_t size) {
     free(base64_buf);
 
     if (json_str) {
-        std::lock_guard<std::mutex> lock(send_mutex_);
-        if (running_ && connected_ && websocket_) {
+        std::unique_lock<std::mutex> lock(send_mutex_, std::try_to_lock);
+        if (lock.owns_lock() && running_ && connected_ && websocket_) {
             websocket_->Send(json_str);
             ESP_LOGI(TAG, "Sent preview image: %zu bytes (base64: %zu)", size, written);
         }

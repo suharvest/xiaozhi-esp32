@@ -97,21 +97,26 @@ class AudioPlayer:
         except Exception:
             pass
 
-    def play_opus(self, opus_data: bytes, sample_rate: int, frame_duration: int):
-        """Play Opus data (non-blocking) - legacy support"""
-        if not self.enabled or not self.decoder:
-            return
+    def decode_opus(self, opus_data: bytes, sample_rate: int, frame_duration: int) -> bytes:
+        """Decode Opus to PCM bytes (for forwarding to browsers)"""
+        if not self.decoder:
+            return None
 
         # Reinit decoder if sample rate changed
         if sample_rate != self.sample_rate:
             self._reinit(sample_rate, frame_duration)
 
         try:
-            # Decode Opus to PCM
-            pcm = self.decoder.decode(opus_data, self.frame_size)
-            self.play_pcm(pcm, sample_rate)
+            return self.decoder.decode(opus_data, self.frame_size)
         except Exception as e:
-            logger.error(f"Failed to decode audio: {e}")
+            logger.error(f"Failed to decode Opus: {e}")
+            return None
+
+    def play_opus(self, opus_data: bytes, sample_rate: int, frame_duration: int):
+        """Play Opus data (non-blocking) - legacy support"""
+        pcm = self.decode_opus(opus_data, sample_rate, frame_duration)
+        if pcm:
+            self.play_pcm(pcm, sample_rate)
 
     def _reinit_stream(self, sample_rate: int):
         """Reinitialize audio stream with new sample rate"""

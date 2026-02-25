@@ -519,6 +519,9 @@ void Application::InitializeProtocol() {
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (GetDeviceState() == kDeviceStateSpeaking) {
             last_incoming_audio_time_.store(esp_timer_get_time());
+            if (opus_forward_callback_) {
+                opus_forward_callback_(packet->payload, packet->sample_rate, packet->frame_duration);
+            }
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });

@@ -9,6 +9,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/timers.h>
 
 class WebSocket;
 
@@ -62,8 +63,8 @@ public:
     // 图像发送接口
     void SendPreviewImage(const uint8_t* jpeg_data, size_t size);
 
-    // PCM 音频转发 - 由 AudioCodec::Write() 回调调用
-    void ForwardPcmAudio(const int16_t* data, int samples, int sample_rate);
+    // Opus 音频转发 - 由 Application::OnIncomingAudio 回调调用
+    void ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration);
 
     // mDNS 发现本地网络上的投屏服务
     // timeout_ms: 搜索超时时间
@@ -84,8 +85,10 @@ private:
 
     void SendUIState();
     void SendHello();
+    static void OnCleanupTimer(TimerHandle_t timer);
 
     std::unique_ptr<WebSocket> websocket_;
+    TimerHandle_t cleanup_timer_ = nullptr;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};

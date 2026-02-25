@@ -219,17 +219,6 @@ int SensecapAudioCodec::Read(int16_t* dest, int samples) {
 }
 
 int SensecapAudioCodec::Write(const int16_t* data, int samples) {
-    // 转发 PCM 到远程显示（在写入硬件前）
-    PcmForwardCallback callback;
-    {
-        std::lock_guard<std::mutex> lock(callback_mutex_);
-        callback = pcm_forward_callback_;
-    }
-    if (callback) {
-        callback(data, samples, output_sample_rate_);
-    }
-
-    // 原有逻辑：写入硬件播放
     std::lock_guard<std::mutex> lock(data_if_mutex_);
     if (output_enabled_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));

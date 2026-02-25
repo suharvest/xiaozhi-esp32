@@ -114,6 +114,10 @@ public:
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
 
+    // Opus audio forward callback (for remote display etc.)
+    using OpusForwardCallback = std::function<void(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration)>;
+    void SetOpusForwardCallback(OpusForwardCallback callback) { opus_forward_callback_ = callback; }
+
     /**
      * Reset protocol resources (thread-safe)
      * Can be called from any task to release resources allocated after network connected
@@ -143,6 +147,7 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     int clock_ticks_ = 0;
     std::atomic<int64_t> last_incoming_audio_time_{0};  // Track last audio/TTS data while speaking
+    OpusForwardCallback opus_forward_callback_;
     TaskHandle_t activation_task_handle_ = nullptr;
 
     // Event handlers
