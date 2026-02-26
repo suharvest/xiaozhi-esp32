@@ -13,6 +13,7 @@
 #include "remote_display.h"
 #include "remote_display_http_server.h"
 #include "face_serial_handler.h"
+#include "mcp_server.h"
 #include <wifi_manager.h>
 
 #include <esp_log.h>
@@ -713,7 +714,8 @@ private:
     }
 
     void InitializeRemoteDisplay() {
-        // 启动一个任务，等待网络连接后启动 HTTP 服务器和自动重连
+        // 启动一个任务，等待网络连接后注册 MCP 工具和自动重连
+        // 注意：HTTP 服务器和 UDP beacon 不在启动时启动，改为按需启动（节省内存）
         xTaskCreate([](void* arg) {
             auto* self = static_cast<SensecapWatcher*>(arg);
 
@@ -734,22 +736,17 @@ private:
                 return;
             }
 
-            // 等待网络稳定
-            vTaskDelay(pdMS_TO_TICKS(1000));
-
-            // 启动 HTTP 控制服务器 + mDNS（供 RPi 主动发起投屏）
-            self->remote_display_http_server_.Start(80);
-
-            // 注册 PCM 转发回调（回调内部有 IsRunning() 保护）
-            auto* codec = static_cast<SensecapAudioCodec*>(Board::GetInstance().GetAudioCodec());
-            codec->SetPcmForwardCallback(
-                [](const int16_t* data, int samples, int sample_rate) {
+            // 注册 Opus 音频转发回调
+            Application::GetInstance().SetOpusForwardCallback(
+                [](const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration) {
                     auto* remote = RemoteDisplay::GetInstance();
                     if (remote && remote->IsRunning()) {
-                        remote->ForwardPcmAudio(data, samples, sample_rate);
+                        remote->ForwardOpusAudio(opus_data, sample_rate, frame_duration);
                     }
                 });
-            ESP_LOGI(TAG, "PCM audio forwarding callback registered");
+
+            // 注册投屏控制 MCP 工具（用户说"开启/关闭投屏"时触发）
+            self->RegisterScreenCastTool();
 
             // 如果 NVS 中有保存的配置，尝试自动重连
             auto config = RemoteDisplay::LoadConfig();
@@ -757,13 +754,88 @@ private:
                 auto* remote = RemoteDisplay::GetInstance();
                 if (remote->StartWithConfig()) {
                     ESP_LOGI(TAG, "Remote display auto-reconnected to %s", config.server_url.c_str());
+                    // 启动 HTTP 服务器（不启动 beacon），供 RPi 控制停止/查询状态
+                    self->remote_display_http_server_.Start(80, false);
                 } else {
-                    ESP_LOGW(TAG, "Remote display auto-reconnect failed, waiting for RPi HTTP request");
+                    ESP_LOGW(TAG, "Remote display auto-reconnect failed");
                 }
             }
 
             vTaskDelete(nullptr);
-        }, "remote_disp_init", 4096, this, 1, nullptr);
+        }, "remote_disp_init", 2560, this, 1, nullptr);
+    }
+
+    void RegisterScreenCastTool() {
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool("self.screen_cast",
+            "控制投屏功能的开启与关闭。\n"
+            "当用户说'开启投屏'、'打开投屏'时，使用 enable=1 开启。\n"
+            "当用户说'关闭投屏'、'停止投屏'时，使用 enable=0 关闭。\n"
+            "开启后设备将通过 UDP 广播，等待树莓派连接。配对成功后广播自动关闭以节省内存。\n"
+            "不传参数则查询当前投屏状态。",
+            PropertyList({
+                Property("enable", kPropertyTypeInteger, 0, 1)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                try {
+                    const Property& enable_prop = properties["enable"];
+                    int en = enable_prop.value<int>();
+                    ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
+                    if (en == 1) {
+                        return StartScreenCastDiscovery();
+                    } else {
+                        return StopScreenCast();
+                    }
+                } catch (const std::runtime_error& e) {
+                    // 没传参数 → 查询状态
+                    ESP_LOGW(TAG, "screen_cast tool: no enable param, caught: %s", e.what());
+                    auto* remote = RemoteDisplay::GetInstance();
+                    bool casting = remote && remote->IsRunning();
+                    bool http_running = remote_display_http_server_.IsRunning();
+                    return std::string("{\"casting\":") + (casting ? "true" : "false") +
+                           ",\"discovery\":" + (http_running ? "true" : "false") + "}";
+                }
+            });
+    }
+
+    std::string StartScreenCastDiscovery() {
+        ESP_LOGI(TAG, "StartScreenCastDiscovery() called");
+        // 如果已经在投屏，返回状态
+        auto* remote = RemoteDisplay::GetInstance();
+        if (remote && remote->IsRunning()) {
+            ESP_LOGI(TAG, "Already casting, skip");
+            return std::string("{\"success\":true,\"message\":\"已在投屏中\"}");
+        }
+
+        // 启动 HTTP 服务器 + UDP beacon（供 RPi 发现和连接）
+        if (!remote_display_http_server_.IsRunning()) {
+            ESP_LOGI(TAG, "Starting HTTP server + beacon...");
+            bool ok = remote_display_http_server_.Start(80);
+            ESP_LOGI(TAG, "HTTP server Start() returned: %d, IsRunning=%d", ok, remote_display_http_server_.IsRunning());
+        } else {
+            ESP_LOGI(TAG, "HTTP server already running");
+        }
+
+        return std::string("{\"success\":true,\"message\":\"投屏发现服务已开启，等待树莓派连接\"}");
+    }
+
+    std::string StopScreenCast() {
+        // 停止投屏
+        auto* remote = RemoteDisplay::GetInstance();
+        if (remote && remote->IsRunning()) {
+            remote->Stop();
+        }
+
+        // 停止 HTTP 服务器（beacon 在 Stop() 中自动停止）
+        remote_display_http_server_.Stop();
+
+        // 清除 NVS 配置
+        RemoteDisplayConfig config;
+        config.enabled = false;
+        RemoteDisplay::SaveConfig(config);
+
+        ESP_LOGI(TAG, "Screen cast stopped, discovery services stopped");
+        return std::string("{\"success\":true,\"message\":\"投屏已关闭\"}");
     }
 
 public:

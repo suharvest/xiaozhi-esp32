@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 
 # Message types (binary protocol from ESP32)
 MSG_TYPE_UI_STATE = 0x10
-MSG_TYPE_AUDIO_FRAME = 0x02  # Deprecated (Opus)
-MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio
+MSG_TYPE_AUDIO_FRAME = 0x02  # Opus audio (primary)
+MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio (legacy)
 MSG_TYPE_HEARTBEAT = 0x04
 
 
@@ -205,6 +205,9 @@ class RemoteDisplayServer:
         self.async_zeroconf: Optional['AsyncZeroconf'] = None
         self.service_info: Optional['ServiceInfo'] = None
 
+        # UDP beacon discovery
+        self._beacon_devices: dict = {}  # keyed by IP: {name, ip, port, board, version, last_seen}
+
         # Narrate mode
         self.narrate_config: dict = {
             "name": "",
@@ -300,6 +303,52 @@ class RemoteDisplayServer:
             finally:
                 self.async_zeroconf = None
                 self.service_info = None
+
+    async def start_beacon_listener(self):
+        """Listen for UDP beacon broadcasts from ESP32 devices on port 12321.
+        Uses asyncio.DatagramProtocol for compatibility with Python 3.9+."""
+        BEACON_PORT = 12321
+        server_ref = self
+
+        class BeaconProtocol(asyncio.DatagramProtocol):
+            def datagram_received(self, data: bytes, addr: tuple):
+                try:
+                    text = data.decode('utf-8', errors='ignore')
+                    if not text.startswith('XZWATCH|'):
+                        return
+                    parts = text.split('|')
+                    if len(parts) < 6:
+                        return
+                    # XZWATCH|name|ip|port|board|version
+                    _, name, ip, port_str, board, version = parts[:6]
+                    source_ip = addr[0]  # Use source IP as authoritative
+                    server_ref._beacon_devices[source_ip] = {
+                        "name": name,
+                        "ip": source_ip,
+                        "port": int(port_str),
+                        "board": board,
+                        "version": version,
+                        "last_seen": asyncio.get_event_loop().time(),
+                    }
+                except Exception as e:
+                    logger.debug(f"Failed to parse beacon: {e}")
+
+            def error_received(self, exc):
+                logger.debug(f"Beacon listener error: {exc}")
+
+        try:
+            loop = asyncio.get_event_loop()
+            kwargs = {"local_addr": ('0.0.0.0', BEACON_PORT), "allow_broadcast": True}
+            if hasattr(socket, 'SO_REUSEPORT'):
+                kwargs["reuse_port"] = True
+            transport, _ = await loop.create_datagram_endpoint(
+                BeaconProtocol, **kwargs
+            )
+            self._beacon_transport = transport
+            logger.info(f"UDP beacon listener started on port {BEACON_PORT}")
+        except Exception as e:
+            logger.error(f"Failed to start beacon listener: {e}")
+            self._beacon_transport = None
 
     async def handle_root(self, request: web.Request) -> web.Response:
         """Handle root path - WebSocket for device, HTML for browser"""
@@ -459,46 +508,79 @@ class RemoteDisplayServer:
         if self.audio_count == 0 and msg_type in (MSG_TYPE_AUDIO_PCM, MSG_TYPE_AUDIO_FRAME):
             logger.info(f"Received first binary audio message: type=0x{msg_type:02x}, size={len(data)}")
 
-        if msg_type == MSG_TYPE_AUDIO_PCM:
+        if msg_type == MSG_TYPE_AUDIO_FRAME:
+            await self._handle_opus_audio(data)
+        elif msg_type == MSG_TYPE_AUDIO_PCM:
+            # Legacy PCM format (deprecated)
             await self._handle_pcm_audio(data)
-        elif msg_type == MSG_TYPE_AUDIO_FRAME:
-            # Legacy Opus format (deprecated)
-            await self._handle_audio_frame(data[4:])
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
         else:
             logger.debug(f"Unknown binary message type: 0x{msg_type:02x}, size={len(data)}")
 
-    async def _handle_pcm_audio(self, data: bytes):
-        """Handle PCM audio frame"""
-        if len(data) < 9:  # type(1) + sample_rate(4) + samples(4)
+    async def _handle_opus_audio(self, data: bytes):
+        """Handle Opus audio frame from ESP32, decode to PCM for browser/local playback"""
+        if len(data) < 4:  # type(1) + sample_rate(2) + frame_duration(1)
             return
 
-        # Parse PCM header (little-endian, ESP32 native)
-        # type(1B) + sample_rate(4B LE) + samples(4B LE) + pcm_data
-        sample_rate, samples = struct.unpack("<II", data[1:9])
-        pcm_data = data[9:]
+        # Parse Opus header (little-endian)
+        # type(1B) + sample_rate(2B LE) + frame_duration(1B) + opus_data
+        sample_rate, frame_duration = struct.unpack("<HB", data[1:4])
+        opus_data = data[4:]
 
-        expected_size = samples * 2  # 16-bit samples
-        if len(pcm_data) != expected_size:
-            logger.warning(f"PCM data size mismatch: expected {expected_size}, got {len(pcm_data)}")
+        if len(opus_data) == 0:
             return
 
-        # Count audio packets
         self.audio_count += 1
 
-        # Play audio locally (if enabled)
+        # Decode Opus to PCM (for both browser and local playback)
+        pcm_data = self._decode_opus(opus_data, sample_rate, frame_duration)
+        if pcm_data is None:
+            return
+
+        # Play locally (if enabled, default is browser-only)
         if self.audio_player:
             self.audio_player.play_pcm(pcm_data, sample_rate)
 
-        # Forward to browser clients
-        await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
+        # Forward PCM to browser clients (default audio path)
+        if self.browser_clients:
+            await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
 
-        # Log audio count periodically
+        # Log periodically
         if self.audio_count == 1:
-            logger.info(f"First audio packet: sample_rate={sample_rate}, samples={samples}, forwarded to {len(self.browser_clients)} browser(s)")
+            logger.info(f"First Opus audio: sr={sample_rate}, dur={frame_duration}ms, opus={len(opus_data)}B, pcm={len(pcm_data)}B, browsers={len(self.browser_clients)}")
         elif self.audio_count % 100 == 0:
-            logger.info(f"Audio packets forwarded: {self.audio_count}")
+            logger.info(f"Audio packets: {self.audio_count}")
+
+    def _init_opus_decoder(self, sample_rate: int, frame_duration: int):
+        """Initialize or reinitialize Opus decoder"""
+        try:
+            import opuslib
+            self._opus_decoder = opuslib.Decoder(sample_rate, 1)
+            self._opus_decoder_sr = sample_rate
+            self._opus_frame_duration = frame_duration
+            self._opus_frame_size = sample_rate * frame_duration // 1000
+            logger.info(f"Opus decoder initialized: {sample_rate}Hz, {frame_duration}ms")
+        except Exception as e:
+            logger.error(f"Failed to create Opus decoder: {e}")
+            self._opus_decoder = None
+
+    def _decode_opus(self, opus_data: bytes, sample_rate: int, frame_duration: int) -> bytes:
+        """Decode Opus to PCM bytes"""
+        # Lazy init or reinit on sample rate / duration change
+        if (not hasattr(self, '_opus_decoder') or self._opus_decoder is None
+                or sample_rate != self._opus_decoder_sr
+                or frame_duration != self._opus_frame_duration):
+            self._init_opus_decoder(sample_rate, frame_duration)
+
+        if self._opus_decoder is None:
+            return None
+
+        try:
+            return self._opus_decoder.decode(opus_data, self._opus_frame_size)
+        except Exception as e:
+            logger.error(f"Opus decode error: {e}")
+            return None
 
     async def _broadcast_audio_to_browsers(self, pcm_data: bytes, sample_rate: int):
         """Broadcast PCM audio to all browser clients"""
@@ -521,19 +603,22 @@ class RemoteDisplayServer:
 
         self.browser_clients -= disconnected
 
-    async def _handle_audio_frame(self, payload: bytes):
-        """Handle legacy Opus audio frame (deprecated)"""
-        if len(payload) < 4:
+    async def _handle_pcm_audio(self, data: bytes):
+        """Handle legacy PCM audio frame (deprecated, for backward compatibility)"""
+        if len(data) < 9:  # type(1) + sample_rate(4) + samples(4)
             return
 
-        # Parse audio frame header: sample_rate(2) + frame_duration(1) + reserved(1)
-        sample_rate, frame_duration, _ = struct.unpack(">HBB", payload[:4])
-        opus_data = payload[4:]
+        sample_rate, samples = struct.unpack("<II", data[1:9])
+        pcm_data = data[9:]
 
-        # Play audio (Opus decode)
+        expected_size = samples * 2
+        if len(pcm_data) != expected_size:
+            return
+
+        self.audio_count += 1
         if self.audio_player:
-            self.audio_player.play_opus(opus_data, sample_rate, frame_duration)
-            self.audio_count += 1
+            self.audio_player.play_pcm(pcm_data, sample_rate)
+        await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
 
     async def _broadcast_to_browsers(self, msg: dict):
         """Broadcast message to all connected browser clients"""
@@ -759,22 +844,32 @@ class RemoteDisplayServer:
     # ========== Cast Control APIs ==========
 
     async def handle_get_devices(self, request: web.Request) -> web.Response:
-        """GET /api/devices - Discover ESP32 devices via mDNS"""
-        if not MDNS_AVAILABLE:
-            return web.json_response({
-                "success": False,
-                "error": "zeroconf not installed"
-            }, status=500)
+        """GET /api/devices - Discover ESP32 devices via UDP beacon (with mDNS fallback)"""
+        devices = []
 
-        try:
-            loop = asyncio.get_event_loop()
-            devices = await loop.run_in_executor(None, self._discover_devices_sync)
-        except Exception as e:
-            logger.error(f"mDNS discovery failed: {e}")
-            return web.json_response({
-                "success": False,
-                "error": str(e)
-            }, status=500)
+        # First: collect from beacon cache (prune entries older than 10s)
+        now = asyncio.get_event_loop().time()
+        stale_keys = [ip for ip, d in self._beacon_devices.items()
+                      if now - d["last_seen"] > 10]
+        for k in stale_keys:
+            del self._beacon_devices[k]
+
+        for d in self._beacon_devices.values():
+            devices.append({
+                "name": d["name"],
+                "ip": d["ip"],
+                "port": d["port"],
+                "board": d.get("board", ""),
+                "version": d.get("version", ""),
+            })
+
+        # Fallback: if no beacon devices found, try mDNS
+        if not devices and MDNS_AVAILABLE:
+            try:
+                loop = asyncio.get_event_loop()
+                devices = await loop.run_in_executor(None, self._discover_devices_sync)
+            except Exception as e:
+                logger.error(f"mDNS discovery failed: {e}")
 
         logger.info(f"Discovered {len(devices)} device(s)")
         return web.json_response({"success": True, "devices": devices})
@@ -879,6 +974,10 @@ class RemoteDisplayServer:
 
     async def cleanup(self):
         """Cleanup resources"""
+        if hasattr(self, '_beacon_transport') and self._beacon_transport:
+            self._beacon_transport.close()
+            self._beacon_transport = None
+            logger.info("UDP beacon listener stopped")
         await self.stop_mdns()
         await self.mcp_manager.stop()
         if self.audio_player:
@@ -1019,6 +1118,9 @@ async def main():
 
     site = web.TCPSite(runner, server.config.HOST, server.config.PORT)
     await site.start()
+
+    # Start UDP beacon listener for ESP32 discovery
+    await server.start_beacon_listener()
 
     # Start mDNS service broadcast
     await server.start_mdns()
