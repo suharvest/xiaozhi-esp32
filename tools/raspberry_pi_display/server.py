@@ -34,6 +34,7 @@ from audio_player import AudioPlayer
 # MCP process management
 import subprocess
 import shutil
+import tempfile
 
 # Optional mDNS support
 try:
@@ -60,6 +61,8 @@ MSG_TYPE_AUDIO_FRAME = 0x02  # Opus audio (primary)
 MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio (legacy)
 MSG_TYPE_HEARTBEAT = 0x04
 
+# Narrate config fields (persisted to disk)
+NARRATE_FIELDS = ("name", "xiaozhiWsUrl", "mcpEnabled", "autoConnect", "defaultBgUrl", "triggers")
 
 class MCPManager:
     """Manages the MCP subprocess for narrate mode"""
