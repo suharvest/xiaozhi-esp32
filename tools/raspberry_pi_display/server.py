@@ -227,6 +227,51 @@ class RemoteDisplayServer:
         self.uploads_dir = self.base_dir / "uploads"
         self.uploads_dir.mkdir(exist_ok=True)
 
+    def _load_narrate_config_from_disk(self) -> None:
+        """Load narrate config from JSON file, merge into defaults"""
+        path = self.narrate_config_path
+        if not path.exists():
+            return
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k in NARRATE_FIELDS:
+                    if k in data:
+                        self.narrate_config[k] = data[k]
+            logger.info(f"Loaded narrate config from {path}")
+        except Exception as e:
+            logger.error(f"Failed to load narrate config from {path}: {e}")
+
+    def _atomic_write_json(self, path: Path, obj: dict) -> None:
+        """Write JSON atomically (power-loss safe for embedded/IoT)"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = (json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+        # Temp file in same dir => os.replace is atomic on same filesystem
+        with tempfile.NamedTemporaryFile(mode="wb", dir=str(path.parent), delete=False) as tf:
+            tmp_name = tf.name
+            tf.write(payload)
+            tf.flush()
+            os.fsync(tf.fileno())
+
+        os.replace(tmp_name, path)
+
+        # Best-effort: fsync directory entry
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+
+    async def _save_narrate_config_to_disk(self) -> None:
+        """Save narrate config to disk (async-safe, non-blocking)"""
+        data = {k: self.narrate_config.get(k) for k in NARRATE_FIELDS}
+        await asyncio.to_thread(self._atomic_write_json, self.narrate_config_path, data)
+
     def _get_local_ip(self) -> str:
         """Get local IP address for mDNS registration"""
         # Allow manual override via environment variable
