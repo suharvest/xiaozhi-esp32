@@ -2203,6 +2203,9 @@
                 handleNarrateState(data);
             } else if (data.type === 'mcp_status') {
                 handleMcpStatus(data);
+            } else if (data.type === 'config_updated') {
+                console.log('[WS] Config updated by another client, refreshing...');
+                fetchServerConfig();
             } else {
                 originalHandleMessage(data);
             }

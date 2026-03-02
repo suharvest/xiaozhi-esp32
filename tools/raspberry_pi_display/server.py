@@ -718,6 +718,9 @@ class RemoteDisplayServer:
                 # Persist to disk
                 await self._save_narrate_config_to_disk()
 
+            # Notify all browsers to refresh config
+            await self._broadcast_to_browsers({"type": "config_updated"})
+
             return web.json_response({"success": True})
 
         except Exception as e:
