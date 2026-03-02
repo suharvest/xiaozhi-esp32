@@ -223,6 +223,18 @@ class RemoteDisplayServer:
         self.mcp_manager = MCPManager(self)
         self.current_narrate_state: Optional[dict] = None
 
+        # Persisted config location (NOT under /uploads — that's served statically)
+        data_dir_env = os.getenv("RD_DATA_DIR")
+        self.data_dir = Path(data_dir_env) if data_dir_env else (self.base_dir / "data")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.narrate_config_path = self.data_dir / "narrate_config.json"
+
+        # Async guard for concurrent config updates
+        self._narrate_config_lock = asyncio.Lock()
+
+        # Load persisted config if present (merge into defaults)
+        self._load_narrate_config_from_disk()
+
         # Uploads directory for local images
         self.uploads_dir = self.base_dir / "uploads"
         self.uploads_dir.mkdir(exist_ok=True)
