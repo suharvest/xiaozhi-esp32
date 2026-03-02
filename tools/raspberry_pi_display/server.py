@@ -711,10 +711,13 @@ class RemoteDisplayServer:
         try:
             data = await request.json()
 
-            # Update config fields
-            for field in ["name", "xiaozhiWsUrl", "mcpEnabled", "autoConnect", "defaultBgUrl", "triggers"]:
-                if field in data:
-                    self.narrate_config[field] = data[field]
+            async with self._narrate_config_lock:
+                # Update config fields
+                for field in NARRATE_FIELDS:
+                    if field in data:
+                        self.narrate_config[field] = data[field]
+                # Persist to disk
+                await self._save_narrate_config_to_disk()
 
             return web.json_response({"success": True})
 
