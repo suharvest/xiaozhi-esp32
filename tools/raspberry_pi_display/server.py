@@ -701,10 +701,9 @@ class RemoteDisplayServer:
 
     async def handle_get_config(self, request: web.Request) -> web.Response:
         """GET /api/config - Get narrate mode config"""
-        return web.json_response({
-            **self.narrate_config,
-            "mcpConnected": self.mcp_manager.running
-        })
+        async with self._narrate_config_lock:
+            cfg = dict(self.narrate_config)
+        return web.json_response({**cfg, "mcpConnected": self.mcp_manager.running})
 
     async def handle_post_config(self, request: web.Request) -> web.Response:
         """POST /api/config - Update narrate mode config"""
