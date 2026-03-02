@@ -1187,6 +1187,18 @@ async def main():
     # Start mDNS service broadcast
     await server.start_mdns()
 
+    # Auto-start MCP if previously configured with autoConnect
+    async def maybe_autostart_mcp():
+        async with server._narrate_config_lock:
+            enabled = bool(server.narrate_config.get("mcpEnabled"))
+            auto = bool(server.narrate_config.get("autoConnect"))
+            ws_url = (server.narrate_config.get("xiaozhiWsUrl") or "").strip()
+        if enabled and auto and ws_url and not server.mcp_manager.running:
+            logger.info("Auto-starting MCP connection from persisted config...")
+            await server.mcp_manager.start(ws_url)
+
+    asyncio.create_task(maybe_autostart_mcp())
+
     logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
     logger.info(f"Browser UI: http://localhost:{server.config.PORT}")
     logger.info(f"Device WebSocket: ws://localhost:{server.config.PORT}/device")
