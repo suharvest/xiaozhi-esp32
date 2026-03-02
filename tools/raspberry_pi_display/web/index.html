@@ -2028,8 +2028,9 @@
         }
 
         // Open config panel
-        function openConfigPanel() {
-            loadConfig();
+        async function openConfigPanel() {
+            // Sync from server first, then populate UI
+            await fetchServerConfig();
             narrateToggle.checked = narrateMode;
             updateConfigSectionsVisibility();
             configName.value = narrateConfig.name || '';
@@ -2038,7 +2039,6 @@
             defaultBgUrl.value = narrateConfig.defaultBgUrl || '';
             updateDefaultBgThumbnail();
             renderTriggers();
-            fetchMcpStatus();
             configPanel.classList.remove('hidden');
             configOverlay.classList.remove('hidden');
         }
@@ -2216,14 +2216,31 @@
             }
         });
 
-        // Load config on startup
+        // Load config: localStorage first (instant), then sync from server (authoritative)
         loadConfig();
+        fetchServerConfig();
 
-        // Fetch MCP status
-        async function fetchMcpStatus() {
+        // Fetch config from server and sync local state
+        async function fetchServerConfig() {
             const data = await apiCall('/api/config', { method: 'GET' });
             if (data && !data.error) {
+                // Sync server config into local narrateConfig (server is source of truth)
+                for (const key of ['name', 'xiaozhiWsUrl', 'mcpEnabled', 'autoConnect', 'defaultBgUrl', 'triggers']) {
+                    if (key in data) {
+                        narrateConfig[key] = data[key];
+                    }
+                }
+                // Update localStorage with server data
+                localStorage.setItem('narrate-config', JSON.stringify({
+                    ...narrateConfig,
+                    narrateModeEnabled: narrateMode
+                }));
+                // Update MCP status
                 updateMcpStatus(data.mcpConnected || false);
+                // Refresh background image if in narrate mode
+                if (narrateMode && !currentImageUrl && narrateConfig.defaultBgUrl) {
+                    narrateImage.src = narrateConfig.defaultBgUrl;
+                }
             }
         }
 
