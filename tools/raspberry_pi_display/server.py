@@ -34,6 +34,7 @@ from audio_player import AudioPlayer
 # MCP process management
 import subprocess
 import shutil
+import tempfile
 
 # Optional mDNS support
 try:
@@ -60,6 +61,8 @@ MSG_TYPE_AUDIO_FRAME = 0x02  # Opus audio (primary)
 MSG_TYPE_AUDIO_PCM = 0x03    # PCM audio (legacy)
 MSG_TYPE_HEARTBEAT = 0x04
 
+# Narrate config fields (persisted to disk)
+NARRATE_FIELDS = ("name", "xiaozhiWsUrl", "mcpEnabled", "autoConnect", "defaultBgUrl", "triggers")
 
 class MCPManager:
     """Manages the MCP subprocess for narrate mode"""
@@ -220,9 +223,66 @@ class RemoteDisplayServer:
         self.mcp_manager = MCPManager(self)
         self.current_narrate_state: Optional[dict] = None
 
+        # Persisted config location (NOT under /uploads — that's served statically)
+        data_dir_env = os.getenv("RD_DATA_DIR")
+        self.data_dir = Path(data_dir_env) if data_dir_env else (self.base_dir / "data")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.narrate_config_path = self.data_dir / "narrate_config.json"
+
+        # Async guard for concurrent config updates
+        self._narrate_config_lock = asyncio.Lock()
+
+        # Load persisted config if present (merge into defaults)
+        self._load_narrate_config_from_disk()
+
         # Uploads directory for local images
         self.uploads_dir = self.base_dir / "uploads"
         self.uploads_dir.mkdir(exist_ok=True)
+
+    def _load_narrate_config_from_disk(self) -> None:
+        """Load narrate config from JSON file, merge into defaults"""
+        path = self.narrate_config_path
+        if not path.exists():
+            return
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k in NARRATE_FIELDS:
+                    if k in data:
+                        self.narrate_config[k] = data[k]
+            logger.info(f"Loaded narrate config from {path}")
+        except Exception as e:
+            logger.error(f"Failed to load narrate config from {path}: {e}")
+
+    def _atomic_write_json(self, path: Path, obj: dict) -> None:
+        """Write JSON atomically (power-loss safe for embedded/IoT)"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = (json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+        # Temp file in same dir => os.replace is atomic on same filesystem
+        with tempfile.NamedTemporaryFile(mode="wb", dir=str(path.parent), delete=False) as tf:
+            tmp_name = tf.name
+            tf.write(payload)
+            tf.flush()
+            os.fsync(tf.fileno())
+
+        os.replace(tmp_name, path)
+
+        # Best-effort: fsync directory entry
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+
+    async def _save_narrate_config_to_disk(self) -> None:
+        """Save narrate config to disk (async-safe, non-blocking)"""
+        data = {k: self.narrate_config.get(k) for k in NARRATE_FIELDS}
+        await asyncio.to_thread(self._atomic_write_json, self.narrate_config_path, data)
 
     def _get_local_ip(self) -> str:
         """Get local IP address for mDNS registration"""
@@ -641,20 +701,22 @@ class RemoteDisplayServer:
 
     async def handle_get_config(self, request: web.Request) -> web.Response:
         """GET /api/config - Get narrate mode config"""
-        return web.json_response({
-            **self.narrate_config,
-            "mcpConnected": self.mcp_manager.running
-        })
+        async with self._narrate_config_lock:
+            cfg = dict(self.narrate_config)
+        return web.json_response({**cfg, "mcpConnected": self.mcp_manager.running})
 
     async def handle_post_config(self, request: web.Request) -> web.Response:
         """POST /api/config - Update narrate mode config"""
         try:
             data = await request.json()
 
-            # Update config fields
-            for field in ["name", "xiaozhiWsUrl", "mcpEnabled", "autoConnect", "defaultBgUrl", "triggers"]:
-                if field in data:
-                    self.narrate_config[field] = data[field]
+            async with self._narrate_config_lock:
+                # Update config fields
+                for field in NARRATE_FIELDS:
+                    if field in data:
+                        self.narrate_config[field] = data[field]
+                # Persist to disk
+                await self._save_narrate_config_to_disk()
 
             return web.json_response({"success": True})
 
@@ -1124,6 +1186,18 @@ async def main():
 
     # Start mDNS service broadcast
     await server.start_mdns()
+
+    # Auto-start MCP if previously configured with autoConnect
+    async def maybe_autostart_mcp():
+        async with server._narrate_config_lock:
+            enabled = bool(server.narrate_config.get("mcpEnabled"))
+            auto = bool(server.narrate_config.get("autoConnect"))
+            ws_url = (server.narrate_config.get("xiaozhiWsUrl") or "").strip()
+        if enabled and auto and ws_url and not server.mcp_manager.running:
+            logger.info("Auto-starting MCP connection from persisted config...")
+            await server.mcp_manager.start(ws_url)
+
+    asyncio.create_task(maybe_autostart_mcp())
 
     logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
     logger.info(f"Browser UI: http://localhost:{server.config.PORT}")
