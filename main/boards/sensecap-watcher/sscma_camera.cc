@@ -497,6 +497,22 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 is_face_mode = false;
             }
 
+            // Auto-resume inference if paused too long (browser didn't close properly)
+            if (this_->inference_paused_.load() && this_->inference_paused_at_.load() > 0) {
+                int64_t now_sec = esp_timer_get_time() / 1000000;
+                if (now_sec - this_->inference_paused_at_.load() > INFERENCE_PAUSE_TIMEOUT_SEC) {
+                    ESP_LOGW(TAG, "Inference pause timeout (%ds), auto-resuming", INFERENCE_PAUSE_TIMEOUT_SEC);
+                    this_->ResumeInference();
+                }
+            }
+
+            // When inference is paused (external UART enrollment in progress),
+            // skip all SPI interactions to avoid conflicts with UART session.
+            if (this_->inference_paused_.load()) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+                continue;
+            }
+
             if (esp_timer_get_time() - last_keepalive_time > 10 * 1000000) {
                 last_keepalive_time = esp_timer_get_time();
                 bool keepalive_ok = false;
@@ -511,15 +527,6 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         sscma_client_reset(this_->sscma_client_handle_);
                     }
                     vTaskDelay(pdMS_TO_TICKS(100));
-                }
-            }
-
-            // Auto-resume inference if paused too long (browser didn't close properly)
-            if (this_->inference_paused_.load() && this_->inference_paused_at_.load() > 0) {
-                int64_t now_sec = esp_timer_get_time() / 1000000;
-                if (now_sec - this_->inference_paused_at_.load() > INFERENCE_PAUSE_TIMEOUT_SEC) {
-                    ESP_LOGW(TAG, "Inference pause timeout (%ds), auto-resuming", INFERENCE_PAUSE_TIMEOUT_SEC);
-                    this_->ResumeInference();
                 }
             }
 
@@ -557,14 +564,6 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     watchdog_abort_sent = false;
                 }
             }
-            // When inference is paused (external UART enrollment in progress),
-            // skip all SPI inference management — don't start, stop, or break anything.
-            // The external camera session controls Himax via UART directly.
-            if (this_->inference_paused_.load()) {
-                vTaskDelay(pdMS_TO_TICKS(200));
-                continue;
-            }
-
             // Face mode can run anytime except during active voice conversations
             bool is_voice_busy = (dev_state == kDeviceStateConnecting ||
                                   dev_state == kDeviceStateListening ||

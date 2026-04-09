@@ -719,23 +719,6 @@ private:
         xTaskCreate([](void* arg) {
             auto* self = static_cast<SensecapWatcher*>(arg);
 
-            // 等待 WiFi 真正连接（最多等待 30 秒）
-            ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
-            auto& wifi = WifiManager::GetInstance();
-            for (int i = 0; i < 300; i++) {
-                if (wifi.IsConnected()) {
-                    ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi.GetIpAddress().c_str());
-                    break;
-                }
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-
-            if (!wifi.IsConnected()) {
-                ESP_LOGW(TAG, "WiFi not connected after 30s, remote display init skipped");
-                vTaskDelete(nullptr);
-                return;
-            }
-
             // 注册 Opus 音频转发回调
             Application::GetInstance().SetOpusForwardCallback(
                 [](const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration) {
@@ -747,6 +730,19 @@ private:
 
             // 注册投屏控制 MCP 工具（用户说"开启/关闭投屏"时触发）
             self->RegisterScreenCastTool();
+
+            // 等待 WiFi 真正连接
+            ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
+            auto& wifi = WifiManager::GetInstance();
+            int wait_seconds = 0;
+            while (!wifi.IsConnected()) {
+                if (wait_seconds > 0 && wait_seconds % 10 == 0) {
+                    ESP_LOGI(TAG, "Still waiting WiFi connection... %ds", wait_seconds);
+                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                wait_seconds++;
+            }
+            ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi.GetIpAddress().c_str());
 
             // 如果 NVS 中有保存的配置，尝试自动重连
             auto config = RemoteDisplay::LoadConfig();
@@ -812,6 +808,9 @@ private:
             ESP_LOGI(TAG, "Starting HTTP server + beacon...");
             bool ok = remote_display_http_server_.Start(80);
             ESP_LOGI(TAG, "HTTP server Start() returned: %d, IsRunning=%d", ok, remote_display_http_server_.IsRunning());
+            if (!ok || !remote_display_http_server_.IsRunning()) {
+                return std::string("{\"success\":false,\"message\":\"投屏发现服务启动失败\"}");
+            }
         } else {
             ESP_LOGI(TAG, "HTTP server already running");
         }
