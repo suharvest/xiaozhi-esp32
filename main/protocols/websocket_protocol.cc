@@ -75,7 +75,8 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
     return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
 }
 
-void WebsocketProtocol::CloseAudioChannel() {
+void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+    (void)send_goodbye;  // Websocket doesn't need to send goodbye message
     websocket_.reset();
 }
 
@@ -145,12 +146,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
                 }
             }
         } else {
-            std::string text(data, len);
-            auto root = cJSON_Parse(text.c_str());
-            if (root == nullptr) {
-                ESP_LOGE(TAG, "Failed to parse JSON message: %s", text.c_str());
-                return;
-            }
+            // Parse JSON data
+            auto root = cJSON_ParseWithLength(data, len);
             auto type = cJSON_GetObjectItem(root, "type");
             if (cJSON_IsString(type) && type->valuestring != nullptr) {
                 if (strcmp(type->valuestring, "hello") == 0) {
@@ -161,7 +158,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "Missing message type, data: %s", text.c_str());
+                ESP_LOGE(TAG, "Missing message type, data: %s", std::string(data, len).c_str());
             }
             cJSON_Delete(root);
         }
