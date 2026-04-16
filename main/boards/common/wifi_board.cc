@@ -58,17 +58,17 @@ void WifiBoard::StartNetwork() {
     config.language = Lang::CODE;
     wifi_manager.Initialize(config);
 
-    // Set unified event callback - forward to NetworkEvent with SSID data
-    wifi_manager.SetEventCallback([this](WifiEvent event, const std::string& data) {
+    // Set unified event callback - forward to NetworkEvent
+    wifi_manager.SetEventCallback([this, &wifi_manager](WifiEvent event) {
         switch (event) {
             case WifiEvent::Scanning:
                 OnNetworkEvent(NetworkEvent::Scanning);
                 break;
             case WifiEvent::Connecting:
-                OnNetworkEvent(NetworkEvent::Connecting, data);
+                OnNetworkEvent(NetworkEvent::Connecting, wifi_manager.GetSsid());
                 break;
             case WifiEvent::Connected:
-                OnNetworkEvent(NetworkEvent::Connected, data);
+                OnNetworkEvent(NetworkEvent::Connected, wifi_manager.GetSsid());
                 break;
             case WifiEvent::Disconnected:
                 OnNetworkEvent(NetworkEvent::Disconnected);
