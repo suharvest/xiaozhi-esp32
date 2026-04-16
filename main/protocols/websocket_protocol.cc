@@ -149,7 +149,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
             // Parse JSON data
             auto root = cJSON_ParseWithLength(data, len);
             auto type = cJSON_GetObjectItem(root, "type");
-            if (cJSON_IsString(type) && type->valuestring != nullptr) {
+            if (cJSON_IsString(type)) {
                 if (strcmp(type->valuestring, "hello") == 0) {
                     ParseServerHello(root);
                 } else {
