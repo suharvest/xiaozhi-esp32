@@ -1032,11 +1032,16 @@ public:
         // 首次启动直接应用
         ApplyStaticIpIfConfigured();
         // 注册事件：配网退出后 StartStation 会再次触发 STA_START，确保静态 IP 重新应用
-        esp_event_handler_instance_t handler;
-        esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_START,
-            [](void* arg, esp_event_base_t, int32_t, void*) {
-                static_cast<SensecapWatcher*>(arg)->ApplyStaticIpIfConfigured();
-            }, this, &handler);
+        // 用 static guard 防止 StartNetwork 被多次调用时重复注册
+        static bool sta_handler_registered = false;
+        if (!sta_handler_registered) {
+            esp_event_handler_instance_t handler;
+            esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_START,
+                [](void* arg, esp_event_base_t, int32_t, void*) {
+                    static_cast<SensecapWatcher*>(arg)->ApplyStaticIpIfConfigured();
+                }, this, &handler);
+            sta_handler_registered = true;
+        }
     }
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
