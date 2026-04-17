@@ -100,6 +100,9 @@ void PowerSaveTimer::PowerSaveCheck() {
     }
     if (seconds_to_shutdown_ != -1 && ticks_ >= seconds_to_shutdown_ && on_shutdown_request_) {
         on_shutdown_request_();
+        // Reset ticks after shutdown request to prevent repeated triggering
+        // (e.g., when charging, device doesn't actually shutdown)
+        ticks_ = 0;
     }
 }
 

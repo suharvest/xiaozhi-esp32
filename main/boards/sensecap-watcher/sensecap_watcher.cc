@@ -32,6 +32,10 @@
 #include <esp_console.h>
 #include <esp_mac.h>
 #include <nvs_flash.h>
+#include <nvs.h>
+#include <esp_netif.h>
+#include <esp_event.h>
+#include <esp_wifi.h>
 #include <esp_app_desc.h>
 
 #include "assets/lang_config.h"
@@ -691,6 +695,84 @@ private:
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_remote));
 
+        // Register static IP configuration command
+        const esp_console_cmd_t cmd_static_ip = {
+            .command = "wifi_static_ip",
+            .help = "set/show/clear static IP.\n"
+                    "  wifi_static_ip set <ip> <gw> [mask] [dns]\n"
+                    "  wifi_static_ip show\n"
+                    "  wifi_static_ip clear",
+            .hint = NULL,
+            .func = [](int argc, char** argv) -> int {
+                if (argc < 2) {
+                    printf("Usage: wifi_static_ip set|show|clear\n");
+                    return 1;
+                }
+
+                if (strcmp(argv[1], "show") == 0) {
+                    nvs_handle_t nvs;
+                    if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) {
+                        printf("{\"enabled\":false}\n");
+                        return 0;
+                    }
+                    uint8_t en = 0;
+                    nvs_get_u8(nvs, "static_ip_en", &en);
+                    char ip[16] = {}, gw[16] = {}, mask[16] = {}, dns[16] = {};
+                    size_t len;
+                    len = sizeof(ip);   nvs_get_str(nvs, "static_ip", ip, &len);
+                    len = sizeof(gw);   nvs_get_str(nvs, "static_gw", gw, &len);
+                    len = sizeof(mask);  nvs_get_str(nvs, "static_nm", mask, &len);
+                    len = sizeof(dns);   nvs_get_str(nvs, "static_dns", dns, &len);
+                    nvs_close(nvs);
+                    printf("{\"enabled\":%s,\"ip\":\"%s\",\"gateway\":\"%s\","
+                           "\"netmask\":\"%s\",\"dns\":\"%s\"}\n",
+                           en ? "true" : "false", ip, gw, mask, dns);
+                    return 0;
+                }
+
+                if (strcmp(argv[1], "clear") == 0) {
+                    nvs_handle_t nvs;
+                    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+                        nvs_set_u8(nvs, "static_ip_en", 0);
+                        nvs_commit(nvs);
+                        nvs_close(nvs);
+                    }
+                    printf("{\"success\":true,\"msg\":\"static IP cleared, reboot to use DHCP\"}\n");
+                    return 0;
+                }
+
+                if (strcmp(argv[1], "set") == 0) {
+                    if (argc < 4) {
+                        printf("{\"success\":false,\"error\":\"Usage: wifi_static_ip set <ip> <gw> [mask] [dns]\"}\n");
+                        return 1;
+                    }
+                    const char *mask_val = (argc >= 5) ? argv[4] : "255.255.255.0";
+                    const char *dns_val = (argc >= 6) ? argv[5] : "";
+                    nvs_handle_t nvs;
+                    if (nvs_open("wifi", NVS_READWRITE, &nvs) != ESP_OK) {
+                        printf("{\"success\":false,\"error\":\"NVS open failed\"}\n");
+                        return 1;
+                    }
+                    nvs_set_u8(nvs, "static_ip_en", 1);
+                    nvs_set_str(nvs, "static_ip", argv[2]);
+                    nvs_set_str(nvs, "static_gw", argv[3]);
+                    nvs_set_str(nvs, "static_nm", mask_val);
+                    nvs_set_str(nvs, "static_dns", dns_val);
+                    nvs_commit(nvs);
+                    nvs_close(nvs);
+                    printf("{\"success\":true,\"ip\":\"%s\",\"gateway\":\"%s\","
+                           "\"netmask\":\"%s\",\"dns\":\"%s\"}\n",
+                           argv[2], argv[3], mask_val, dns_val[0] ? dns_val : "(use gateway)");
+                    return 0;
+                }
+
+                printf("Unknown subcommand: %s\n", argv[1]);
+                return 1;
+            },
+            .argtable = NULL
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_static_ip));
+
         // Register face database CRUD commands
         FaceSerialHandler::GetInstance().RegisterCommands();
 
@@ -718,6 +800,53 @@ private:
         gpio_set_level(BSP_SD_SPI_CS, 1);
 
         camera_ = new SscmaCamera(io_exp_handle);
+    }
+
+    void ApplyStaticIpIfConfigured() {
+        nvs_handle_t nvs;
+        if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) return;
+
+        uint8_t enabled = 0;
+        nvs_get_u8(nvs, "static_ip_en", &enabled);
+        if (!enabled) {
+            nvs_close(nvs);
+            return;
+        }
+
+        char ip[16] = {}, gw[16] = {}, mask[16] = {}, dns[16] = {};
+        size_t len;
+        len = sizeof(ip);   nvs_get_str(nvs, "static_ip", ip, &len);
+        len = sizeof(gw);   nvs_get_str(nvs, "static_gw", gw, &len);
+        len = sizeof(mask);  nvs_get_str(nvs, "static_nm", mask, &len);
+        len = sizeof(dns);   nvs_get_str(nvs, "static_dns", dns, &len);
+        nvs_close(nvs);
+
+        if (ip[0] == '\0') return;
+
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (!sta) {
+            ESP_LOGE(TAG, "Static IP: STA netif not found");
+            return;
+        }
+
+        esp_netif_dhcpc_stop(sta);
+
+        esp_netif_ip_info_t ip_info = {};
+        esp_netif_str_to_ip4(ip, &ip_info.ip);
+        esp_netif_str_to_ip4(gw[0] ? gw : "0.0.0.0", &ip_info.gw);
+        esp_netif_str_to_ip4(mask[0] ? mask : "255.255.255.0", &ip_info.netmask);
+        esp_netif_set_ip_info(sta, &ip_info);
+
+        // DNS: 如果未指定则使用阿里公共 DNS
+        const char *dns_addr = dns[0] ? dns : "223.5.5.5";
+        if (dns_addr[0]) {
+            esp_netif_dns_info_t dns_info = {};
+            dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+            esp_netif_str_to_ip4(dns_addr, &dns_info.ip.u_addr.ip4);
+            esp_netif_set_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns_info);
+        }
+
+        ESP_LOGI(TAG, "Static IP applied: %s gw=%s mask=%s dns=%s", ip, gw, mask, dns_addr);
     }
 
     void InitializeRemoteDisplay() {
@@ -896,6 +1025,18 @@ public:
     virtual Led* GetLed() override {
         static SingleLed led(BUILTIN_LED_GPIO);
         return &led;
+    }
+
+    void StartNetwork() override {
+        WifiBoard::StartNetwork();
+        // 首次启动直接应用
+        ApplyStaticIpIfConfigured();
+        // 注册事件：配网退出后 StartStation 会再次触发 STA_START，确保静态 IP 重新应用
+        esp_event_handler_instance_t handler;
+        esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_START,
+            [](void* arg, esp_event_base_t, int32_t, void*) {
+                static_cast<SensecapWatcher*>(arg)->ApplyStaticIpIfConfigured();
+            }, this, &handler);
     }
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {

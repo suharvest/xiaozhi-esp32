@@ -100,9 +100,11 @@ private:
     std::atomic<bool> inference_paused_{false};
     std::atomic<int64_t> inference_paused_at_{0};
     std::atomic<bool> capture_in_progress_{false};
+    std::atomic<int64_t> capture_started_at_{0};
     std::mutex sscma_mutex_;
     std::mutex pause_state_mutex_;
     static constexpr int INFERENCE_PAUSE_TIMEOUT_SEC = 300;  // 5 min auto-resume
+    static constexpr int CAPTURE_TIMEOUT_SEC = 30;  // 30s capture timeout
 };
 
 #endif // ESP32_CAMERA_H

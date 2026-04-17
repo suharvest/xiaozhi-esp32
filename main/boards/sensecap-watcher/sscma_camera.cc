@@ -486,6 +486,14 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
         while (true)
         {
             if (this_->capture_in_progress_) {
+                // Auto-reset if capture hangs
+                int64_t now_sec = esp_timer_get_time() / 1000000;
+                if (this_->capture_started_at_.load() > 0 &&
+                    now_sec - this_->capture_started_at_.load() > CAPTURE_TIMEOUT_SEC) {
+                    ESP_LOGW(TAG, "Capture timeout (%ds), auto-resetting", CAPTURE_TIMEOUT_SEC);
+                    this_->capture_in_progress_ = false;
+                    this_->capture_started_at_ = 0;
+                }
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
@@ -900,6 +908,7 @@ bool SscmaCamera::Capture() {
     }
 
     capture_in_progress_ = true;
+    capture_started_at_ = esp_timer_get_time() / 1000000;
 
     // 清空队列中的残留数据
     SscmaData stale;
