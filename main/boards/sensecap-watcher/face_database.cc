@@ -363,6 +363,11 @@ int FaceDatabase::GetFaceCount() {
     return (int)faces_.size();
 }
 
+std::vector<FaceEntry> FaceDatabase::GetAllEntries() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return faces_;  // copy under lock
+}
+
 FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
     std::lock_guard<std::mutex> lock(mutex_);
 

@@ -46,6 +46,28 @@ static float half_to_float(uint16_t h) {
     return result;
 }
 
+/**
+ * Convert IEEE 754 float32 to half-precision (float16).
+ * Round-to-nearest-even; flushes denormals to zero.
+ */
+static uint16_t float_to_half(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+    uint32_t sign = (x >> 16) & 0x8000;
+    int32_t  exp  = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t mant = x & 0x007FFFFF;
+
+    if (exp <= 0) {
+        return (uint16_t)sign;                                   // underflow → ±0
+    } else if (exp >= 31) {
+        return (uint16_t)(sign | 0x7C00 | (mant ? 0x200 : 0));   // Inf/NaN
+    }
+    // Round to nearest even
+    uint32_t m = mant + 0x00001000;
+    if (m & 0x00800000) { m = 0; exp += 1; if (exp >= 31) return (uint16_t)(sign | 0x7C00); }
+    return (uint16_t)(sign | (exp << 10) | (m >> 13));
+}
+
 FaceSerialHandler& FaceSerialHandler::GetInstance() {
     static FaceSerialHandler instance;
     return instance;
@@ -82,6 +104,14 @@ void FaceSerialHandler::RegisterCommands() {
             .help = "Rename face: face_rename <old_name> <new_name>",
             .hint = "<old_name> <new_name>",
             .func = CmdRename,
+            .argtable = nullptr,
+            .context = nullptr,
+        },
+        {
+            .command = "face_export",
+            .help = "Export all faces (name + base64(fp16) embedding) as JSON",
+            .hint = nullptr,
+            .func = CmdExport,
             .argtable = nullptr,
             .context = nullptr,
         },
@@ -248,6 +278,39 @@ int FaceSerialHandler::CmdRename(int argc, char** argv) {
             printf("{\"ok\":false,\"error\":\"Rename failed\"}\n");
         }
     }
+    return 0;
+}
+
+int FaceSerialHandler::CmdExport(int argc, char** argv) {
+    auto entries = FaceDatabase::GetInstance().GetAllEntries();
+
+    // Each embedding: 128 * fp16 = 256 raw bytes → base64 ~344 chars (no newlines, padded).
+    // Output is one JSON line so SBC parser can read it.
+    uint8_t raw[FACE_EMBEDDING_DIM * 2];
+    // Base64 output buffer: ceil(256/3)*4 = 344 + 1 for NUL
+    unsigned char b64[512];
+
+    printf("{\"ok\":true,\"faces\":[");
+    for (size_t i = 0; i < entries.size(); i++) {
+        const FaceEntry& e = entries[i];
+        for (int k = 0; k < FACE_EMBEDDING_DIM; k++) {
+            uint16_t h = float_to_half(e.embedding[k]);
+            raw[k * 2]     = (uint8_t)(h & 0xFF);
+            raw[k * 2 + 1] = (uint8_t)((h >> 8) & 0xFF);
+        }
+        size_t b64_len = 0;
+        int ret = mbedtls_base64_encode(b64, sizeof(b64), &b64_len, raw, sizeof(raw));
+        if (ret != 0) {
+            // skip this one rather than abort whole export
+            ESP_LOGW(TAG, "base64 encode failed for %s: %d", e.name.c_str(), ret);
+            continue;
+        }
+        if (i > 0) printf(",");
+        printf("{\"name\":\"%s\",\"embedding\":\"%.*s\"}",
+               e.name.c_str(), (int)b64_len, (const char*)b64);
+    }
+    printf("],\"count\":%d,\"dim\":%d,\"format\":\"base64_fp16\"}\n",
+           (int)entries.size(), FACE_EMBEDDING_DIM);
     return 0;
 }
 

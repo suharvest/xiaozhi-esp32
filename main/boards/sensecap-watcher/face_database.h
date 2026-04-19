@@ -35,8 +35,11 @@ public:
     std::vector<std::string> ListFaces();
     int GetFaceCount();
 
+    // Get a snapshot of all entries (name + embedding) for SBC-side matching export
+    std::vector<FaceEntry> GetAllEntries();
+
     // Face matching
-    FaceMatchResult Match(const float* embedding, float threshold = 0.6f);
+    FaceMatchResult Match(const float* embedding, float threshold = 0.4f);
 
     // Utility
     static float CosineSimilarity(const float* a, const float* b, int dim = FACE_EMBEDDING_DIM);
