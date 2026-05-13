@@ -421,9 +421,9 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
-    const int MAX_RETRY = 10;
+    const int MAX_RETRY = 2;
     int retry_count = 0;
-    int retry_delay = 10; // Initial retry delay in seconds
+    int retry_delay = 5; // Initial retry delay in seconds
 
     auto& board = Board::GetInstance();
     while (true) {
