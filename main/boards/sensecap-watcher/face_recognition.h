@@ -104,6 +104,7 @@ private:
     FaceRecognition& operator=(const FaceRecognition&) = delete;
 
     void TriggerNotification(const std::string& wake_word);
+    void SuppressCurrentFace();
     void HandleRecognitionResult(const FaceMatchResult& result);
     void HandleUnknownPersonDetected(bool is_stranger_alert);
 

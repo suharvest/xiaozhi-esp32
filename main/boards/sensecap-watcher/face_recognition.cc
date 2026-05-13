@@ -252,7 +252,7 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
             // Familiar DND: ignore familiar faces (don't wake)
             if (familiar_mode) {
                 ESP_LOGI(TAG, "Familiar face ignored (DND): %s (sim=%.3f)", match.name.c_str(), match.similarity);
-                voting_buffer_.Clear();
+                SuppressCurrentFace();
             } else {
                 // Normal mode: notify for familiar faces
                 HandleRecognitionResult(match);
@@ -275,6 +275,16 @@ void FaceRecognition::TriggerNotification(const std::string& wake_word) {
     Application::GetInstance().Schedule([wake_word]() {
         Application::GetInstance().WakeWordInvoke(wake_word);
     });
+}
+
+void FaceRecognition::SuppressCurrentFace() {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        state_ = FaceDetectionState::COOLDOWN;
+        cooldown_start_time_ = esp_timer_get_time();
+        need_start_cooldown_ = false;
+    }
+    voting_buffer_.Clear();
 }
 
 void FaceRecognition::HandleRecognitionResult(const FaceMatchResult& result) {

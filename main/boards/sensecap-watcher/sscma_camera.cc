@@ -427,7 +427,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
     }
     memset(jpeg_out_, 0, sizeof(jpeg_dec_header_info_t));
 
-    // 初始化预览图片的内存
+    // 初始化预览图片描述符，解码缓冲在 Capture() 时临时申请，避免常驻占用 640x480x2 PSRAM。
     memset(&preview_image_, 0, sizeof(preview_image_));
     preview_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
     preview_image_.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -437,11 +437,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
 
     preview_image_.header.stride = preview_image_.header.w * 2;
     preview_image_.data_size = preview_image_.header.w * preview_image_.header.h * 2;
-    preview_image_.data =(uint8_t*)jpeg_calloc_align(preview_image_.data_size, 16);
-    if (preview_image_.data == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate memory for preview image");
-        return;
-    }
+    preview_image_.data = nullptr;
 
     sscma_client_set_model(sscma_client_handle_, 4);
     model_class_cnt = 0;
@@ -971,15 +967,25 @@ bool SscmaCamera::Capture() {
     }
 
     //DECODE JPEG
-    if (!jpeg_dec_ || !jpeg_io_ || !jpeg_out_ || !preview_image_.data) {
+    if (!jpeg_dec_ || !jpeg_io_ || !jpeg_out_) {
         capture_in_progress_ = false;
         return true;
+    }
+    if (!preview_image_.data) {
+        preview_image_.data = (uint8_t*)jpeg_calloc_align(preview_image_.data_size, 16);
+        if (preview_image_.data == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate memory for preview image");
+            capture_in_progress_ = false;
+            return true;
+        }
     }
     jpeg_io_->inbuf = jpeg_data_.buf;
     jpeg_io_->inbuf_len = jpeg_data_.len;
     ret = jpeg_dec_parse_header(jpeg_dec_, jpeg_io_, jpeg_out_);
     if (ret < 0) {
         ESP_LOGE(TAG, "Failed to parse JPEG header, ret: %d", ret);
+        heap_caps_free((void*)preview_image_.data);
+        preview_image_.data = nullptr;
         capture_in_progress_ = false;
         return true;
     }
@@ -991,6 +997,8 @@ bool SscmaCamera::Capture() {
     ret = jpeg_dec_process(jpeg_dec_, jpeg_io_);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to decode JPEG image, ret: %d", ret);
+        heap_caps_free((void*)preview_image_.data);
+        preview_image_.data = nullptr;
         capture_in_progress_ = false;
         return true;
     }
@@ -1006,6 +1014,8 @@ bool SscmaCamera::Capture() {
         uint8_t* data = (uint8_t*)heap_caps_malloc(image_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (data == nullptr) {
             ESP_LOGE(TAG, "Failed to allocate memory for display image");
+            heap_caps_free((void*)preview_image_.data);
+            preview_image_.data = nullptr;
             capture_in_progress_ = false;
             return true;
         }
@@ -1014,6 +1024,8 @@ bool SscmaCamera::Capture() {
         auto image = std::make_unique<LvglAllocatedImage>(data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
         display->SetPreviewImage(std::move(image));
     }
+    heap_caps_free((void*)preview_image_.data);
+    preview_image_.data = nullptr;
     capture_in_progress_ = false;
     return true;
 }
