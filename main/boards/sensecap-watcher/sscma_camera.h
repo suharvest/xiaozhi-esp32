@@ -94,6 +94,23 @@ public:
     void PauseInference();
     void ResumeInference();
 
+    // Bench: single-shot face embedding (path Z).
+    // Drives Himax through one face inference, captures the embedding in
+    // `out_embedding` (FACE_EMBEDDING_DIM floats), records phase timings
+    // (us) in `out_timing_us` if non-null, and bypasses the voting buffer.
+    // Returns true if a face was found within ~3 s, false on timeout.
+    // Thread-safety: serialized with single_shot_pending_; concurrent calls
+    // return false.
+    struct SingleShotTiming {
+        int64_t at_face_us = 0;       // sscma_break + AT+FACE=1 + sensor setup
+        int64_t invoke_to_result_us = 0;  // sscma_invoke(1) -> on_event embedding ready
+        int64_t teardown_us = 0;      // AT+FACE=0 + break
+        int64_t total_us = 0;
+        int   face_score = 0;
+        float face_quality = 0.0f;
+    };
+    bool BenchSingleShotFaceEmbedding(float* out_embedding, SingleShotTiming* out_timing);
+
 private:
     bool paused_inference_en_ = false;
     bool paused_face_recognition_en_ = false;
@@ -105,6 +122,15 @@ private:
     std::mutex pause_state_mutex_;
     static constexpr int INFERENCE_PAUSE_TIMEOUT_SEC = 300;  // 5 min auto-resume
     static constexpr int CAPTURE_TIMEOUT_SEC = 30;  // 30s capture timeout
+
+    // Bench (path Z) single-shot state. on_event populates these when
+    // single_shot_pending_ is set; BenchSingleShotFaceEmbedding waits on
+    // single_shot_valid_.
+    std::atomic<bool> single_shot_pending_{false};
+    std::atomic<bool> single_shot_valid_{false};
+    float single_shot_embedding_[FACE_EMBEDDING_DIM] = {0};
+    std::atomic<int> single_shot_face_score_{0};
+    std::atomic<int> single_shot_face_quality_x1000_{0};  // quality * 1000, int for atomicity
 };
 
 #endif // ESP32_CAMERA_H

@@ -166,6 +166,25 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                                      i, face_data.box_x, face_data.box_y, face_data.box_w, face_data.box_h,
                                      face_data.score, face_data.quality, face_data.has_embedding);
 
+                            // Bench hook (path Z): if a single-shot request is in flight and
+                            // we have an embedding, hand it to the waiter and skip the
+                            // voting / cooldown state machine. Only the first face in the
+                            // frame is captured.
+                            if (self->single_shot_pending_.load() &&
+                                !self->single_shot_valid_.load() &&
+                                face_data.has_embedding) {
+                                memcpy(self->single_shot_embedding_,
+                                       face_data.embedding,
+                                       sizeof(float) * FACE_EMBEDDING_DIM);
+                                self->single_shot_face_score_.store(face_data.score);
+                                self->single_shot_face_quality_x1000_.store(
+                                    (int)(face_data.quality * 1000.0f));
+                                self->single_shot_valid_.store(true);
+                                ESP_LOGI(TAG, "[BENCH] embedding captured (score=%d quality=%.2f)",
+                                         face_data.score, face_data.quality);
+                                continue;
+                            }
+
                             // Process face data
                             face_rec.ProcessFaceData(face_data);
                         }
@@ -728,6 +747,118 @@ bool SscmaCamera::SendFaceModeCommand(bool enable) {
 
     ESP_LOGI(TAG, "Face mode %s", enable ? "enabled" : "disabled");
     return true;
+}
+
+// Bench (path Z): drive Himax through a single inference and capture the
+// resulting embedding. We hold sscma_mutex_ throughout the entire trigger
+// + wait sequence to prevent the main camera task loop from racing in
+// (e.g. flipping back to object detection mid-invoke and clobbering state).
+// The on_event callback does not take sscma_mutex_, so the wait won't deadlock.
+bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
+                                               SingleShotTiming* out_timing) {
+    if (out_embedding == nullptr) {
+        return false;
+    }
+    // Refuse concurrent calls.
+    bool expected = false;
+    if (!single_shot_pending_.compare_exchange_strong(expected, true)) {
+        ESP_LOGW(TAG, "[BENCH] single-shot already in progress");
+        return false;
+    }
+    single_shot_valid_.store(false);
+
+    SingleShotTiming t;
+    int64_t t0 = esp_timer_get_time();
+    bool got = false;
+
+    {
+        // Held throughout: the main loop's mode-switch logic will block
+        // on this mutex and resume cleanly once we're done.
+        std::lock_guard<std::mutex> lock(sscma_mutex_);
+
+        // Stage 1: stop current pipeline and switch Himax into face mode.
+        sscma_client_break(sscma_client_handle_);
+        {
+            sscma_client_reply_t reply = {0};
+            const char* cmd = "AT+FACE=1\r\n";
+            esp_err_t ret = sscma_client_request(sscma_client_handle_, cmd,
+                                                 &reply, true,
+                                                 pdMS_TO_TICKS(2000));
+            if (reply.payload != NULL) {
+                sscma_client_reply_clear(&reply);
+            }
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "[BENCH] AT+FACE=1 failed: %d", ret);
+                single_shot_pending_.store(false);
+                return false;
+            }
+        }
+        sscma_client_set_sensor(sscma_client_handle_, 1, 0, true);
+        vTaskDelay(pdMS_TO_TICKS(200));  // settle (matches main loop's behavior)
+
+        int64_t t_at_face = esp_timer_get_time();
+        t.at_face_us = t_at_face - t0;
+
+        // Stage 2: invoke once. Himax is frame-driven, times=1 means it
+        // will run inference on the next captured frame then stop.
+        esp_err_t ret = sscma_client_invoke(sscma_client_handle_, 1, false, false);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "[BENCH] invoke(1) failed: %d", ret);
+            sscma_client_break(sscma_client_handle_);
+        } else {
+            // Stage 3: wait for on_event hook to populate the buffer.
+            const int64_t kTimeoutUs = 3000000;  // 3 s
+            int64_t deadline = esp_timer_get_time() + kTimeoutUs;
+            while (!single_shot_valid_.load() && esp_timer_get_time() < deadline) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+        int64_t t_result = esp_timer_get_time();
+        t.invoke_to_result_us = t_result - t_at_face;
+
+        got = single_shot_valid_.load();
+        if (got) {
+            memcpy(out_embedding, single_shot_embedding_,
+                   sizeof(float) * FACE_EMBEDDING_DIM);
+            t.face_score = single_shot_face_score_.load();
+            t.face_quality = single_shot_face_quality_x1000_.load() / 1000.0f;
+        } else {
+            ESP_LOGW(TAG, "[BENCH] timeout waiting for embedding");
+        }
+
+        // Stage 4: teardown — leave Himax idle so the main loop can decide
+        // what to do next.
+        sscma_client_break(sscma_client_handle_);
+        {
+            sscma_client_reply_t reply = {0};
+            const char* cmd = "AT+FACE=0\r\n";
+            sscma_client_request(sscma_client_handle_, cmd, &reply, true,
+                                 pdMS_TO_TICKS(2000));
+            if (reply.payload != NULL) {
+                sscma_client_reply_clear(&reply);
+            }
+        }
+
+        int64_t t_end = esp_timer_get_time();
+        t.teardown_us = t_end - t_result;
+        t.total_us = t_end - t0;
+    }
+
+    ESP_LOGI(TAG,
+             "[BENCH] at_face=%lld invoke_to_result=%lld teardown=%lld total=%lld us  got=%d score=%d quality=%.2f",
+             (long long)t.at_face_us,
+             (long long)t.invoke_to_result_us,
+             (long long)t.teardown_us,
+             (long long)t.total_us,
+             got ? 1 : 0,
+             t.face_score,
+             t.face_quality);
+
+    if (out_timing) {
+        *out_timing = t;
+    }
+    single_shot_pending_.store(false);
+    return got;
 }
 
 void SscmaCamera::InitializeMcpTools() {

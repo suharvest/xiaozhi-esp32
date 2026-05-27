@@ -25,6 +25,7 @@ private:
     static int CmdExport(int argc, char** argv);
     static int CmdInferencePause(int argc, char** argv);
     static int CmdInferenceResume(int argc, char** argv);
+    static int CmdBench(int argc, char** argv);  // path-Z single-shot latency probe
 };
 
 #endif // FACE_SERIAL_HANDLER_H

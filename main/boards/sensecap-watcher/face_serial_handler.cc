@@ -131,6 +131,14 @@ void FaceSerialHandler::RegisterCommands() {
             .argtable = nullptr,
             .context = nullptr,
         },
+        {
+            .command = "face_bench",
+            .help = "Path Z bench: trigger one single-shot face embedding and print timings + b64",
+            .hint = nullptr,
+            .func = CmdBench,
+            .argtable = nullptr,
+            .context = nullptr,
+        },
     };
 
     for (const auto& cmd : cmds) {
@@ -333,5 +341,55 @@ int FaceSerialHandler::CmdInferenceResume(int argc, char** argv) {
     }
     camera->ResumeInference();
     printf("{\"ok\":true}\n");
+    return 0;
+}
+
+// face_bench — bench path Z. Drives Himax through one inference, prints
+// JSON with phase timings (us) and the captured embedding as base64 of the
+// raw float32 LE bytes (== warehouse wire format).
+int FaceSerialHandler::CmdBench(int argc, char** argv) {
+    auto* camera = static_cast<SscmaCamera*>(Board::GetInstance().GetCamera());
+    if (!camera) {
+        printf("{\"ok\":false,\"error\":\"Camera not available\"}\n");
+        return 1;
+    }
+
+    float embedding[FACE_EMBEDDING_DIM];
+    SscmaCamera::SingleShotTiming t;
+    bool ok = camera->BenchSingleShotFaceEmbedding(embedding, &t);
+
+    if (!ok) {
+        // Still print the timing — useful to see how long we waited before timeout.
+        printf("{\"ok\":false,\"error\":\"no_face_or_timeout\","
+               "\"timing_us\":{\"at_face\":%lld,\"invoke_to_result\":%lld,"
+               "\"teardown\":%lld,\"total\":%lld}}\n",
+               (long long)t.at_face_us, (long long)t.invoke_to_result_us,
+               (long long)t.teardown_us, (long long)t.total_us);
+        return 0;
+    }
+
+    // Base64 the raw float32 LE bytes — this is the warehouse wire format.
+    // 128 floats * 4 bytes = 512 bytes; base64 → ~684 chars.
+    const size_t raw_len = sizeof(float) * FACE_EMBEDDING_DIM;
+    static uint8_t b64[1024];
+    size_t b64_len = 0;
+    int rc = mbedtls_base64_encode(b64, sizeof(b64), &b64_len,
+                                   reinterpret_cast<const uint8_t*>(embedding),
+                                   raw_len);
+    if (rc != 0) {
+        printf("{\"ok\":false,\"error\":\"base64_encode_failed:%d\"}\n", rc);
+        return 1;
+    }
+
+    printf("{\"ok\":true,\"format\":\"float32_le_b64\",\"dim\":%d,"
+           "\"score\":%d,\"quality\":%.3f,"
+           "\"timing_us\":{\"at_face\":%lld,\"invoke_to_result\":%lld,"
+           "\"teardown\":%lld,\"total\":%lld},"
+           "\"embedding\":\"%.*s\"}\n",
+           FACE_EMBEDDING_DIM,
+           t.face_score, t.face_quality,
+           (long long)t.at_face_us, (long long)t.invoke_to_result_us,
+           (long long)t.teardown_us, (long long)t.total_us,
+           (int)b64_len, (const char*)b64);
     return 0;
 }
