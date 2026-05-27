@@ -361,10 +361,10 @@ int FaceSerialHandler::CmdBench(int argc, char** argv) {
     if (!ok) {
         // Still print the timing — useful to see how long we waited before timeout.
         printf("{\"ok\":false,\"error\":\"no_face_or_timeout\","
-               "\"timing_us\":{\"at_face\":%lld,\"invoke_to_result\":%lld,"
-               "\"teardown\":%lld,\"total\":%lld}}\n",
-               (long long)t.at_face_us, (long long)t.invoke_to_result_us,
-               (long long)t.teardown_us, (long long)t.total_us);
+               "\"timing_us\":{\"at_face\":%ld,\"invoke_to_result\":%ld,"
+               "\"teardown\":%ld,\"total\":%ld}}\n",
+               (long)t.at_face_us, (long)t.invoke_to_result_us,
+               (long)t.teardown_us, (long)t.total_us);
         return 0;
     }
 
@@ -383,13 +383,13 @@ int FaceSerialHandler::CmdBench(int argc, char** argv) {
 
     printf("{\"ok\":true,\"format\":\"float32_le_b64\",\"dim\":%d,"
            "\"score\":%d,\"quality\":%.3f,"
-           "\"timing_us\":{\"at_face\":%lld,\"invoke_to_result\":%lld,"
-           "\"teardown\":%lld,\"total\":%lld},"
+           "\"timing_us\":{\"at_face\":%ld,\"invoke_to_result\":%ld,"
+           "\"teardown\":%ld,\"total\":%ld},"
            "\"embedding\":\"%.*s\"}\n",
            FACE_EMBEDDING_DIM,
            t.face_score, t.face_quality,
-           (long long)t.at_face_us, (long long)t.invoke_to_result_us,
-           (long long)t.teardown_us, (long long)t.total_us,
+           (long)t.at_face_us, (long)t.invoke_to_result_us,
+           (long)t.teardown_us, (long)t.total_us,
            (int)b64_len, (const char*)b64);
     return 0;
 }

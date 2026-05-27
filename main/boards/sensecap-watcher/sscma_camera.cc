@@ -845,11 +845,11 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
     }
 
     ESP_LOGI(TAG,
-             "[BENCH] at_face=%lld invoke_to_result=%lld teardown=%lld total=%lld us  got=%d score=%d quality=%.2f",
-             (long long)t.at_face_us,
-             (long long)t.invoke_to_result_us,
-             (long long)t.teardown_us,
-             (long long)t.total_us,
+             "[BENCH] at_face=%ld invoke_to_result=%ld teardown=%ld total=%ld us  got=%d score=%d quality=%.2f",
+             (long)t.at_face_us,
+             (long)t.invoke_to_result_us,
+             (long)t.teardown_us,
+             (long)t.total_us,
              got ? 1 : 0,
              t.face_score,
              t.face_quality);
