@@ -1485,6 +1485,53 @@ void SscmaCamera::InitializeFaceMcpTools() {
     face_rec.SetFamiliarMode(familiar_mode);
     ESP_LOGI(TAG, "Familiar DND mode: %s", familiar_mode ? "ON" : "OFF");
 
+    // Tool: capture a single face embedding (topology B — on-device inference).
+    // Drives Himax through one SCRFD+MobileFaceNet pass and returns the 128-D
+    // float32 embedding as base64 (raw LE bytes = warehouse wire format).
+    // Used by xiaozhi-server's FaceProvider when the deployment runs face
+    // inference on-device instead of server-side. Not for chat replies.
+    mcp_server.AddTool("self.face.capture_embedding",
+        "Capture one face embedding via on-device NPU and return it as base64 "
+        "(128-D float32). Used by xiaozhi-server runtime for face verification; "
+        "not intended for chat replies.",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            float embedding[FACE_EMBEDDING_DIM];
+            SingleShotTiming t;
+            bool ok = this->BenchSingleShotFaceEmbedding(embedding, &t);
+            if (!ok) {
+                // No face detected / timeout — surface a structured error so
+                // the server can deny the operation rather than send garbage.
+                return std::string(
+                    "{\"ok\":false,\"error\":\"no_face_or_timeout\"}");
+            }
+            const size_t raw_len = sizeof(float) * FACE_EMBEDDING_DIM;  // 512
+            const size_t b64_buf = ((raw_len + 2) / 3) * 4 + 16;
+            uint8_t* b64 = static_cast<uint8_t*>(heap_caps_malloc(b64_buf, MALLOC_CAP_SPIRAM));
+            if (b64 == nullptr) {
+                throw std::runtime_error("OOM allocating embedding base64 buffer");
+            }
+            size_t b64_len = 0;
+            int rc = mbedtls_base64_encode(
+                b64, b64_buf, &b64_len,
+                reinterpret_cast<const uint8_t*>(embedding), raw_len);
+            if (rc != 0) {
+                heap_caps_free(b64);
+                throw std::runtime_error("embedding base64 encode failed");
+            }
+            std::string result;
+            result.reserve(b64_len + 96);
+            result.append("{\"ok\":true,\"format\":\"float32_le_b64\",\"dim\":");
+            result.append(std::to_string(FACE_EMBEDDING_DIM));
+            result.append(",\"score\":");
+            result.append(std::to_string(t.face_score));
+            result.append(",\"embedding_b64\":\"");
+            result.append(reinterpret_cast<const char*>(b64), b64_len);
+            result.append("\"}");
+            heap_caps_free(b64);
+            return result;
+        });
+
     // Tool: Delete a face
     mcp_server.AddTool("self.face.delete",
         "从本地数据库删除一张已录入的人脸。\n"
