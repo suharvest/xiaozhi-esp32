@@ -1477,7 +1477,12 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // Load face recognition settings
     Settings settings("face", false);
     face_recognition_en_ = settings.GetInt("enable", 0);
-    float threshold = (float)settings.GetInt("threshold", 60) / 100.0f;
+    // Default 0.40 (was 0.60): the local DB stores server-provisioned embeddings
+    // computed from enrollment photos (simulator domain), while greeting matches
+    // them against live device-NPU captures — cross-domain cosine peaks ~0.5 for
+    // same person, ~0.34 for different. 0.40 separates them; 0.60 would miss
+    // the same person. Calibrated against measured cross-domain distribution.
+    float threshold = (float)settings.GetInt("threshold", 40) / 100.0f;
     face_rec.SetMatchThreshold(threshold);
 
     // Load familiar DND mode setting (熟人免打扰)
@@ -1533,6 +1538,49 @@ void SscmaCamera::InitializeFaceMcpTools() {
         });
 
     // Tool: Delete a face
+    // Tool: provision a face into the local DB (server-side library sync).
+    // The warehouse face library is the source of truth; this lets the server
+    // push enrollment embeddings down so passive greeting recognizes the same
+    // people that the out-of-stock face check authorizes. Same float32 LE 512B
+    // wire format as warehouse / capture_embedding — zero conversion. Same name
+    // overwrites (idempotent re-sync). Not a chat tool.
+    mcp_server.AddTool("self.face.add",
+        "Provision one face into the local DB (server library sync). "
+        "Args: name, embedding_b64 (base64 of 128 float32 LE = 512 bytes). "
+        "Same name overwrites. Not intended for chat replies.",
+        PropertyList({
+            Property("name", kPropertyTypeString),
+            Property("embedding_b64", kPropertyTypeString)
+        }),
+        [&face_db](const PropertyList& properties) -> ReturnValue {
+            std::string name = properties["name"].value<std::string>();
+            std::string emb_b64 = properties["embedding_b64"].value<std::string>();
+            if (name.empty() || emb_b64.empty()) {
+                return std::string("{\"ok\":false,\"error\":\"name/embedding_b64 required\"}");
+            }
+            // Idempotent: overwrite same-name entry so re-sync updates cleanly.
+            for (const auto& f : face_db.ListFaces()) {
+                if (f == name) { face_db.DeleteFace(name); break; }
+            }
+            if (face_db.GetFaceCount() >= FACE_MAX_COUNT) {
+                return std::string("{\"ok\":false,\"error\":\"db_full\"}");
+            }
+            const size_t expected = FACE_EMBEDDING_DIM * sizeof(float);  // 512
+            uint8_t decoded[512];
+            size_t dlen = 0;
+            int rc = mbedtls_base64_decode(decoded, sizeof(decoded), &dlen,
+                        (const unsigned char*)emb_b64.c_str(), emb_b64.size());
+            if (rc != 0 || dlen != expected) {
+                return std::string("{\"ok\":false,\"error\":\"bad_embedding\"}");
+            }
+            float embedding[FACE_EMBEDDING_DIM];
+            memcpy(embedding, decoded, expected);
+            if (face_db.AddFace(name, embedding)) {
+                return std::string("{\"ok\":true}");
+            }
+            return std::string("{\"ok\":false,\"error\":\"add_failed\"}");
+        });
+
     mcp_server.AddTool("self.face.delete",
         "从本地数据库删除一张已录入的人脸。\n"
         "使用场景：当用户说'删除人脸xxx'、'忘记xxx的脸'时调用。\n"
