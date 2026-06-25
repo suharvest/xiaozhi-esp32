@@ -111,6 +111,15 @@ public:
     };
     bool BenchSingleShotFaceEmbedding(float* out_embedding, SingleShotTiming* out_timing);
 
+    // Gate for HTTP/MCP callers. Returns nullptr if a single-shot face embed is
+    // allowed right now, otherwise a short machine-readable reason:
+    //   "upgrading"       — OTA / firmware upgrade in progress (must not touch Himax)
+    //   "greeting_active" — passive greeting is actively running (idle + enabled);
+    //                       external face calls are not supported in that mode
+    //   "busy"            — UART enrollment, photo capture, or another single-shot
+    // Allowed during a voice conversation (the intended use → warm path).
+    const char* FaceEmbedBlockReason() const;
+
 private:
     bool paused_inference_en_ = false;
     bool paused_face_recognition_en_ = false;
@@ -131,6 +140,15 @@ private:
     float single_shot_embedding_[FACE_EMBEDDING_DIM] = {0};
     std::atomic<int> single_shot_face_score_{0};
     std::atomic<int> single_shot_face_quality_x1000_{0};  // quality * 1000, int for atomicity
+
+    // Hot-standby (热待命): true means Himax is left resident in face mode with
+    // the sensor warm at 240x240 (AT+FACE=1 active, invoke broken). A single-shot
+    // can then skip the ~400ms cold setup (break + AT+FACE=1 + set_sensor + 200ms
+    // settle). Only trusted while the device is voice-busy (conversation), because
+    // the main camera task does not touch Himax in that state. The main task clears
+    // this flag whenever it reconfigures the sensor, so a stale warm flag can never
+    // drive a single-shot against a mismatched sensor/mode.
+    std::atomic<bool> himax_face_warm_{false};
 };
 
 #endif // ESP32_CAMERA_H

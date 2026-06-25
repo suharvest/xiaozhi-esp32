@@ -518,6 +518,10 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 this_->sscma_restarted_ = false;
                 is_inference = false;
                 is_face_mode = false;
+                // Himax state was reset/resynced — any single-shot warm state is
+                // no longer valid (note: a single-shot's idle teardown sets
+                // sscma_restarted_ itself, so the warm flag it cleared stays clear).
+                this_->himax_face_warm_.store(false);
             }
 
             // Auto-resume inference if paused too long (browser didn't close properly)
@@ -549,6 +553,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                         sscma_client_reset(this_->sscma_client_handle_);
                     }
+                    // Himax was reset out from under us → drop warm state.
+                    this_->himax_face_warm_.store(false);
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
             }
@@ -633,6 +639,9 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         {
                             std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                             sscma_client_set_sensor(this_->sscma_client_handle_, 1, 0, true);
+                            // Main task now owns Himax (continuous face invoke); any
+                            // single-shot warm state from a prior conversation is stale.
+                            this_->himax_face_warm_.store(false);
                         }
 
                         // Wait for Himax to process face mode command
@@ -668,6 +677,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 {
                     std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true);
+                    // Sensor left face mode → invalidate any single-shot warm state.
+                    this_->himax_face_warm_.store(false);
                 }
             }
 
@@ -680,6 +691,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     sscma_client_set_model(this_->sscma_client_handle_, 4);
                     sscma_client_set_sensor(this_->sscma_client_handle_, 1, 1, true); // 设置分辨率 416X416
                     sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
+                    this_->himax_face_warm_.store(false);  // object-detect mode → warm state invalid
                     is_inference = true;
                 }
             } else if (is_inference && !want_object_mode) {
@@ -727,6 +739,12 @@ SscmaCamera::~SscmaCamera() {
 }
 
 bool SscmaCamera::SendFaceModeCommand(bool enable) {
+    // Any explicit AT+FACE mode change (main loop, SetCameraMode, etc.) puts
+    // Himax into a state the single-shot warm path can no longer assume.
+    // BenchSingleShotFaceEmbedding does NOT route through here (it issues raw
+    // AT+FACE requests), so this never clobbers its own warm bookkeeping.
+    himax_face_warm_.store(false);
+
     sscma_client_reply_t reply = {0};
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "AT+FACE=%d\r\n", enable ? 1 : 0);
@@ -749,11 +767,54 @@ bool SscmaCamera::SendFaceModeCommand(bool enable) {
     return true;
 }
 
+// Decide whether a single-shot face embed is allowed right now. Returns nullptr
+// when allowed, else a machine-readable reason for the HTTP/MCP caller to surface.
+const char* SscmaCamera::FaceEmbedBlockReason() const {
+    DeviceState st = Application::GetInstance().GetDeviceState();
+
+    // OTA / firmware upgrade: flash is being written and SRAM is tight — never
+    // drive Himax or churn heap during this window.
+    if (st == kDeviceStateUpgrading) {
+        return "upgrading";
+    }
+
+    bool voice_busy = (st == kDeviceStateConnecting ||
+                       st == kDeviceStateListening ||
+                       st == kDeviceStateSpeaking);
+
+    // Passive greeting actively running (idle + enabled). External face calls
+    // are not supported in that mode — they'd interrupt the greeting loop.
+    // During a conversation greeting is suspended (voice_busy), so allow that.
+    if (this->face_recognition_en_.load() && !voice_busy) {
+        return "greeting_active";
+    }
+
+    // Transient Himax contention.
+    if (this->inference_paused_.load() ||
+        this->capture_in_progress_.load() ||
+        this->single_shot_pending_.load()) {
+        return "busy";
+    }
+
+    return nullptr;
+}
+
 // Bench (path Z): drive Himax through a single inference and capture the
-// resulting embedding. We hold sscma_mutex_ throughout the entire trigger
-// + wait sequence to prevent the main camera task loop from racing in
-// (e.g. flipping back to object detection mid-invoke and clobbering state).
-// The on_event callback does not take sscma_mutex_, so the wait won't deadlock.
+// resulting embedding. Two paths:
+//   - COLD: break + AT+FACE=1 + set_sensor(240) + 200ms settle, then invoke.
+//     Used whenever Himax is not known to be warm (~820ms total).
+//   - WARM (热待命): skip all setup and invoke directly. Only taken when
+//     himax_face_warm_ is set AND the device is voice-busy (conversation),
+//     where the main camera task is guaranteed not to touch Himax. ~150ms.
+// We hold sscma_mutex_ throughout the trigger + wait so the main loop's
+// mode-switch logic blocks and resumes cleanly. The on_event callback does
+// not take sscma_mutex_, so the wait won't deadlock.
+//
+// Teardown also depends on voice-busy:
+//   - voice-busy: leave Himax resident in face mode (warm) for the next call.
+//   - idle: send AT+FACE=0 to restore a clean state and set sscma_restarted_
+//     so the main loop re-establishes passive face / object-detection mode
+//     (otherwise passive greeting would silently stall — pre-existing bug).
 bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
                                                SingleShotTiming* out_timing) {
     if (out_embedding == nullptr) {
@@ -767,6 +828,15 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
     }
     single_shot_valid_.store(false);
 
+    // Capture voice-busy once and use it consistently for both the warm-path
+    // decision and the teardown decision. The warm flag is only trusted during
+    // a conversation, where the main camera task leaves Himax alone.
+    DeviceState dev_state = Application::GetInstance().GetDeviceState();
+    bool voice_busy = (dev_state == kDeviceStateConnecting ||
+                       dev_state == kDeviceStateListening ||
+                       dev_state == kDeviceStateSpeaking);
+    bool warm = voice_busy && himax_face_warm_.load();
+
     SingleShotTiming t;
     int64_t t0 = esp_timer_get_time();
     bool got = false;
@@ -776,25 +846,29 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         // on this mutex and resume cleanly once we're done.
         std::lock_guard<std::mutex> lock(sscma_mutex_);
 
-        // Stage 1: stop current pipeline and switch Himax into face mode.
-        sscma_client_break(sscma_client_handle_);
-        {
-            sscma_client_reply_t reply = {0};
-            const char* cmd = "AT+FACE=1\r\n";
-            esp_err_t ret = sscma_client_request(sscma_client_handle_, cmd,
-                                                 &reply, true,
-                                                 pdMS_TO_TICKS(2000));
-            if (reply.payload != NULL) {
-                sscma_client_reply_clear(&reply);
+        // Stage 1: setup. Skipped on the warm path (Himax already in face mode,
+        // sensor warm at 240x240).
+        if (!warm) {
+            sscma_client_break(sscma_client_handle_);
+            {
+                sscma_client_reply_t reply = {0};
+                const char* cmd = "AT+FACE=1\r\n";
+                esp_err_t ret = sscma_client_request(sscma_client_handle_, cmd,
+                                                     &reply, true,
+                                                     pdMS_TO_TICKS(2000));
+                if (reply.payload != NULL) {
+                    sscma_client_reply_clear(&reply);
+                }
+                if (ret != ESP_OK) {
+                    ESP_LOGE(TAG, "[BENCH] AT+FACE=1 failed: %d", ret);
+                    himax_face_warm_.store(false);
+                    single_shot_pending_.store(false);
+                    return false;
+                }
             }
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "[BENCH] AT+FACE=1 failed: %d", ret);
-                single_shot_pending_.store(false);
-                return false;
-            }
+            sscma_client_set_sensor(sscma_client_handle_, 1, 0, true);
+            vTaskDelay(pdMS_TO_TICKS(200));  // settle for sensor re-init
         }
-        sscma_client_set_sensor(sscma_client_handle_, 1, 0, true);
-        vTaskDelay(pdMS_TO_TICKS(200));  // settle (matches main loop's behavior)
 
         int64_t t_at_face = esp_timer_get_time();
         t.at_face_us = t_at_face - t0;
@@ -809,7 +883,7 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         // "single shot" from the caller's perspective.
         esp_err_t ret = sscma_client_invoke(sscma_client_handle_, -1, false, false);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "[BENCH] invoke(1) failed: %d", ret);
+            ESP_LOGE(TAG, "[BENCH] invoke failed: %d", ret);
             sscma_client_break(sscma_client_handle_);
         } else {
             // Stage 3: wait for on_event hook to populate the buffer.
@@ -832,10 +906,26 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
             ESP_LOGW(TAG, "[BENCH] timeout waiting for embedding");
         }
 
-        // Stage 4: teardown — leave Himax idle so the main loop can decide
-        // what to do next.
+        // Stage 4: teardown — stop the invoke loop either way.
         sscma_client_break(sscma_client_handle_);
-        {
+
+        // Re-read voice state at teardown: the entry snapshot (`voice_busy`) may
+        // be stale if the conversation ended mid-call. Decide the teardown on the
+        // *current* state so we never leave Himax stuck warm after voice ends —
+        // an idle device must get the clean teardown that restarts passive modes.
+        DeviceState end_state = Application::GetInstance().GetDeviceState();
+        bool end_voice_busy = (end_state == kDeviceStateConnecting ||
+                               end_state == kDeviceStateListening ||
+                               end_state == kDeviceStateSpeaking);
+        if (end_voice_busy) {
+            // Leave Himax resident in face mode for the next call in this
+            // conversation (sensor stays warm at 240x240) — but only if this
+            // shot actually produced a face. If not, distrust the warm state so
+            // the next call does a full cold re-setup to self-heal.
+            himax_face_warm_.store(got);
+        } else {
+            // Idle: restore a clean state and let the main loop reclaim Himax
+            // (passive greeting / object detection) on its next iteration.
             sscma_client_reply_t reply = {0};
             const char* cmd = "AT+FACE=0\r\n";
             sscma_client_request(sscma_client_handle_, cmd, &reply, true,
@@ -843,6 +933,8 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
             if (reply.payload != NULL) {
                 sscma_client_reply_clear(&reply);
             }
+            himax_face_warm_.store(false);
+            sscma_restarted_.store(true);
         }
 
         int64_t t_end = esp_timer_get_time();
@@ -851,7 +943,8 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
     }
 
     ESP_LOGI(TAG,
-             "[BENCH] at_face=%ld invoke_to_result=%ld teardown=%ld total=%ld us  got=%d score=%d quality=%.2f",
+             "[BENCH] %s at_face=%ld invoke_to_result=%ld teardown=%ld total=%ld us  got=%d score=%d quality=%.2f",
+             warm ? "WARM" : "COLD",
              (long)t.at_face_us,
              (long)t.invoke_to_result_us,
              (long)t.teardown_us,
@@ -1090,6 +1183,8 @@ bool SscmaCamera::Capture() {
 
     capture_in_progress_ = true;
     capture_started_at_ = esp_timer_get_time() / 1000000;
+    // Capture reconfigures the sensor (mode 3) → any single-shot warm state is stale.
+    himax_face_warm_.store(false);
 
     // 清空队列中的残留数据
     SscmaData stale;
@@ -1718,6 +1813,9 @@ void SscmaCamera::PauseInference() {
     inference_en = 0;
     face_recognition_en_ = false;
 
+    // External UART enrollment is about to take over Himax → warm state invalid.
+    himax_face_warm_.store(false);
+
     inference_paused_ = true;
     inference_paused_at_ = esp_timer_get_time() / 1000000;  // seconds
     ESP_LOGI(TAG, "Inference paused (was: inference=%d, face=%d), auto-resume in %ds",
@@ -1734,6 +1832,9 @@ void SscmaCamera::ResumeInference() {
 
     // Mark SSCMA as restarted so monitor task resets its local is_face_mode/is_inference
     // flags — the external UART session may have left Himax in an unknown state.
+    // Clear warm before lifting the pause so no single-shot can slip in (after
+    // inference_paused_ flips false) and trust a stale warm flag.
+    himax_face_warm_.store(false);
     sscma_restarted_ = true;
 
     inference_paused_ = false;
