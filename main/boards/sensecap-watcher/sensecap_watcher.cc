@@ -880,14 +880,17 @@ private:
             }
             ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi.GetIpAddress().c_str());
 
-            // 如果 NVS 中有保存的配置，尝试自动重连
+            // 联网后无条件常驻 HTTP 服务器：它承载 /api/face/embed 端点，供云端
+            // 业务流程随时调用本机人脸识别。beacon 不启动（仅首次投屏配对才需要）。
+            self->remote_display_http_server_.SetCamera(self->camera_);
+            self->remote_display_http_server_.Start(80, false);
+
+            // 如果 NVS 中有保存的配置，尝试自动重连（HTTP 服务器已常驻，无需再启动）
             auto config = RemoteDisplay::LoadConfig();
             if (config.enabled && !config.server_url.empty()) {
                 auto* remote = RemoteDisplay::GetInstance();
                 if (remote->StartWithConfig()) {
                     ESP_LOGI(TAG, "Remote display auto-reconnected to %s", config.server_url.c_str());
-                    // 启动 HTTP 服务器（不启动 beacon），供 RPi 控制停止/查询状态
-                    self->remote_display_http_server_.Start(80, false);
                 } else {
                     ESP_LOGW(TAG, "Remote display auto-reconnect failed");
                 }
@@ -928,6 +931,22 @@ private:
                            ",\"discovery\":" + (http_running ? "true" : "false") + "}";
                 }
             });
+
+        // 查询本机 WiFi IP 地址。
+        // 使用场景：当用户问"你的IP地址是多少"、"设备IP"、"局域网地址"时调用。
+        // 返回：{"ip":"192.168.x.x","connected":true} 或 {"ip":"","connected":false}
+        mcp_server.AddTool("self.get_ip_address",
+            "获取本设备的 WiFi 局域网 IP 地址。\n"
+            "使用场景：当用户问'你的IP地址是多少'、'设备IP'、'局域网地址'、'怎么连你'时调用。\n"
+            "返回：JSON，包含 ip(IPv4 地址字符串) 和 connected(是否已联网)。",
+            PropertyList(),
+            [](const PropertyList&) -> ReturnValue {
+                auto& wifi = WifiManager::GetInstance();
+                bool connected = wifi.IsConnected();
+                std::string ip = connected ? wifi.GetIpAddress() : std::string();
+                return std::string("{\"ip\":\"") + ip + "\",\"connected\":" +
+                       (connected ? "true" : "false") + "}";
+            });
     }
 
     std::string StartScreenCastDiscovery() {
@@ -939,17 +958,17 @@ private:
             return std::string("{\"success\":true,\"message\":\"已在投屏中\"}");
         }
 
-        // 启动 HTTP 服务器 + UDP beacon（供 RPi 发现和连接）
+        // HTTP 服务器已常驻（承载 face 端点）。这里只需再起 UDP beacon 让树莓派发现。
+        // 兜底：若联网早于服务器常驻启动而尚未运行，则补启动一次（不带 beacon）。
         if (!remote_display_http_server_.IsRunning()) {
-            ESP_LOGI(TAG, "Starting HTTP server + beacon...");
-            bool ok = remote_display_http_server_.Start(80);
-            ESP_LOGI(TAG, "HTTP server Start() returned: %d, IsRunning=%d", ok, remote_display_http_server_.IsRunning());
+            ESP_LOGI(TAG, "HTTP server not running yet, starting...");
+            remote_display_http_server_.SetCamera(camera_);
+            bool ok = remote_display_http_server_.Start(80, false);
             if (!ok || !remote_display_http_server_.IsRunning()) {
                 return std::string("{\"success\":false,\"message\":\"投屏发现服务启动失败\"}");
             }
-        } else {
-            ESP_LOGI(TAG, "HTTP server already running");
         }
+        remote_display_http_server_.StartDiscovery(80);
 
         return std::string("{\"success\":true,\"message\":\"投屏发现服务已开启，等待树莓派连接\"}");
     }
@@ -961,8 +980,8 @@ private:
             remote->Stop();
         }
 
-        // 停止 HTTP 服务器（beacon 在 Stop() 中自动停止）
-        remote_display_http_server_.Stop();
+        // 只停 UDP beacon，保留 HTTP 服务器常驻（/api/face/embed 端点需一直可用）
+        remote_display_http_server_.StopBeaconOnly();
 
         // 清除 NVS 配置
         RemoteDisplayConfig config;

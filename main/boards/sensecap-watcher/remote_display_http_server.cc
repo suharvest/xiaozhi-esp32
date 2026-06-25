@@ -1,11 +1,17 @@
 #include "remote_display_http_server.h"
 #include "remote_display.h"
+#include "sscma_camera.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_netif.h>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cJSON.h>
 #include <cstring>
+#include <string>
+#include <mbedtls/base64.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -16,6 +22,11 @@ RemoteDisplayHttpServer* RemoteDisplayHttpServer::instance_ = nullptr;
 
 // Max request body size (256 bytes is plenty for {"ws_url":"ws://..."})
 #define MAX_REQ_BODY 256
+
+// Rate limit for /api/face/embed: minimum interval between *accepted* calls.
+// Caps hammering of Himax / internal SRAM. Tune as needed; verify-once callers
+// never hit this (their spacing is far above 1s).
+#define FACE_EMBED_MIN_INTERVAL_US (1000 * 1000)  // 1s
 
 // UDP beacon port and interval
 #define BEACON_UDP_PORT 12321
@@ -112,9 +123,117 @@ esp_err_t RemoteDisplayHttpServer::HandleStatus(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ---------- Face embedding (on-device, for cloud callers) ----------
+
+esp_err_t RemoteDisplayHttpServer::HandleFaceEmbed(httpd_req_t* req) {
+    SscmaCamera* camera = instance_ ? instance_->camera_ : nullptr;
+    if (camera == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"camera_unavailable\"}");
+        return ESP_OK;
+    }
+
+    // State gate: reject during OTA ("upgrading"), while passive greeting is
+    // actively running ("greeting_active"), or when Himax is otherwise busy
+    // ("busy"). Allowed during a voice conversation (intended use → warm path).
+    const char* block = camera->FaceEmbedBlockReason();
+    if (block != nullptr) {
+        // upgrading / greeting_active are state conflicts (409); busy is transient (503).
+        const char* status = (strcmp(block, "busy") == 0)
+                                 ? "503 Service Unavailable"
+                                 : "409 Conflict";
+        httpd_resp_set_status(req, status);
+        httpd_resp_set_type(req, "application/json");
+        char body[64];
+        snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", block);
+        httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    }
+
+    // Rate limit: cap call frequency. Only *accepted* calls advance the
+    // timestamp, so a fast poller is throttled but never permanently starved.
+    int64_t now_us = esp_timer_get_time();
+    int64_t last_us = instance_->last_face_call_us_.load();
+    if (last_us != 0 && (now_us - last_us) < FACE_EMBED_MIN_INTERVAL_US) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"rate_limited\"}");
+        return ESP_OK;
+    }
+    instance_->last_face_call_us_.store(now_us);
+
+    // SRAM instrumentation: this endpoint runs on the (small) httpd worker and
+    // drives the deep sscma_client + SPI chain. Log internal-SRAM headroom so we
+    // can size the stack / socket budget from real data instead of guessing.
+    size_t sram_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+
+    float embedding[FACE_EMBEDDING_DIM];
+    SscmaCamera::SingleShotTiming t;
+    bool ok = camera->BenchSingleShotFaceEmbedding(embedding, &t);
+
+    size_t sram_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t sram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    UBaseType_t stack_left = uxTaskGetStackHighWaterMark(nullptr);
+    ESP_LOGI(TAG,
+        "[FaceEmbed] ok=%d total=%ldus SRAM before=%u after=%u min=%u stack_hwm=%u",
+        ok, (long)t.total_us, (unsigned)sram_before, (unsigned)sram_after,
+        (unsigned)sram_min, (unsigned)stack_left);
+
+    httpd_resp_set_type(req, "application/json");
+
+    if (!ok) {
+        // No face detected / timeout — structured error, HTTP 200 (same as the
+        // MCP tool) so the caller can deny rather than retry blindly.
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no_face_or_timeout\"}");
+        return ESP_OK;
+    }
+
+    // Encode the 128 float32 LE (512 bytes) as base64 — identical wire format to
+    // self.face.capture_embedding so the server side needs zero conversion.
+    const size_t raw_len = sizeof(float) * FACE_EMBEDDING_DIM;  // 512
+    const size_t b64_buf = ((raw_len + 2) / 3) * 4 + 16;
+    uint8_t* b64 = static_cast<uint8_t*>(heap_caps_malloc(b64_buf, MALLOC_CAP_SPIRAM));
+    if (b64 == nullptr) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"oom\"}");
+        return ESP_OK;
+    }
+    size_t b64_len = 0;
+    int rc = mbedtls_base64_encode(b64, b64_buf, &b64_len,
+                                   reinterpret_cast<const uint8_t*>(embedding), raw_len);
+    if (rc != 0) {
+        heap_caps_free(b64);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"b64_encode_failed\"}");
+        return ESP_OK;
+    }
+
+    std::string resp;
+    resp.reserve(b64_len + 96);
+    resp.append("{\"ok\":true,\"format\":\"float32_le_b64\",\"dim\":");
+    resp.append(std::to_string(FACE_EMBEDDING_DIM));
+    resp.append(",\"score\":");
+    resp.append(std::to_string(t.face_score));
+    resp.append(",\"embedding_b64\":\"");
+    resp.append(reinterpret_cast<const char*>(b64), b64_len);
+    resp.append("\"}");
+    heap_caps_free(b64);
+
+    httpd_resp_sendstr(req, resp.c_str());
+    return ESP_OK;
+}
+
 // ---------- UDP Beacon ----------
 
 void RemoteDisplayHttpServer::StartBeacon(int port) {
+    // Idempotent: if a beacon is already running, leave it as-is. Prevents
+    // leaking the socket/timer when StartDiscovery() is called on an
+    // already-discovering server.
+    if (beacon_timer_ != nullptr || beacon_sock_ >= 0) {
+        ESP_LOGI(TAG, "Beacon already running, skip");
+        return;
+    }
     beacon_port_ = port;
 
     // Create UDP socket
@@ -215,7 +334,15 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
-    config.stack_size = 3072;
+    // SRAM-frugal: internal SRAM is tight (~32KB free observed). Cap concurrent
+    // sockets low and enable LRU purge so an idle/stuck client can't pin a slot.
+    // Stack: measured on-device — the face endpoint drives the deep sscma_client
+    // + SPI chain on this worker and left only stack_hwm=340 bytes free at 3072
+    // (peak ~2732B). 4608 gives a comfortable ~1.9KB margin (incl. the success
+    // path's base64/JSON build) while costing only ~1.5KB more of the SRAM floor.
+    config.stack_size = 4608;
+    config.max_open_sockets = 3;
+    config.lru_purge_enable = true;
     config.open_fn = [](httpd_handle_t hd, int sockfd) -> esp_err_t {
         // Reduce LWIP socket buffers to save ~6KB internal SRAM per connection
         int sndbuf = 2920;
@@ -258,6 +385,16 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
     };
     httpd_register_uri_handler(server_, &status_uri);
 
+    // POST /api/face/embed — on-device single-shot face embedding for cloud
+    // callers. LAN-only; auth is expected at the cloud wrapper layer.
+    httpd_uri_t face_embed_uri = {
+        .uri = "/api/face/embed",
+        .method = HTTP_POST,
+        .handler = HandleFaceEmbed,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(server_, &face_embed_uri);
+
     ESP_LOGI(TAG, "HTTP server started on port %d", port);
 
     // Start UDP beacon for discovery (only for first-time pairing)
@@ -274,5 +411,9 @@ void RemoteDisplayHttpServer::Stop() {
         httpd_stop(server_);
         server_ = nullptr;
         ESP_LOGI(TAG, "HTTP server stopped");
+    }
+    // Avoid a dangling static pointer: handlers resolve the camera via instance_.
+    if (instance_ == this) {
+        instance_ = nullptr;
     }
 }
