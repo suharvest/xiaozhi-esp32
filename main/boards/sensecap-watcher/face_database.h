@@ -11,14 +11,23 @@
 #define FACE_NAME_MAX_LEN 32
 #define FACE_MAX_COUNT 20
 
+// Persistence format version. v1 (implicit / no "db_ver" key) stored only
+// name_%d + emb_%d per face. v2 adds an independent sid_%d (subject_id) key.
+// Because subject_id lives in its OWN typed NVS key (never appended to the
+// embedding blob), legacy v1 records remain fully readable: the missing sid_%d
+// key simply falls back to the sentinel 0. No DB wipe / migration is required.
+#define FACE_DB_FORMAT_VERSION 2
+
 struct FaceEntry {
     std::string name;
+    int subject_id = 0;  // warehouse subject id; 0 = unknown / not set
     float embedding[FACE_EMBEDDING_DIM];
 };
 
 struct FaceMatchResult {
     bool matched;
     std::string name;
+    int subject_id;  // warehouse subject id of matched face; 0 if not matched/unknown
     float similarity;
     int index;  // Index in database, -1 if not matched
 };
@@ -28,7 +37,8 @@ public:
     static FaceDatabase& GetInstance();
 
     // Database operations
-    bool AddFace(const std::string& name, const float* embedding);
+    // subject_id: warehouse subject id persisted alongside the face (0 = unknown).
+    bool AddFace(const std::string& name, const float* embedding, int subject_id = 0);
     bool DeleteFace(const std::string& name);
     bool DeleteFaceByIndex(int index);
     bool RenameFace(const std::string& old_name, const std::string& new_name);

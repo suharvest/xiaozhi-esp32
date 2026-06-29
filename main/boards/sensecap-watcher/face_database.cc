@@ -107,6 +107,11 @@ bool FaceDatabase::SaveToNvs() {
         return false;
     }
 
+    // Stamp the persistence format version (v2 = per-face subject_id sid_%d key).
+    // Best-effort: a missing/old db_ver is treated as legacy v1 on load and is
+    // still fully readable (sid_%d simply absent -> sentinel 0).
+    nvs_set_i32(nvs_handle, "db_ver", (int32_t)FACE_DB_FORMAT_VERSION);
+
     err = nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
@@ -146,6 +151,17 @@ bool FaceDatabase::LoadFaceEntry(int index, FaceEntry& entry) {
         return false;
     }
 
+    // Load subject_id (v2+). Independent typed key: legacy v1 records simply lack
+    // sid_%d, so NVS_NOT_FOUND -> sentinel 0. The embedding blob is strictly
+    // length-checked above, so there is no way to misread its tail as a subject_id.
+    char sid_key[16];
+    snprintf(sid_key, sizeof(sid_key), "sid_%d", index);
+    int32_t sid = 0;
+    if (nvs_get_i32(nvs_handle, sid_key, &sid) != ESP_OK) {
+        sid = 0;
+    }
+    entry.subject_id = (int)sid;
+
     nvs_close(nvs_handle);
     return true;
 }
@@ -179,6 +195,16 @@ bool FaceDatabase::SaveFaceEntry(int index, const FaceEntry& entry) {
         return false;
     }
 
+    // Save subject_id (v2 format) as an independent i32 key.
+    char sid_key[16];
+    snprintf(sid_key, sizeof(sid_key), "sid_%d", index);
+    err = nvs_set_i32(nvs_handle, sid_key, (int32_t)entry.subject_id);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save subject_id: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return false;
+    }
+
     err = nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
@@ -201,13 +227,17 @@ bool FaceDatabase::DeleteFaceEntry(int index) {
     snprintf(emb_key, sizeof(emb_key), "emb_%d", index);
     nvs_erase_key(nvs_handle, emb_key);
 
+    char sid_key[16];
+    snprintf(sid_key, sizeof(sid_key), "sid_%d", index);
+    nvs_erase_key(nvs_handle, sid_key);
+
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
     return true;
 }
 
-bool FaceDatabase::AddFace(const std::string& name, const float* embedding) {
+bool FaceDatabase::AddFace(const std::string& name, const float* embedding, int subject_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (name.empty() || name.length() >= FACE_NAME_MAX_LEN) {
@@ -230,6 +260,7 @@ bool FaceDatabase::AddFace(const std::string& name, const float* embedding) {
 
     FaceEntry entry;
     entry.name = name;
+    entry.subject_id = subject_id;
     memcpy(entry.embedding, embedding, FACE_EMBEDDING_SIZE);
 
     // Normalize the embedding
@@ -252,7 +283,8 @@ bool FaceDatabase::AddFace(const std::string& name, const float* embedding) {
         // Entry is saved, just count update failed
     }
 
-    ESP_LOGI(TAG, "Added face: %s (total: %zu)", name.c_str(), faces_.size());
+    ESP_LOGI(TAG, "Added face: %s (subject_id=%d, total: %zu)",
+             name.c_str(), subject_id, faces_.size());
     return true;
 }
 
@@ -298,6 +330,10 @@ bool FaceDatabase::DeleteFaceByIndexLocked(int index) {
             char emb_key[16];
             snprintf(emb_key, sizeof(emb_key), "emb_%d", i);
             nvs_erase_key(nvs_handle, emb_key);
+
+            char sid_key[16];
+            snprintf(sid_key, sizeof(sid_key), "sid_%d", i);
+            nvs_erase_key(nvs_handle, sid_key);
         }
         nvs_commit(nvs_handle);
         nvs_close(nvs_handle);
@@ -374,6 +410,7 @@ FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
     FaceMatchResult result;
     result.matched = false;
     result.name = "";
+    result.subject_id = 0;
     result.similarity = 0.0f;
     result.index = -1;
 
@@ -402,6 +439,7 @@ FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
     if (best_index >= 0 && best_similarity >= threshold) {
         result.matched = true;
         result.name = faces_[best_index].name;
+        result.subject_id = faces_[best_index].subject_id;
         result.similarity = best_similarity;
         result.index = best_index;
         ESP_LOGD(TAG, "Matched: %s (similarity: %.3f)", result.name.c_str(), result.similarity);
