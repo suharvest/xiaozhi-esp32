@@ -85,6 +85,10 @@ public:
     virtual std::string Explain(const std::string& question);
     virtual std::string FaceRecognition();
 
+    // Configured standby mode (persisted face_recognition_en_), used by the
+    // watcher status-bar mode indicator. Stable across device state.
+    bool IsFaceRecognitionEnabled() const { return face_recognition_en_.load(); }
+
     // 人脸识别相关方法
     bool SetCameraMode(CameraMode mode);
     bool SendFaceModeCommand(bool enable);
