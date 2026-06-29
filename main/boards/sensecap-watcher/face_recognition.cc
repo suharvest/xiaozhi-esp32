@@ -140,6 +140,7 @@ FaceRecognition::FaceRecognition()
     , has_pending_notification_(false) {
     notification_mutex_ = xSemaphoreCreateMutex();
     last_match_.matched = false;
+    last_match_.subject_id = 0;
     last_match_.similarity = 0.0f;
     last_match_.index = -1;
 }
@@ -291,6 +292,7 @@ void FaceRecognition::HandleRecognitionResult(const FaceMatchResult& result) {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_match_ = result;
+        last_match_time_us_ = esp_timer_get_time();
         last_notified_name_ = result.name;
     }
 
@@ -329,6 +331,44 @@ void FaceRecognition::StartCooldown() {
 FaceMatchResult FaceRecognition::GetLastMatch() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return last_match_;
+}
+
+int64_t FaceRecognition::GetLastMatchTimeUs() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_match_time_us_;
+}
+
+void FaceRecognition::CaptureCurrentSpeaker() {
+    SpeakerIdentity speaker;  // defaults to invalid
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (last_match_.matched && last_match_time_us_ != 0) {
+            int64_t age_us = esp_timer_get_time() - last_match_time_us_;
+            if (age_us >= 0 && age_us <= kSpeakerMaxAgeUs) {
+                speaker.valid = true;
+                speaker.name = FaceDatabase::DecodeName(last_match_.name);
+                speaker.subject_id = last_match_.subject_id;
+                speaker.similarity = last_match_.similarity;
+            }
+        }
+        current_speaker_ = speaker;
+    }
+    if (speaker.valid) {
+        ESP_LOGI(TAG, "current_speaker = %s (subject_id=%d, %.2f)",
+                 speaker.name.c_str(), speaker.subject_id, speaker.similarity);
+    } else {
+        ESP_LOGI(TAG, "current_speaker = <unknown>");
+    }
+}
+
+void FaceRecognition::ClearCurrentSpeaker() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    current_speaker_ = SpeakerIdentity{};
+}
+
+FaceRecognition::SpeakerIdentity FaceRecognition::GetCurrentSpeaker() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return current_speaker_;
 }
 
 void FaceRecognition::SetMatchThreshold(float threshold) {

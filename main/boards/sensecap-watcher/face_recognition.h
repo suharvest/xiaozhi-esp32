@@ -75,6 +75,24 @@ public:
 
     // Get last recognition result
     FaceMatchResult GetLastMatch() const;
+    // Monotonic time (esp_timer_get_time, us) when last_match_ was last set.
+    // 0 if no match has ever been recorded. Use to gate on freshness.
+    int64_t GetLastMatchTimeUs() const;
+
+    // Conversation speaker identity. The camera task freezes who we are talking
+    // to when a conversation starts (CaptureCurrentSpeaker) and clears it when it
+    // ends (ClearCurrentSpeaker). Queried by the self.conversation.speaker MCP
+    // tool so permission-gated commands can check "who is talking".
+    struct SpeakerIdentity {
+        bool valid = false;       // false = unknown (stranger / no recent face)
+        std::string name;         // decoded display name
+        int subject_id = 0;       // warehouse subject id; 0 = unknown / not set
+        float similarity = 0.0f;  // face match cosine similarity
+    };
+    // Freeze the speaker from the most recent fresh, confident match (<=15s old).
+    void CaptureCurrentSpeaker();
+    void ClearCurrentSpeaker();
+    SpeakerIdentity GetCurrentSpeaker() const;
 
     // Deferred notification: stores wake word and delivers when device returns to idle.
     void SetPendingNotification(const std::string& wake_word);
@@ -113,6 +131,9 @@ private:
 
     FaceVotingBuffer voting_buffer_;
     FaceMatchResult last_match_;
+    int64_t last_match_time_us_ = 0;
+    SpeakerIdentity current_speaker_;  // frozen for the active conversation
+    static constexpr int64_t kSpeakerMaxAgeUs = 15LL * 1000000;  // 15s freshness
 
     float match_threshold_;
 

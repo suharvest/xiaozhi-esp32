@@ -600,6 +600,17 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             auto& face_rec = FaceRecognition::GetInstance();
             int face_count = FaceDatabase::GetInstance().GetFaceCount();
 
+            // Conversation speaker identity (board-local). Freeze who we're talking
+            // to on the rising edge of a conversation, clear it when it ends. Read
+            // by the self.conversation.speaker MCP tool for permission-gated cmds.
+            static bool was_voice_busy = false;
+            if (is_voice_busy && !was_voice_busy) {
+                face_rec.CaptureCurrentSpeaker();
+            } else if (!is_voice_busy && was_voice_busy) {
+                face_rec.ClearCurrentSpeaker();
+            }
+            was_voice_busy = is_voice_busy;
+
             // Debug: print face recognition status every 60 seconds
             static int64_t last_debug_time = 0;
             if (esp_timer_get_time() - last_debug_time > 60000000) {
@@ -1641,15 +1652,18 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // overwrites (idempotent re-sync). Not a chat tool.
     mcp_server.AddTool("self.face.add",
         "Provision one face into the local DB (server library sync). "
-        "Args: name, embedding_b64 (base64 of 128 float32 LE = 512 bytes). "
+        "Args: name, embedding_b64 (base64 of 128 float32 LE = 512 bytes), "
+        "subject_id (optional int, warehouse subject id, default 0=unknown). "
         "Same name overwrites. Not intended for chat replies.",
         PropertyList({
             Property("name", kPropertyTypeString),
-            Property("embedding_b64", kPropertyTypeString)
+            Property("embedding_b64", kPropertyTypeString),
+            Property("subject_id", kPropertyTypeInteger, 0)
         }),
         [&face_db](const PropertyList& properties) -> ReturnValue {
             std::string name = properties["name"].value<std::string>();
             std::string emb_b64 = properties["embedding_b64"].value<std::string>();
+            int subject_id = properties["subject_id"].value<int>();
             if (name.empty() || emb_b64.empty()) {
                 return std::string("{\"ok\":false,\"error\":\"name/embedding_b64 required\"}");
             }
@@ -1670,7 +1684,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
             }
             float embedding[FACE_EMBEDDING_DIM];
             memcpy(embedding, decoded, expected);
-            if (face_db.AddFace(name, embedding)) {
+            if (face_db.AddFace(name, embedding, subject_id)) {
                 return std::string("{\"ok\":true}");
             }
             return std::string("{\"ok\":false,\"error\":\"add_failed\"}");
@@ -1794,6 +1808,35 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return std::string("{\"familiar_mode\":" + std::to_string(cur_mode) + "}");
         });
 
+    // Tool: query the current conversation speaker (for permission-gated commands).
+    // State is owned board-locally by FaceRecognition; the camera task freezes it
+    // at conversation start and clears it at conversation end.
+    mcp_server.AddTool("self.conversation.speaker",
+        "返回当前对话的说话人身份（基于人脸识别）。\n"
+        "用途：有权限要求的命令在执行前查询'现在在跟谁说话'，据此鉴权/过滤。\n"
+        "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
+        "subject_id 为仓库后端 subject 主键（0=未知/未设置），可用于 session 模式按 id 精确定位。\n"
+        "valid=false 表示未知说话人（陌生人或对话开始前 15 秒内无人脸匹配），"
+        "或当前不在对话中。",
+        PropertyList(),
+        [&face_rec](const PropertyList&) -> ReturnValue {
+            FaceRecognition::SpeakerIdentity s = face_rec.GetCurrentSpeaker();
+            std::string name;  // minimal JSON string escaping
+            for (char c : s.name) {
+                if (c == '"' || c == '\\') name += '\\';
+                name += c;
+            }
+            char sim[16];
+            snprintf(sim, sizeof(sim), "%.4f", s.similarity);
+            std::string result = "{\"valid\":";
+            result += (s.valid ? "true" : "false");
+            result += ",\"name\":\"" + name + "\",\"subject_id\":";
+            result += std::to_string(s.subject_id);
+            result += ",\"similarity\":";
+            result += sim;
+            result += "}";
+            return result;
+        });
 
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }
