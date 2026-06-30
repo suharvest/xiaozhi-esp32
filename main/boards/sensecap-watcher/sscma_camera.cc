@@ -1079,28 +1079,32 @@ void SscmaCamera::InitializeMcpTools() {
         });
 
     // 推理开关获取
-    mcp_server.AddTool("self.model.enable",
-        "控制视觉推理(摄像头检测)功能的开启与关闭，或查询当前状态。\n"
-        "当用户指令涉及'开启/关闭推理'、'开始/停止检测'时使用。\n"
+    // Unified proactive-wake switch: one tool covering all four mutually
+    // exclusive modes (replaces the old self.model.enable / self.face.enable /
+    // self.face.familiar_mode trio).
+    mcp_server.AddTool("self.vision.mode",
+        "设置或查询摄像头主动唤醒模式（统一总开关）。\n"
+        "四种互斥模式：\n"
+        "  0 = 关闭：不主动唤醒。\n"
+        "  1 = 物体检测：看到目标物体后主动发起对话（不带身份）。\n"
+        "  2 = 人脸识别：看到人脸主动打招呼，熟人报名字、陌生人报 person detected。\n"
+        "  3 = 熟人免打扰(DND)：仅陌生人触发唤醒，已录入的熟人不打扰。\n"
+        "使用场景：用户说'关闭主动唤醒'(0)、'看到东西叫我/打开物体检测'(1)、"
+        "'打开人脸识别'(2)、'只在陌生人来时提醒/开启免打扰'(3)。\n"
         "参数：\n"
-        "  `enable`: (可选) 整数。1=开启推理，0=关闭推理。若省略则返回当前开关状态。",
+        "  `mode`: (可选) 整数 0-3。省略则返回当前模式。",
         PropertyList({
-            Property("enable", kPropertyTypeInteger, inference_en.load(), 0, 1)
+            Property("mode", kPropertyTypeInteger, GetVisionWakeMode(), 0, 3)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
-            Settings settings("model", true);
             try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("enable", en);
-                this->inference_en = en;
-                ESP_LOGI(TAG, "Set inference enable to %d", en);
+                const Property& mode_prop = properties["mode"];
+                int mode = mode_prop.value<int>();
+                this->SetVisionWakeMode(mode);
             } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
+                // mode not provided -> treat as query
             }
-            // 返回当前配置
-            int cur_en = settings.GetInt("enable", this->inference_en.load());
-            return std::string("{\"enable\":") + std::to_string(cur_en) + "}";
+            return std::string("{\"mode\":") + std::to_string(this->GetVisionWakeMode()) + "}";
         });
 
     // Raw JPEG capture for server-side face verification flow.
@@ -1575,6 +1579,50 @@ bool SscmaCamera::SetCameraMode(CameraMode mode) {
     return true;
 }
 
+void SscmaCamera::SetVisionWakeMode(int mode) {
+    if (mode < VISION_OFF || mode > VISION_FACE_DND) {
+        ESP_LOGW(TAG, "Invalid vision wake mode %d, ignoring", mode);
+        return;
+    }
+    const bool want_inference = (mode == VISION_OBJECT);
+    const bool want_face      = (mode == VISION_FACE || mode == VISION_FACE_DND);
+    const bool want_dnd       = (mode == VISION_FACE_DND);
+
+    // Persist across the existing NVS namespaces (no migration needed).
+    {
+        Settings settings("model", true);
+        settings.SetInt("enable", want_inference ? 1 : 0);
+    }
+    {
+        Settings settings("face", true);
+        settings.SetInt("enable", want_face ? 1 : 0);
+        settings.SetInt("familiar_mode", want_dnd ? 1 : 0);
+    }
+
+    // Apply at runtime. The modes are mutually exclusive; the main camera task
+    // already gives face mode priority over object detection, but we keep the
+    // underlying switches consistent so GetVisionWakeMode() is unambiguous.
+    inference_en = want_inference ? 1 : 0;
+    face_recognition_en_ = want_face;
+    auto& face_rec = FaceRecognition::GetInstance();
+    face_rec.SetEnabled(want_face);
+    face_rec.SetFamiliarMode(want_dnd);
+
+    ESP_LOGI(TAG, "Vision wake mode set to %d (inference=%d face=%d dnd=%d)",
+             mode, want_inference, want_face, want_dnd);
+}
+
+int SscmaCamera::GetVisionWakeMode() const {
+    if (face_recognition_en_.load()) {
+        return FaceRecognition::GetInstance().IsFamiliarMode()
+                   ? VISION_FACE_DND : VISION_FACE;
+    }
+    if (inference_en.load()) {
+        return VISION_OBJECT;
+    }
+    return VISION_OFF;
+}
+
 void SscmaCamera::InitializeFaceMcpTools() {
     auto& mcp_server = McpServer::GetInstance();
     auto& face_db = FaceDatabase::GetInstance();
@@ -1733,32 +1781,6 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
-    // Tool: Enable/disable face recognition
-    mcp_server.AddTool("self.face.enable",
-        "开启或关闭待命时的人脸识别功能。\n"
-        "使用场景：当用户说'打开人脸识别'、'关闭人脸识别'时调用。\n"
-        "参数：\n"
-        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。\n"
-        "返回：当前开关状态",
-        PropertyList({
-            Property("enable", kPropertyTypeInteger, face_recognition_en_.load() ? 1 : 0, 0, 1)
-        }),
-        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
-            Settings settings("face", true);
-            try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("enable", en);
-                this->face_recognition_en_ = en;
-                face_rec.SetEnabled(en != 0);
-                ESP_LOGI(TAG, "Set face recognition enable to %d", en);
-            } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
-            }
-            int cur_en = settings.GetInt("enable", this->face_recognition_en_.load() ? 1 : 0);
-            return std::string("{\"enable\":" + std::to_string(cur_en) + "}");
-        });
-
     // Tool: Set face recognition threshold
     mcp_server.AddTool("self.face.threshold",
         "设置人脸识别的置信度阈值。\n"
@@ -1781,31 +1803,6 @@ void SscmaCamera::InitializeFaceMcpTools() {
             }
             int cur_threshold = settings.GetInt("threshold", 60);
             return std::string("{\"threshold\":" + std::to_string(cur_threshold) + "}");
-        });
-
-    // Tool: Set familiar DND mode (熟人免打扰)
-    mcp_server.AddTool("self.face.familiar_mode",
-        "开启或关闭熟人免打扰模式。\n"
-        "开启时：熟人不打扰（忽略已录入的人脸），仅陌生人触发唤醒警报 (stranger detected)\n"
-        "关闭时：任何人脸都会唤醒（熟人报名字，陌生人报 person detected）\n"
-        "参数：\n"
-        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。",
-        PropertyList({
-            Property("enable", kPropertyTypeInteger, familiar_mode ? 1 : 0, 0, 1)
-        }),
-        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
-            Settings settings("face", true);
-            try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("familiar_mode", en);
-                face_rec.SetFamiliarMode(en != 0);
-                ESP_LOGI(TAG, "Set familiar mode to %d", en);
-            } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
-            }
-            int cur_mode = settings.GetInt("familiar_mode", 0);
-            return std::string("{\"familiar_mode\":" + std::to_string(cur_mode) + "}");
         });
 
     // Tool: query the current conversation speaker (for permission-gated commands).

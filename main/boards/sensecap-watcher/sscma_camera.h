@@ -89,6 +89,22 @@ public:
     // watcher status-bar mode indicator. Stable across device state.
     bool IsFaceRecognitionEnabled() const { return face_recognition_en_.load(); }
 
+    // Unified proactive-wake mode — a single switch over the two underlying
+    // detection engines (object detection + face recognition). The four modes
+    // are mutually exclusive and persisted across the existing NVS keys
+    // ("model"/"enable", "face"/"enable", "face"/"familiar_mode").
+    enum VisionWakeMode {
+        VISION_OFF      = 0,  // no proactive wake (both engines off)
+        VISION_OBJECT   = 1,  // wake on object detection (inference_en)
+        VISION_FACE     = 2,  // face recognition, greet everyone
+        VISION_FACE_DND = 3,  // face recognition, DND: only strangers wake
+    };
+    // Atomically apply a wake mode: writes the three underlying switches,
+    // persists them, and syncs the FaceRecognition state machine.
+    void SetVisionWakeMode(int mode);
+    // Derive the current wake mode from the underlying switches.
+    int GetVisionWakeMode() const;
+
     // 人脸识别相关方法
     bool SetCameraMode(CameraMode mode);
     bool SendFaceModeCommand(bool enable);

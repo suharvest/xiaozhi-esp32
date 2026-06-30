@@ -127,16 +127,24 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             if (mode_label_ == nullptr) {
                 return;
             }
-            // 三态：物体检测 / 人脸识别·普通 / 人脸识别·免打扰(DND)
+            // 四态：关闭(不唤醒) / 物体检测 / 人脸识别·普通 / 人脸识别·免打扰(DND)
             const char* icon = nullptr;
             auto* cam = static_cast<SscmaCamera*>(Board::GetInstance().GetCamera());
             if (cam != nullptr) {
-                if (cam->IsFaceRecognitionEnabled()) {
-                    icon = FaceRecognition::GetInstance().IsFamiliarMode()
-                               ? FONT_AWESOME_MOON    // 人脸识别·免打扰(熟人 DND)
-                               : FONT_AWESOME_USER;   // 人脸识别·普通(见人打招呼)
-                } else {
-                    icon = FONT_AWESOME_MAGNIFYING_GLASS;  // 物体检测
+                switch (cam->GetVisionWakeMode()) {
+                    case SscmaCamera::VISION_FACE_DND:
+                        icon = FONT_AWESOME_MOON;              // 人脸识别·免打扰(熟人 DND)
+                        break;
+                    case SscmaCamera::VISION_FACE:
+                        icon = FONT_AWESOME_USER;              // 人脸识别·普通(见人打招呼)
+                        break;
+                    case SscmaCamera::VISION_OBJECT:
+                        icon = FONT_AWESOME_MAGNIFYING_GLASS;  // 物体检测
+                        break;
+                    case SscmaCamera::VISION_OFF:
+                    default:
+                        icon = FONT_AWESOME_CIRCLE_XMARK;      // 完全不唤醒
+                        break;
                 }
             }
             if (mode_icon_ != icon) {
