@@ -2,6 +2,7 @@
 #include <nvs_flash.h>
 #include <esp_log.h>
 #include <cstring>
+#include <cstdint>
 #include <cmath>
 
 static const char* TAG = "FaceDatabase";
@@ -49,6 +50,90 @@ void FaceDatabase::NormalizeEmbedding(float* embedding, int dim) {
     }
 }
 
+// ---- fp16 <-> float32 (IEEE-754 binary16) -------------------------------
+// Software conversion used only at the NVS/wire boundary. faces_ stays float32.
+// Endianness of the 16-bit value itself is the host's; the LE byte ordering of
+// the *blob* is handled by the byte-wise pack/unpack at the call sites.
+
+uint16_t FaceDatabase::Float32ToHalf(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+
+    uint32_t sign = (x >> 16) & 0x8000u;
+    uint32_t mant = x & 0x007FFFFFu;
+    uint32_t biased = (x >> 23) & 0xFFu;
+
+    // Inf / NaN: exponent all-ones.
+    if (biased == 0xFFu) {
+        if (mant != 0) {
+            return (uint16_t)(sign | 0x7E00u);  // NaN -> quiet NaN (nonzero mant)
+        }
+        return (uint16_t)(sign | 0x7C00u);      // +/- Inf
+    }
+
+    int32_t exp = (int32_t)biased - 127 + 15;   // rebias float32 -> float16
+
+    // Overflow of the representable range -> Inf.
+    if (exp >= 0x1F) {
+        return (uint16_t)(sign | 0x7C00u);
+    }
+
+    // Subnormal or underflow (half exponent <= 0).
+    if (exp <= 0) {
+        if (exp < -10) {
+            return (uint16_t)sign;              // too small -> signed zero
+        }
+        mant |= 0x00800000u;                    // restore implicit leading 1
+        int shift = 14 - exp;                   // shift in [14..24]
+        uint32_t half_mant = mant >> shift;
+        // round-to-nearest-even on the discarded low bits
+        uint32_t rem = mant & ((1u << shift) - 1);
+        uint32_t halfway = 1u << (shift - 1);
+        if (rem > halfway || (rem == halfway && (half_mant & 1u))) {
+            half_mant++;                        // may carry up to smallest normal
+        }
+        return (uint16_t)(sign | half_mant);
+    }
+
+    // Normalized.
+    uint16_t h = (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
+    uint32_t rem = mant & 0x1FFFu;              // 13 dropped bits
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u))) {
+        h++;  // round half-to-even; a mantissa carry correctly bumps the exponent
+    }
+    return h;
+}
+
+float FaceDatabase::HalfToFloat32(uint16_t h) {
+    uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t exp  = (h >> 10) & 0x1Fu;
+    uint32_t mant = h & 0x03FFu;
+    uint32_t out;
+
+    if (exp == 0) {
+        if (mant == 0) {
+            out = sign;                         // +/- zero
+        } else {
+            // Subnormal half -> normalized float32.
+            exp = 127 - 15 + 1;
+            while ((mant & 0x0400u) == 0) {
+                mant <<= 1;
+                exp--;
+            }
+            mant &= 0x03FFu;                    // drop the leading bit shifted out
+            out = sign | (exp << 23) | (mant << 13);
+        }
+    } else if (exp == 0x1Fu) {
+        out = sign | 0x7F800000u | (mant << 13);  // Inf / NaN
+    } else {
+        out = sign | ((exp - 15 + 127) << 23) | (mant << 13);  // normalized
+    }
+
+    float f;
+    memcpy(&f, &out, sizeof(f));
+    return f;
+}
+
 bool FaceDatabase::LoadFromNvs() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -64,6 +149,26 @@ bool FaceDatabase::LoadFromNvs() {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
         return false;
+    }
+
+    // Format-version gate. v3 stores emb_%d as 256B fp16; any older store wrote
+    // 512B float32 under the SAME key name. Reinterpreting those bytes as fp16
+    // would be silent corruption, so a db_ver<3 (or absent) store is ignored and
+    // treated as an empty DB — the server library re-pushes via batch-update,
+    // which rewrites every slot in the new fp16 format and stamps db_ver=3.
+    int32_t db_ver = 0;
+    if (nvs_get_i32(nvs_handle, "db_ver", &db_ver) != ESP_OK) {
+        db_ver = 0;  // legacy v1/v2 had no db_ver, or pre-fp16
+    }
+    if (db_ver < FACE_DB_FORMAT_VERSION) {
+        ESP_LOGW(TAG,
+                 "NVS db_ver=%d < %d (pre-fp16 512B format); ignoring as empty, "
+                 "awaiting server re-sync",
+                 (int)db_ver, FACE_DB_FORMAT_VERSION);
+        nvs_close(nvs_handle);
+        faces_.clear();
+        loaded_ = true;
+        return true;
     }
 
     int32_t count = 0;
@@ -139,16 +244,23 @@ bool FaceDatabase::LoadFaceEntry(int index, FaceEntry& entry) {
     }
     entry.name = std::string(name_buf);
 
-    // Load embedding
+    // Load embedding (NVS stores 256B fp16; decode to canonical float32).
     char emb_key[16];
     snprintf(emb_key, sizeof(emb_key), "emb_%d", index);
 
-    size_t emb_len = FACE_EMBEDDING_SIZE;
-    err = nvs_get_blob(nvs_handle, emb_key, entry.embedding, &emb_len);
-    if (err != ESP_OK || emb_len != FACE_EMBEDDING_SIZE) {
+    uint8_t emb_blob[FACE_EMBEDDING_NVS_SIZE];  // 256B fp16 LE
+    size_t emb_len = FACE_EMBEDDING_NVS_SIZE;
+    err = nvs_get_blob(nvs_handle, emb_key, emb_blob, &emb_len);
+    if (err != ESP_OK || emb_len != FACE_EMBEDDING_NVS_SIZE) {
         ESP_LOGE(TAG, "Failed to load embedding for %s: %s", name_key, esp_err_to_name(err));
         nvs_close(nvs_handle);
         return false;
+    }
+    // Unpack 128 binary16 LE -> float32 (byte-wise: alignment-safe on xtensa).
+    for (int i = 0; i < FACE_EMBEDDING_DIM; i++) {
+        uint16_t half = (uint16_t)emb_blob[2 * i] |
+                        ((uint16_t)emb_blob[2 * i + 1] << 8);
+        entry.embedding[i] = HalfToFloat32(half);
     }
 
     // Load subject_id (v2+). Independent typed key: legacy v1 records simply lack
@@ -185,10 +297,16 @@ bool FaceDatabase::SaveFaceEntry(int index, const FaceEntry& entry) {
         return false;
     }
 
-    // Save embedding
+    // Save embedding: encode canonical float32 -> 256B fp16 LE blob.
     char emb_key[16];
     snprintf(emb_key, sizeof(emb_key), "emb_%d", index);
-    err = nvs_set_blob(nvs_handle, emb_key, entry.embedding, FACE_EMBEDDING_SIZE);
+    uint8_t emb_blob[FACE_EMBEDDING_NVS_SIZE];
+    for (int i = 0; i < FACE_EMBEDDING_DIM; i++) {
+        uint16_t half = Float32ToHalf(entry.embedding[i]);
+        emb_blob[2 * i]     = (uint8_t)(half & 0xFF);
+        emb_blob[2 * i + 1] = (uint8_t)((half >> 8) & 0xFF);
+    }
+    err = nvs_set_blob(nvs_handle, emb_key, emb_blob, FACE_EMBEDDING_NVS_SIZE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save embedding: %s", esp_err_to_name(err));
         nvs_close(nvs_handle);
@@ -402,6 +520,109 @@ int FaceDatabase::GetFaceCount() {
 std::vector<FaceEntry> FaceDatabase::GetAllEntries() {
     std::lock_guard<std::mutex> lock(mutex_);
     return faces_;  // copy under lock
+}
+
+bool FaceDatabase::ReplaceAll(const std::vector<FaceEntry>& entries) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 1) Build the new generation fully in a LOCAL vector first — validate name
+    //    length, copy + normalize the embedding, preserve subject_id, cap at
+    //    FACE_MAX_COUNT. faces_ is never touched until the new set is durably
+    //    persisted, so Match() (same mutex_) only ever sees old-or-new, never a
+    //    half-merged set.
+    std::vector<FaceEntry> next;
+    next.reserve(entries.size() < (size_t)FACE_MAX_COUNT ? entries.size() : FACE_MAX_COUNT);
+    for (const auto& e : entries) {
+        if (next.size() >= (size_t)FACE_MAX_COUNT) {
+            ESP_LOGW(TAG, "ReplaceAll: input exceeds FACE_MAX_COUNT=%d, truncating", FACE_MAX_COUNT);
+            break;
+        }
+        if (e.name.empty() || e.name.length() >= FACE_NAME_MAX_LEN) {
+            ESP_LOGW(TAG, "ReplaceAll: skipping entry with invalid name length");
+            continue;
+        }
+        FaceEntry ne;
+        ne.name = e.name;
+        ne.subject_id = e.subject_id;
+        memcpy(ne.embedding, e.embedding, FACE_EMBEDDING_SIZE);
+        NormalizeEmbedding(ne.embedding);
+        next.push_back(ne);
+    }
+
+    // 2) Persist via a single NVS handle. Strategy = documented FALLBACK (the
+    //    16KB NVS partition can't hold two full generations for a slot-flip, and
+    //    NVS is not transactional). Crash-degradation: write count=0 + commit
+    //    FIRST, so any power loss during the rewrite leaves a CLEAN EMPTY DB
+    //    (server is the source of truth → it re-pushes) rather than a corrupt
+    //    mix of old and new entries. count=N is written + committed LAST.
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ReplaceAll: nvs_open failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    // 2a) Invalidate first: count=0 committed before any slot is rewritten.
+    if (nvs_set_i32(h, "count", 0) != ESP_OK || nvs_commit(h) != ESP_OK) {
+        ESP_LOGE(TAG, "ReplaceAll: failed to zero count");
+        nvs_close(h);
+        return false;
+    }
+
+    // 2b) Erase every possible old slot key (old count may exceed the new one,
+    //     so stale tail entries must not survive a shrink).
+    for (int i = 0; i < FACE_MAX_COUNT; i++) {
+        char k[16];
+        snprintf(k, sizeof(k), "name_%d", i); nvs_erase_key(h, k);
+        snprintf(k, sizeof(k), "emb_%d", i);  nvs_erase_key(h, k);
+        snprintf(k, sizeof(k), "sid_%d", i);  nvs_erase_key(h, k);
+    }
+
+    // 2c) Write the new generation (name / embedding / subject_id per slot).
+    bool write_ok = true;
+    for (size_t i = 0; i < next.size(); i++) {
+        char k[16];
+        snprintf(k, sizeof(k), "name_%d", (int)i);
+        if (nvs_set_str(h, k, next[i].name.c_str()) != ESP_OK) { write_ok = false; break; }
+        snprintf(k, sizeof(k), "emb_%d", (int)i);
+        uint8_t emb_blob[FACE_EMBEDDING_NVS_SIZE];  // float32 -> 256B fp16 LE
+        for (int j = 0; j < FACE_EMBEDDING_DIM; j++) {
+            uint16_t half = Float32ToHalf(next[i].embedding[j]);
+            emb_blob[2 * j]     = (uint8_t)(half & 0xFF);
+            emb_blob[2 * j + 1] = (uint8_t)((half >> 8) & 0xFF);
+        }
+        if (nvs_set_blob(h, k, emb_blob, FACE_EMBEDDING_NVS_SIZE) != ESP_OK) { write_ok = false; break; }
+        snprintf(k, sizeof(k), "sid_%d", (int)i);
+        if (nvs_set_i32(h, k, (int32_t)next[i].subject_id) != ESP_OK) { write_ok = false; break; }
+    }
+
+    if (!write_ok) {
+        // Leave count at 0 (committed in 2a) → DB loads empty & clean on reboot.
+        ESP_LOGE(TAG, "ReplaceAll: slot write failed; DB left empty for clean re-sync");
+        nvs_commit(h);
+        nvs_close(h);
+        return false;
+    }
+
+    // 2d) Publish: stamp the new count + format version, then the final commit.
+    nvs_set_i32(h, "db_ver", (int32_t)FACE_DB_FORMAT_VERSION);
+    if (nvs_set_i32(h, "count", (int32_t)next.size()) != ESP_OK) {
+        ESP_LOGE(TAG, "ReplaceAll: failed to set new count");
+        nvs_close(h);
+        return false;
+    }
+    err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ReplaceAll: final nvs_commit failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    // 3) Swap the in-memory DB only after the persist is fully committed. Done
+    //    under mutex_, so concurrent Match() transitions atomically old → new.
+    faces_ = std::move(next);
+    ESP_LOGI(TAG, "ReplaceAll: applied %zu faces", faces_.size());
+    return true;
 }
 
 FaceMatchResult FaceDatabase::Match(const float* embedding, float threshold) {
