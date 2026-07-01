@@ -615,8 +615,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             static int64_t last_debug_time = 0;
             if (esp_timer_get_time() - last_debug_time > 60000000) {
                 last_debug_time = esp_timer_get_time();
-                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, state=%d, face_count=%d, is_face_mode=%d",
-                         this_->face_recognition_en_.load(), dev_state, face_count, is_face_mode);
+                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, inference_en=%d, state=%d, face_count=%d, is_face_mode=%d",
+                         this_->face_recognition_en_.load(), this_->inference_en.load(), dev_state, face_count, is_face_mode);
             }
 
             // Deliver pending face notification when device is idle
@@ -624,8 +624,11 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 face_rec.DeliverPendingNotification();
             }
 
-            // Face mode runs when not in voice conversation and face recognition is enabled
-            bool want_face_mode = !is_voice_busy && this_->face_recognition_en_.load();
+            // Face recognition (mode 2/3) temporarily disabled: WE2 face-invoke
+            // exhausts ESP32 internal DMA-capable SRAM -> OOM crash-loop.
+            // Re-enable after the internal-SRAM budget fix. Object detection
+            // (mode 1) and voice are unaffected.
+            bool want_face_mode = false;  // was: !is_voice_busy && face_recognition_en_.load()
 
             // Check if object detection mode should be active
             bool want_object_mode = this_->inference_en.load() && is_idle && !want_face_mode;
@@ -1086,11 +1089,13 @@ void SscmaCamera::InitializeMcpTools() {
         "设置或查询摄像头主动唤醒模式（统一总开关）。\n"
         "四种互斥模式：\n"
         "  0 = 关闭：不主动唤醒。\n"
-        "  1 = 物体检测：看到目标物体后主动发起对话（不带身份）。\n"
-        "  2 = 人脸识别：看到人脸主动打招呼，熟人报名字、陌生人报 person detected。\n"
+        "  1 = 人脸检测：检测到画面里有人就主动发起对话（只判断'有没有人'，不识别身份）。\n"
+        "  2 = 人脸识别：检测人脸并识别身份（熟人报名字、陌生人报 person detected）。\n"
         "  3 = 熟人免打扰(DND)：仅陌生人触发唤醒，已录入的熟人不打扰。\n"
-        "使用场景：用户说'关闭主动唤醒'(0)、'看到东西叫我/打开物体检测'(1)、"
-        "'打开人脸识别'(2)、'只在陌生人来时提醒/开启免打扰'(3)。\n"
+        "使用场景：'关闭主动唤醒/别盯着我'→0；'开启人脸检测/物体检测/看到人叫我/有人来提醒我'→1；"
+        "'开启人脸识别/认人/识别是谁/看到人报名字'→2；'只在陌生人来时提醒/开启免打扰'→3。\n"
+        "【重要区分】'人脸检测'(判断有没有人)=1，'人脸识别'(认出是谁)=2，二者不同，不要混淆；"
+        "只要用户没明确要求'识别身份/认人/报名字'，'检测到人/看到人'一律用 1。\n"
         "参数：\n"
         "  `mode`: (可选) 整数 0-3。省略则返回当前模式。",
         PropertyList({
@@ -1584,6 +1589,12 @@ void SscmaCamera::SetVisionWakeMode(int mode) {
         ESP_LOGW(TAG, "Invalid vision wake mode %d, ignoring", mode);
         return;
     }
+    // Face recognition (mode 2/3) temporarily disabled due to internal-SRAM
+    // OOM crash-loop; clamp to object detection (1). Re-enable after fix.
+    if (mode == VISION_FACE || mode == VISION_FACE_DND) {
+        ESP_LOGW(TAG, "Face recognition (mode %d) temporarily disabled, using object detection (1)", mode);
+        mode = VISION_OBJECT;
+    }
     const bool want_inference = (mode == VISION_OBJECT);
     const bool want_face      = (mode == VISION_FACE || mode == VISION_FACE_DND);
     const bool want_dnd       = (mode == VISION_FACE_DND);
@@ -1643,6 +1654,14 @@ void SscmaCamera::InitializeFaceMcpTools() {
     bool familiar_mode = settings.GetInt("familiar_mode", 0) != 0;
     face_rec.SetFamiliarMode(familiar_mode);
     ESP_LOGI(TAG, "Familiar DND mode: %s", familiar_mode ? "ON" : "OFF");
+
+    // mode 2/3 (face recognition) temporarily disabled: if NVS still holds a
+    // face-recognition mode from before, reset persisted state to object
+    // detection (1) so the device boots into a usable, non-crashing mode.
+    if (face_recognition_en_.load()) {
+        ESP_LOGW(TAG, "Face recognition disabled — resetting persisted mode to object detection (1)");
+        SetVisionWakeMode(VISION_OBJECT);
+    }
 
     // Tool: capture a single face embedding (topology B — on-device inference).
     // Drives Himax through one SCRFD+MobileFaceNet pass and returns the 128-D
