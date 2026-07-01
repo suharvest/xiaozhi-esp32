@@ -34,7 +34,7 @@ RemoteDisplayHttpServer* RemoteDisplayHttpServer::instance_ = nullptr;
 // float32 (512B) legacy path is still accepted. Bump the suffix if the embedder
 // (vector space) ever changes — the byte ENCODING is carried separately in the
 // `embedding_format` field, not the model_tag.
-#define DEVICE_FACE_MODEL_TAG "mobilefacenet-128-v1"
+#define DEVICE_FACE_MODEL_TAG "we2-mfn128-v1"
 // Upper bound on how many faces a single batch may carry (matches FACE_MAX_COUNT).
 #define FACE_BATCH_MAX_FACES FACE_MAX_COUNT
 // Dedicated body cap for the batch handler — MAX_REQ_BODY=256 is far too small.
