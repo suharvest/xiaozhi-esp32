@@ -624,11 +624,9 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 face_rec.DeliverPendingNotification();
             }
 
-            // Face recognition (mode 2/3) temporarily disabled: WE2 face-invoke
-            // exhausts ESP32 internal DMA-capable SRAM -> OOM crash-loop.
-            // Re-enable after the internal-SRAM budget fix. Object detection
-            // (mode 1) and voice are unaffected.
-            bool want_face_mode = false;  // was: !is_voice_busy && face_recognition_en_.load()
+            // Cut4 test: mode 2/3 face recognition re-enabled to validate 263
+            // watchdog / PHY crash after PSRAM budget cuts.
+            bool want_face_mode = !is_voice_busy && this_->face_recognition_en_.load();
 
             // Check if object detection mode should be active
             bool want_object_mode = this_->inference_en.load() && is_idle && !want_face_mode;
@@ -1589,12 +1587,7 @@ void SscmaCamera::SetVisionWakeMode(int mode) {
         ESP_LOGW(TAG, "Invalid vision wake mode %d, ignoring", mode);
         return;
     }
-    // Face recognition (mode 2/3) temporarily disabled due to internal-SRAM
-    // OOM crash-loop; clamp to object detection (1). Re-enable after fix.
-    if (mode == VISION_FACE || mode == VISION_FACE_DND) {
-        ESP_LOGW(TAG, "Face recognition (mode %d) temporarily disabled, using object detection (1)", mode);
-        mode = VISION_OBJECT;
-    }
+    // Cut4 test: mode 2/3 face recognition re-enabled (clamp removed).
     const bool want_inference = (mode == VISION_OBJECT);
     const bool want_face      = (mode == VISION_FACE || mode == VISION_FACE_DND);
     const bool want_dnd       = (mode == VISION_FACE_DND);
@@ -1655,13 +1648,8 @@ void SscmaCamera::InitializeFaceMcpTools() {
     face_rec.SetFamiliarMode(familiar_mode);
     ESP_LOGI(TAG, "Familiar DND mode: %s", familiar_mode ? "ON" : "OFF");
 
-    // mode 2/3 (face recognition) temporarily disabled: if NVS still holds a
-    // face-recognition mode from before, reset persisted state to object
-    // detection (1) so the device boots into a usable, non-crashing mode.
-    if (face_recognition_en_.load()) {
-        ESP_LOGW(TAG, "Face recognition disabled — resetting persisted mode to object detection (1)");
-        SetVisionWakeMode(VISION_OBJECT);
-    }
+    // Cut4 test: boot-time reset to object detection removed so the persisted
+    // face-recognition mode (mode 2/3) survives reboot.
 
     // Tool: capture a single face embedding (topology B — on-device inference).
     // Drives Himax through one SCRFD+MobileFaceNet pass and returns the 128-D
