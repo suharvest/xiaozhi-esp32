@@ -1,5 +1,6 @@
 #include "face_recognition.h"
 #include "application.h"
+#include "sscma_camera.h"
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <cstring>
@@ -297,6 +298,10 @@ void FaceRecognition::TriggerNotification(const std::string& wake_word) {
         need_start_cooldown_ = true;  // Actual timer starts when face mode resumes after conversation
     }
     voting_buffer_.Clear();
+    // Wake window: drop further sscma event frames (each parses into an ~8KB
+    // internal-SRAM cJSON tree) until the camera main loop tears face mode
+    // down — protects internal SRAM during the wake TLS handshake.
+    SscmaCamera::SetDropEvents(true);
     Application::GetInstance().Schedule([wake_word]() {
         Application::GetInstance().WakeWordInvoke(wake_word);
     });
@@ -432,6 +437,9 @@ bool FaceRecognition::DeliverPendingNotification() {
     xSemaphoreGive(notification_mutex_);
 
     ESP_LOGI(TAG, "Delivering deferred notification: %s", wake_word.c_str());
+    // Same wake-window guard as TriggerNotification: this deferred delivery
+    // also opens a conversation while face mode is still streaming events.
+    SscmaCamera::SetDropEvents(true);
     Application::GetInstance().Schedule([wake_word]() {
         Application::GetInstance().WakeWordInvoke(wake_word);
     });

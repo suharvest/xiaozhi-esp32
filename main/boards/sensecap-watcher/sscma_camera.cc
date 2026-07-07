@@ -41,7 +41,17 @@ static bool __himax_keepalive_check(sscma_client_handle_t client)
     return false;
 }
 
+SscmaCamera* SscmaCamera::instance_ = nullptr;
+
+void SscmaCamera::SetDropEvents(bool drop) {
+    if (instance_ != nullptr && instance_->sscma_client_handle_ != nullptr) {
+        sscma_client_set_drop_events(instance_->sscma_client_handle_, drop);
+        ESP_LOGI(TAG, "sscma drop_events=%d", drop ? 1 : 0);
+    }
+}
+
 SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
+    instance_ = this;
     sscma_client_io_spi_config_t spi_io_config = {0};
     spi_io_config.sync_gpio_num = BSP_SSCMA_CLIENT_SPI_SYNC;
     spi_io_config.cs_gpio_num = BSP_SSCMA_CLIENT_SPI_CS;
@@ -328,6 +338,10 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
                     }
                     printf("wake_word:%s\n", wake_word.c_str());
+                    // Wake window: drop further event frames until the camera main
+                    // loop reconfigures the mode (protects internal SRAM during the
+                    // wake TLS handshake).
+                    SscmaCamera::SetDropEvents(true);
                     Application::GetInstance().Schedule([wake_word]() {
                         Application::GetInstance().WakeWordInvoke(wake_word);
                     });
@@ -518,6 +532,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 this_->sscma_restarted_ = false;
                 is_inference = false;
                 is_face_mode = false;
+                SscmaCamera::SetDropEvents(false);  // fresh state → stop dropping events
                 // Himax state was reset/resynced — any single-shot warm state is
                 // no longer valid (note: a single-shot's idle teardown sets
                 // sscma_restarted_ itself, so the warm flag it cleared stays clear).
@@ -635,6 +650,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             if (want_face_mode) {
                 if (!is_face_mode) {
                     ESP_LOGI(TAG, "Start face recognition mode");
+                    // Idempotent guard: face frames must be parsed in this mode.
+                    SscmaCamera::SetDropEvents(false);
                     {
                         std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                         sscma_client_break(this_->sscma_client_handle_);
@@ -669,6 +686,11 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                             ESP_LOGE(TAG, "Failed to start face inference: %d", ret);
                         } else {
                             ESP_LOGI(TAG, "Face inference started");
+                            // Face mode is actually running now — record the
+                            // applied mode (2 vs 3 distinguished by DND flag).
+                            this_->applied_vision_mode_.store(
+                                face_rec.IsFamiliarMode() ? SscmaCamera::VISION_FACE_DND
+                                                          : SscmaCamera::VISION_FACE);
                         }
                     }
                 }
@@ -692,12 +714,22 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     // Sensor left face mode → invalidate any single-shot warm state.
                     this_->himax_face_warm_.store(false);
                 }
+
+                // Face-mode teardown complete — the event flood is over, stop
+                // dropping event frames (end of the wake-window guard).
+                SscmaCamera::SetDropEvents(false);
+                // Nothing running right now; object mode (if wanted) stores 1
+                // when it actually starts below.
+                this_->applied_vision_mode_.store(SscmaCamera::VISION_OFF);
             }
 
             // Handle object detection mode (only if not in face mode)
             if (want_object_mode && !is_face_mode) {
                 if (!is_inference) {
                     ESP_LOGI(TAG, "Start inference (enable=1)");
+                    // Idempotent guard: object events (type:1) must be parsed here —
+                    // a stuck drop flag would kill object wake.
+                    SscmaCamera::SetDropEvents(false);
                     std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_break(this_->sscma_client_handle_);
                     sscma_client_set_model(this_->sscma_client_handle_, 4);
@@ -705,6 +737,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
                     this_->himax_face_warm_.store(false);  // object-detect mode → warm state invalid
                     is_inference = true;
+                    this_->applied_vision_mode_.store(SscmaCamera::VISION_OBJECT);
                 }
             } else if (is_inference && !want_object_mode) {
                 ESP_LOGI(TAG, "Stop inference (enable=%d state=%d)", this_->inference_en.load(), Application::GetInstance().GetDeviceState());
@@ -713,6 +746,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_break(this_->sscma_client_handle_);
                 }
+                this_->applied_vision_mode_.store(SscmaCamera::VISION_OFF);
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -857,6 +891,12 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         // Held throughout: the main loop's mode-switch logic will block
         // on this mutex and resume cleanly once we're done.
         std::lock_guard<std::mutex> lock(sscma_mutex_);
+
+        // Unconditionally stop dropping event frames: this single-shot needs its
+        // own type:1 event to deliver the embedding. Covers the hot-standby embed
+        // during a conversation, where the wake trigger set the drop flag and the
+        // main loop's face-mode teardown may not have cleared it yet.
+        SscmaCamera::SetDropEvents(false);
 
         // Stage 1: setup. Skipped on the warm path (Himax already in face mode,
         // sensor warm at 240x240).
@@ -1095,19 +1135,33 @@ void SscmaCamera::InitializeMcpTools() {
         "【重要区分】'人脸检测'(判断有没有人)=1，'人脸识别'(认出是谁)=2，二者不同，不要混淆；"
         "只要用户没明确要求'识别身份/认人/报名字'，'检测到人/看到人'一律用 1。\n"
         "参数：\n"
-        "  `mode`: (可选) 整数 0-3。省略则返回当前模式。",
+        "  `mode`: (可选) 整数 0-3。不带 mode 参数=查询当前模式。\n"
+        "返回：`mode`=设置的目标模式，`applied`=当前实际生效的模式，`status`=active/switching。"
+        "status=switching 表示切换已受理：对话中设置的模式会在对话结束后几秒内自动生效，属正常现象，"
+        "直接告知用户已设置即可，不需要重试。",
         PropertyList({
-            Property("mode", kPropertyTypeInteger, GetVisionWakeMode(), 0, 3)
+            // -1 sentinel = "mode not provided" (query). A real default here
+            // would be snapshotted at registration time (before NVS state is
+            // final) and silently rewrite the mode on every parameterless call.
+            Property("mode", kPropertyTypeInteger, -1, -1, 3)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
-            try {
-                const Property& mode_prop = properties["mode"];
-                int mode = mode_prop.value<int>();
+            int mode = properties["mode"].value<int>();
+            if (mode >= 0) {
                 this->SetVisionWakeMode(mode);
-            } catch (const std::runtime_error&) {
-                // mode not provided -> treat as query
             }
-            return std::string("{\"mode\":") + std::to_string(this->GetVisionWakeMode()) + "}";
+            // Report both the configured intent and what is actually running.
+            int intent = this->GetVisionWakeMode();
+            int applied = this->applied_vision_mode_.load();
+            std::string status = (applied == intent) ? "active" : "switching";
+            std::string ret = "{\"mode\":" + std::to_string(intent) +
+                ",\"applied\":" + std::to_string(applied) +
+                ",\"status\":\"" + status + "\"";
+            if (applied != intent) {
+                ret += ",\"note\":\"switch applies within a few seconds after the conversation ends\"";
+            }
+            ret += "}";
+            return ret;
         });
 
     // Raw JPEG capture for server-side face verification flow.

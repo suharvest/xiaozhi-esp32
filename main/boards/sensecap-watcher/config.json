@@ -13,7 +13,8 @@
                 "CONFIG_USE_MULTILINE_CHAT_MESSAGE=y",
                 "CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y",
                 "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6",
-                "CONFIG_MBEDTLS_HARDWARE_AES=n"
+                "CONFIG_MBEDTLS_HARDWARE_AES=n",
+                "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=128"
             ]
         }
     ]
