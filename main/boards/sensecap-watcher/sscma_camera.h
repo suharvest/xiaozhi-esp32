@@ -72,6 +72,12 @@ private:
     // 人脸识别相关
     CameraMode camera_mode_ = MODE_OBJECT_DETECT;
     std::atomic<bool> face_recognition_en_{false};  // 待命时人脸识别开关
+    // Actually-applied vision wake mode (VisionWakeMode value), updated by the
+    // camera main task at the points where a mode really starts/stops running.
+    // May lag the configured intent (GetVisionWakeMode) e.g. during a voice
+    // conversation, when face/object engines are suspended. Read by the
+    // self.vision.mode MCP tool to report status active/switching.
+    std::atomic<int> applied_vision_mode_{0};
 public:
     SscmaCamera(esp_io_expander_handle_t io_exp_handle);
     ~SscmaCamera();
@@ -84,6 +90,34 @@ public:
     virtual bool SetVFlip(bool enabled) override;
     virtual std::string Explain(const std::string& question);
     virtual std::string FaceRecognition();
+
+    // Configured standby mode (persisted face_recognition_en_), used by the
+    // watcher status-bar mode indicator. Stable across device state.
+    bool IsFaceRecognitionEnabled() const { return face_recognition_en_.load(); }
+
+    // Wake-window guard: when true, sscma_client drops incoming event frames
+    // (type:1) before cJSON parsing, so the ~8KB-per-frame parse tree cannot
+    // starve internal SRAM while the wake path runs its TLS handshake.
+    // Set on every wake trigger (face/object), cleared by the camera main loop
+    // whenever it (re)configures a mode, and unconditionally by single-shot
+    // face embeds (which need their own type:1 event to get through).
+    static void SetDropEvents(bool drop);
+
+    // Unified proactive-wake mode — a single switch over the two underlying
+    // detection engines (object detection + face recognition). The four modes
+    // are mutually exclusive and persisted across the existing NVS keys
+    // ("model"/"enable", "face"/"enable", "face"/"familiar_mode").
+    enum VisionWakeMode {
+        VISION_OFF      = 0,  // no proactive wake (both engines off)
+        VISION_OBJECT   = 1,  // wake on object detection (inference_en)
+        VISION_FACE     = 2,  // face recognition, greet everyone
+        VISION_FACE_DND = 3,  // face recognition, DND: only strangers wake
+    };
+    // Atomically apply a wake mode: writes the three underlying switches,
+    // persists them, and syncs the FaceRecognition state machine.
+    void SetVisionWakeMode(int mode);
+    // Derive the current wake mode from the underlying switches.
+    int GetVisionWakeMode() const;
 
     // 人脸识别相关方法
     bool SetCameraMode(CameraMode mode);
@@ -121,6 +155,7 @@ public:
     const char* FaceEmbedBlockReason() const;
 
 private:
+    static SscmaCamera* instance_;  // for the static SetDropEvents accessor
     bool paused_inference_en_ = false;
     bool paused_face_recognition_en_ = false;
     std::atomic<bool> inference_paused_{false};

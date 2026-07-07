@@ -41,7 +41,17 @@ static bool __himax_keepalive_check(sscma_client_handle_t client)
     return false;
 }
 
+SscmaCamera* SscmaCamera::instance_ = nullptr;
+
+void SscmaCamera::SetDropEvents(bool drop) {
+    if (instance_ != nullptr && instance_->sscma_client_handle_ != nullptr) {
+        sscma_client_set_drop_events(instance_->sscma_client_handle_, drop);
+        ESP_LOGI(TAG, "sscma drop_events=%d", drop ? 1 : 0);
+    }
+}
+
 SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
+    instance_ = this;
     sscma_client_io_spi_config_t spi_io_config = {0};
     spi_io_config.sync_gpio_num = BSP_SSCMA_CLIENT_SPI_SYNC;
     spi_io_config.cs_gpio_num = BSP_SSCMA_CLIENT_SPI_CS;
@@ -328,6 +338,10 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
                     }
                     printf("wake_word:%s\n", wake_word.c_str());
+                    // Wake window: drop further event frames until the camera main
+                    // loop reconfigures the mode (protects internal SRAM during the
+                    // wake TLS handshake).
+                    SscmaCamera::SetDropEvents(true);
                     Application::GetInstance().Schedule([wake_word]() {
                         Application::GetInstance().WakeWordInvoke(wake_word);
                     });
@@ -518,6 +532,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 this_->sscma_restarted_ = false;
                 is_inference = false;
                 is_face_mode = false;
+                SscmaCamera::SetDropEvents(false);  // fresh state → stop dropping events
                 // Himax state was reset/resynced — any single-shot warm state is
                 // no longer valid (note: a single-shot's idle teardown sets
                 // sscma_restarted_ itself, so the warm flag it cleared stays clear).
@@ -600,12 +615,23 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             auto& face_rec = FaceRecognition::GetInstance();
             int face_count = FaceDatabase::GetInstance().GetFaceCount();
 
+            // Conversation speaker identity (board-local). Freeze who we're talking
+            // to on the rising edge of a conversation, clear it when it ends. Read
+            // by the self.conversation.speaker MCP tool for permission-gated cmds.
+            static bool was_voice_busy = false;
+            if (is_voice_busy && !was_voice_busy) {
+                face_rec.CaptureCurrentSpeaker();
+            } else if (!is_voice_busy && was_voice_busy) {
+                face_rec.ClearCurrentSpeaker();
+            }
+            was_voice_busy = is_voice_busy;
+
             // Debug: print face recognition status every 60 seconds
             static int64_t last_debug_time = 0;
             if (esp_timer_get_time() - last_debug_time > 60000000) {
                 last_debug_time = esp_timer_get_time();
-                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, state=%d, face_count=%d, is_face_mode=%d",
-                         this_->face_recognition_en_.load(), dev_state, face_count, is_face_mode);
+                ESP_LOGI(TAG, "[FaceDebug] face_en=%d, inference_en=%d, state=%d, face_count=%d, is_face_mode=%d",
+                         this_->face_recognition_en_.load(), this_->inference_en.load(), dev_state, face_count, is_face_mode);
             }
 
             // Deliver pending face notification when device is idle
@@ -613,7 +639,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 face_rec.DeliverPendingNotification();
             }
 
-            // Face mode runs when not in voice conversation and face recognition is enabled
+            // Cut4 test: mode 2/3 face recognition re-enabled to validate 263
+            // watchdog / PHY crash after PSRAM budget cuts.
             bool want_face_mode = !is_voice_busy && this_->face_recognition_en_.load();
 
             // Check if object detection mode should be active
@@ -623,6 +650,8 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
             if (want_face_mode) {
                 if (!is_face_mode) {
                     ESP_LOGI(TAG, "Start face recognition mode");
+                    // Idempotent guard: face frames must be parsed in this mode.
+                    SscmaCamera::SetDropEvents(false);
                     {
                         std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                         sscma_client_break(this_->sscma_client_handle_);
@@ -657,6 +686,11 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                             ESP_LOGE(TAG, "Failed to start face inference: %d", ret);
                         } else {
                             ESP_LOGI(TAG, "Face inference started");
+                            // Face mode is actually running now — record the
+                            // applied mode (2 vs 3 distinguished by DND flag).
+                            this_->applied_vision_mode_.store(
+                                face_rec.IsFamiliarMode() ? SscmaCamera::VISION_FACE_DND
+                                                          : SscmaCamera::VISION_FACE);
                         }
                     }
                 }
@@ -680,12 +714,22 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     // Sensor left face mode → invalidate any single-shot warm state.
                     this_->himax_face_warm_.store(false);
                 }
+
+                // Face-mode teardown complete — the event flood is over, stop
+                // dropping event frames (end of the wake-window guard).
+                SscmaCamera::SetDropEvents(false);
+                // Nothing running right now; object mode (if wanted) stores 1
+                // when it actually starts below.
+                this_->applied_vision_mode_.store(SscmaCamera::VISION_OFF);
             }
 
             // Handle object detection mode (only if not in face mode)
             if (want_object_mode && !is_face_mode) {
                 if (!is_inference) {
                     ESP_LOGI(TAG, "Start inference (enable=1)");
+                    // Idempotent guard: object events (type:1) must be parsed here —
+                    // a stuck drop flag would kill object wake.
+                    SscmaCamera::SetDropEvents(false);
                     std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_break(this_->sscma_client_handle_);
                     sscma_client_set_model(this_->sscma_client_handle_, 4);
@@ -693,6 +737,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     sscma_client_invoke(this_->sscma_client_handle_, -1, false, true);
                     this_->himax_face_warm_.store(false);  // object-detect mode → warm state invalid
                     is_inference = true;
+                    this_->applied_vision_mode_.store(SscmaCamera::VISION_OBJECT);
                 }
             } else if (is_inference && !want_object_mode) {
                 ESP_LOGI(TAG, "Stop inference (enable=%d state=%d)", this_->inference_en.load(), Application::GetInstance().GetDeviceState());
@@ -701,6 +746,7 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                     std::lock_guard<std::mutex> lock(this_->sscma_mutex_);
                     sscma_client_break(this_->sscma_client_handle_);
                 }
+                this_->applied_vision_mode_.store(SscmaCamera::VISION_OFF);
             }
 
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -845,6 +891,12 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         // Held throughout: the main loop's mode-switch logic will block
         // on this mutex and resume cleanly once we're done.
         std::lock_guard<std::mutex> lock(sscma_mutex_);
+
+        // Unconditionally stop dropping event frames: this single-shot needs its
+        // own type:1 event to deliver the embedding. Covers the hot-standby embed
+        // during a conversation, where the wake trigger set the drop flag and the
+        // main loop's face-mode teardown may not have cleared it yet.
+        SscmaCamera::SetDropEvents(false);
 
         // Stage 1: setup. Skipped on the warm path (Himax already in face mode,
         // sensor warm at 240x240).
@@ -1068,28 +1120,48 @@ void SscmaCamera::InitializeMcpTools() {
         });
 
     // 推理开关获取
-    mcp_server.AddTool("self.model.enable",
-        "控制视觉推理(摄像头检测)功能的开启与关闭，或查询当前状态。\n"
-        "当用户指令涉及'开启/关闭推理'、'开始/停止检测'时使用。\n"
+    // Unified proactive-wake switch: one tool covering all four mutually
+    // exclusive modes (replaces the old self.model.enable / self.face.enable /
+    // self.face.familiar_mode trio).
+    mcp_server.AddTool("self.vision.mode",
+        "设置或查询摄像头主动唤醒模式（统一总开关）。\n"
+        "四种互斥模式：\n"
+        "  0 = 关闭：不主动唤醒。\n"
+        "  1 = 人脸检测：检测到画面里有人就主动发起对话（只判断'有没有人'，不识别身份）。\n"
+        "  2 = 人脸识别：检测人脸并识别身份（熟人报名字、陌生人报 person detected）。\n"
+        "  3 = 熟人免打扰(DND)：仅陌生人触发唤醒，已录入的熟人不打扰。\n"
+        "使用场景：'关闭主动唤醒/别盯着我'→0；'开启人脸检测/物体检测/看到人叫我/有人来提醒我'→1；"
+        "'开启人脸识别/认人/识别是谁/看到人报名字'→2；'只在陌生人来时提醒/开启免打扰'→3。\n"
+        "【重要区分】'人脸检测'(判断有没有人)=1，'人脸识别'(认出是谁)=2，二者不同，不要混淆；"
+        "只要用户没明确要求'识别身份/认人/报名字'，'检测到人/看到人'一律用 1。\n"
         "参数：\n"
-        "  `enable`: (可选) 整数。1=开启推理，0=关闭推理。若省略则返回当前开关状态。",
+        "  `mode`: (可选) 整数 0-3。不带 mode 参数=查询当前模式。\n"
+        "返回：`mode`=设置的目标模式，`applied`=当前实际生效的模式，`status`=active/switching。"
+        "status=switching 表示切换已受理：对话中设置的模式会在对话结束后几秒内自动生效，属正常现象，"
+        "直接告知用户已设置即可，不需要重试。",
         PropertyList({
-            Property("enable", kPropertyTypeInteger, inference_en.load(), 0, 1)
+            // -1 sentinel = "mode not provided" (query). A real default here
+            // would be snapshotted at registration time (before NVS state is
+            // final) and silently rewrite the mode on every parameterless call.
+            Property("mode", kPropertyTypeInteger, -1, -1, 3)
         }),
         [this](const PropertyList& properties) -> ReturnValue {
-            Settings settings("model", true);
-            try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("enable", en);
-                this->inference_en = en;
-                ESP_LOGI(TAG, "Set inference enable to %d", en);
-            } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
+            int mode = properties["mode"].value<int>();
+            if (mode >= 0) {
+                this->SetVisionWakeMode(mode);
             }
-            // 返回当前配置
-            int cur_en = settings.GetInt("enable", this->inference_en.load());
-            return std::string("{\"enable\":") + std::to_string(cur_en) + "}";
+            // Report both the configured intent and what is actually running.
+            int intent = this->GetVisionWakeMode();
+            int applied = this->applied_vision_mode_.load();
+            std::string status = (applied == intent) ? "active" : "switching";
+            std::string ret = "{\"mode\":" + std::to_string(intent) +
+                ",\"applied\":" + std::to_string(applied) +
+                ",\"status\":\"" + status + "\"";
+            if (applied != intent) {
+                ret += ",\"note\":\"switch applies within a few seconds after the conversation ends\"";
+            }
+            ret += "}";
+            return ret;
         });
 
     // Raw JPEG capture for server-side face verification flow.
@@ -1564,6 +1636,51 @@ bool SscmaCamera::SetCameraMode(CameraMode mode) {
     return true;
 }
 
+void SscmaCamera::SetVisionWakeMode(int mode) {
+    if (mode < VISION_OFF || mode > VISION_FACE_DND) {
+        ESP_LOGW(TAG, "Invalid vision wake mode %d, ignoring", mode);
+        return;
+    }
+    // Cut4 test: mode 2/3 face recognition re-enabled (clamp removed).
+    const bool want_inference = (mode == VISION_OBJECT);
+    const bool want_face      = (mode == VISION_FACE || mode == VISION_FACE_DND);
+    const bool want_dnd       = (mode == VISION_FACE_DND);
+
+    // Persist across the existing NVS namespaces (no migration needed).
+    {
+        Settings settings("model", true);
+        settings.SetInt("enable", want_inference ? 1 : 0);
+    }
+    {
+        Settings settings("face", true);
+        settings.SetInt("enable", want_face ? 1 : 0);
+        settings.SetInt("familiar_mode", want_dnd ? 1 : 0);
+    }
+
+    // Apply at runtime. The modes are mutually exclusive; the main camera task
+    // already gives face mode priority over object detection, but we keep the
+    // underlying switches consistent so GetVisionWakeMode() is unambiguous.
+    inference_en = want_inference ? 1 : 0;
+    face_recognition_en_ = want_face;
+    auto& face_rec = FaceRecognition::GetInstance();
+    face_rec.SetEnabled(want_face);
+    face_rec.SetFamiliarMode(want_dnd);
+
+    ESP_LOGI(TAG, "Vision wake mode set to %d (inference=%d face=%d dnd=%d)",
+             mode, want_inference, want_face, want_dnd);
+}
+
+int SscmaCamera::GetVisionWakeMode() const {
+    if (face_recognition_en_.load()) {
+        return FaceRecognition::GetInstance().IsFamiliarMode()
+                   ? VISION_FACE_DND : VISION_FACE;
+    }
+    if (inference_en.load()) {
+        return VISION_OBJECT;
+    }
+    return VISION_OFF;
+}
+
 void SscmaCamera::InitializeFaceMcpTools() {
     auto& mcp_server = McpServer::GetInstance();
     auto& face_db = FaceDatabase::GetInstance();
@@ -1584,6 +1701,9 @@ void SscmaCamera::InitializeFaceMcpTools() {
     bool familiar_mode = settings.GetInt("familiar_mode", 0) != 0;
     face_rec.SetFamiliarMode(familiar_mode);
     ESP_LOGI(TAG, "Familiar DND mode: %s", familiar_mode ? "ON" : "OFF");
+
+    // Cut4 test: boot-time reset to object detection removed so the persisted
+    // face-recognition mode (mode 2/3) survives reboot.
 
     // Tool: capture a single face embedding (topology B — on-device inference).
     // Drives Himax through one SCRFD+MobileFaceNet pass and returns the 128-D
@@ -1641,15 +1761,18 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // overwrites (idempotent re-sync). Not a chat tool.
     mcp_server.AddTool("self.face.add",
         "Provision one face into the local DB (server library sync). "
-        "Args: name, embedding_b64 (base64 of 128 float32 LE = 512 bytes). "
+        "Args: name, embedding_b64 (base64 of 128 float32 LE = 512 bytes), "
+        "subject_id (optional int, warehouse subject id, default 0=unknown). "
         "Same name overwrites. Not intended for chat replies.",
         PropertyList({
             Property("name", kPropertyTypeString),
-            Property("embedding_b64", kPropertyTypeString)
+            Property("embedding_b64", kPropertyTypeString),
+            Property("subject_id", kPropertyTypeInteger, 0)
         }),
         [&face_db](const PropertyList& properties) -> ReturnValue {
             std::string name = properties["name"].value<std::string>();
             std::string emb_b64 = properties["embedding_b64"].value<std::string>();
+            int subject_id = properties["subject_id"].value<int>();
             if (name.empty() || emb_b64.empty()) {
                 return std::string("{\"ok\":false,\"error\":\"name/embedding_b64 required\"}");
             }
@@ -1670,7 +1793,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
             }
             float embedding[FACE_EMBEDDING_DIM];
             memcpy(embedding, decoded, expected);
-            if (face_db.AddFace(name, embedding)) {
+            if (face_db.AddFace(name, embedding, subject_id)) {
                 return std::string("{\"ok\":true}");
             }
             return std::string("{\"ok\":false,\"error\":\"add_failed\"}");
@@ -1719,32 +1842,6 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
-    // Tool: Enable/disable face recognition
-    mcp_server.AddTool("self.face.enable",
-        "开启或关闭待命时的人脸识别功能。\n"
-        "使用场景：当用户说'打开人脸识别'、'关闭人脸识别'时调用。\n"
-        "参数：\n"
-        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。\n"
-        "返回：当前开关状态",
-        PropertyList({
-            Property("enable", kPropertyTypeInteger, face_recognition_en_.load() ? 1 : 0, 0, 1)
-        }),
-        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
-            Settings settings("face", true);
-            try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("enable", en);
-                this->face_recognition_en_ = en;
-                face_rec.SetEnabled(en != 0);
-                ESP_LOGI(TAG, "Set face recognition enable to %d", en);
-            } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
-            }
-            int cur_en = settings.GetInt("enable", this->face_recognition_en_.load() ? 1 : 0);
-            return std::string("{\"enable\":" + std::to_string(cur_en) + "}");
-        });
-
     // Tool: Set face recognition threshold
     mcp_server.AddTool("self.face.threshold",
         "设置人脸识别的置信度阈值。\n"
@@ -1769,31 +1866,35 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return std::string("{\"threshold\":" + std::to_string(cur_threshold) + "}");
         });
 
-    // Tool: Set familiar DND mode (熟人免打扰)
-    mcp_server.AddTool("self.face.familiar_mode",
-        "开启或关闭熟人免打扰模式。\n"
-        "开启时：熟人不打扰（忽略已录入的人脸），仅陌生人触发唤醒警报 (stranger detected)\n"
-        "关闭时：任何人脸都会唤醒（熟人报名字，陌生人报 person detected）\n"
-        "参数：\n"
-        "  `enable`: (可选) 1=开启，0=关闭。省略则返回当前状态。",
-        PropertyList({
-            Property("enable", kPropertyTypeInteger, familiar_mode ? 1 : 0, 0, 1)
-        }),
-        [this, &face_rec](const PropertyList& properties) -> ReturnValue {
-            Settings settings("face", true);
-            try {
-                const Property& enable_prop = properties["enable"];
-                int en = enable_prop.value<int>();
-                settings.SetInt("familiar_mode", en);
-                face_rec.SetFamiliarMode(en != 0);
-                ESP_LOGI(TAG, "Set familiar mode to %d", en);
-            } catch (const std::runtime_error&) {
-                // enable not provided -> treat as query
+    // Tool: query the current conversation speaker (for permission-gated commands).
+    // State is owned board-locally by FaceRecognition; the camera task freezes it
+    // at conversation start and clears it at conversation end.
+    mcp_server.AddTool("self.conversation.speaker",
+        "返回当前对话的说话人身份（基于人脸识别）。\n"
+        "用途：有权限要求的命令在执行前查询'现在在跟谁说话'，据此鉴权/过滤。\n"
+        "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
+        "subject_id 为仓库后端 subject 主键（0=未知/未设置），可用于 session 模式按 id 精确定位。\n"
+        "valid=false 表示未知说话人（陌生人或对话开始前 15 秒内无人脸匹配），"
+        "或当前不在对话中。",
+        PropertyList(),
+        [&face_rec](const PropertyList&) -> ReturnValue {
+            FaceRecognition::SpeakerIdentity s = face_rec.GetCurrentSpeaker();
+            std::string name;  // minimal JSON string escaping
+            for (char c : s.name) {
+                if (c == '"' || c == '\\') name += '\\';
+                name += c;
             }
-            int cur_mode = settings.GetInt("familiar_mode", 0);
-            return std::string("{\"familiar_mode\":" + std::to_string(cur_mode) + "}");
+            char sim[16];
+            snprintf(sim, sizeof(sim), "%.4f", s.similarity);
+            std::string result = "{\"valid\":";
+            result += (s.valid ? "true" : "false");
+            result += ",\"name\":\"" + name + "\",\"subject_id\":";
+            result += std::to_string(s.subject_id);
+            result += ",\"similarity\":";
+            result += sim;
+            result += "}";
+            return result;
         });
-
 
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }

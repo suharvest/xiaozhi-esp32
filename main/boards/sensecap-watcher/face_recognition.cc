@@ -1,5 +1,6 @@
 #include "face_recognition.h"
 #include "application.h"
+#include "sscma_camera.h"
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <cstring>
@@ -140,6 +141,7 @@ FaceRecognition::FaceRecognition()
     , has_pending_notification_(false) {
     notification_mutex_ = xSemaphoreCreateMutex();
     last_match_.matched = false;
+    last_match_.subject_id = 0;
     last_match_.similarity = 0.0f;
     last_match_.index = -1;
 }
@@ -192,10 +194,25 @@ void FaceRecognition::SetCooldownInterval(int seconds) {
 void FaceRecognition::NotifyFacePresent() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     last_face_seen_us_ = esp_timer_get_time();
+    // Throttled INFO (every ~2s) so serial isn't flooded at 14fps.
+    static int64_t last_present_log_us = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - last_present_log_us > 2000000) {
+        last_present_log_us = now;
+        ESP_LOGI(TAG, "NotifyFacePresent (state=%d)", (int)state_);
+    }
 }
 
 void FaceRecognition::NotifyNoFace() {
     std::lock_guard<std::mutex> lock(state_mutex_);
+
+    // Throttled INFO (every ~2s) so serial isn't flooded at 14fps.
+    static int64_t last_noface_log_us = 0;
+    int64_t log_now = esp_timer_get_time();
+    if (log_now - last_noface_log_us > 2000000) {
+        last_noface_log_us = log_now;
+        ESP_LOGI(TAG, "NotifyNoFace (state=%d)", (int)state_);
+    }
 
     // Check if we can exit cooldown: time elapsed AND face gone for debounce period
     if (state_ != FaceDetectionState::COOLDOWN) {
@@ -215,6 +232,7 @@ void FaceRecognition::NotifyNoFace() {
 }
 
 void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
+    ESP_LOGD(TAG, "ProcessFaceData: has_embedding=%d", face_data.has_embedding);
     if (!face_data.has_embedding) {
         ESP_LOGD(TAG, "No embedding in face data");
         return;
@@ -225,9 +243,11 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (!enabled_) {
+            ESP_LOGD(TAG, "ProcessFaceData: not enabled, skip");
             return;
         }
         if (state_ == FaceDetectionState::COOLDOWN) {
+            ESP_LOGD(TAG, "ProcessFaceData: in COOLDOWN, skip");
             return;
         }
         threshold = match_threshold_;
@@ -236,10 +256,14 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
 
     // Add to voting buffer
     voting_buffer_.AddEmbedding(face_data.embedding);
+    ESP_LOGD(TAG, "ProcessFaceData: after AddEmbedding votes=%d (need %d)",
+             voting_buffer_.GetVoteCount(), FACE_VOTING_MIN_VOTES);
 
     // Try to get consensus embedding
     float consensus_emb[FACE_EMBEDDING_DIM];
-    if (voting_buffer_.GetConsensusEmbedding(consensus_emb)) {
+    bool have_consensus = voting_buffer_.GetConsensusEmbedding(consensus_emb);
+    ESP_LOGD(TAG, "ProcessFaceData: consensus=%d", have_consensus);
+    if (have_consensus) {
         // Match against database
         auto& db = FaceDatabase::GetInstance();
         FaceMatchResult match = db.Match(consensus_emb, threshold);
@@ -251,15 +275,17 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
         if (match.matched) {
             // Familiar DND: ignore familiar faces (don't wake)
             if (familiar_mode) {
-                ESP_LOGI(TAG, "Familiar face ignored (DND): %s (sim=%.3f)", match.name.c_str(), match.similarity);
+                ESP_LOGI(TAG, "ProcessFaceData: -> SuppressCurrentFace (familiar DND): %s (sim=%.3f)", match.name.c_str(), match.similarity);
                 SuppressCurrentFace();
             } else {
                 // Normal mode: notify for familiar faces
+                ESP_LOGI(TAG, "ProcessFaceData: -> HandleRecognitionResult (matched)");
                 HandleRecognitionResult(match);
             }
         } else {
             // Unknown person detected
             // Familiar DND: "stranger" alert, Normal mode: "person" notification
+            ESP_LOGI(TAG, "ProcessFaceData: -> HandleUnknownPersonDetected (stranger_alert=%d)", familiar_mode);
             HandleUnknownPersonDetected(familiar_mode);
         }
     }
@@ -272,6 +298,10 @@ void FaceRecognition::TriggerNotification(const std::string& wake_word) {
         need_start_cooldown_ = true;  // Actual timer starts when face mode resumes after conversation
     }
     voting_buffer_.Clear();
+    // Wake window: drop further sscma event frames (each parses into an ~8KB
+    // internal-SRAM cJSON tree) until the camera main loop tears face mode
+    // down — protects internal SRAM during the wake TLS handshake.
+    SscmaCamera::SetDropEvents(true);
     Application::GetInstance().Schedule([wake_word]() {
         Application::GetInstance().WakeWordInvoke(wake_word);
     });
@@ -291,6 +321,7 @@ void FaceRecognition::HandleRecognitionResult(const FaceMatchResult& result) {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_match_ = result;
+        last_match_time_us_ = esp_timer_get_time();
         last_notified_name_ = result.name;
     }
 
@@ -331,6 +362,44 @@ FaceMatchResult FaceRecognition::GetLastMatch() const {
     return last_match_;
 }
 
+int64_t FaceRecognition::GetLastMatchTimeUs() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_match_time_us_;
+}
+
+void FaceRecognition::CaptureCurrentSpeaker() {
+    SpeakerIdentity speaker;  // defaults to invalid
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (last_match_.matched && last_match_time_us_ != 0) {
+            int64_t age_us = esp_timer_get_time() - last_match_time_us_;
+            if (age_us >= 0 && age_us <= kSpeakerMaxAgeUs) {
+                speaker.valid = true;
+                speaker.name = FaceDatabase::DecodeName(last_match_.name);
+                speaker.subject_id = last_match_.subject_id;
+                speaker.similarity = last_match_.similarity;
+            }
+        }
+        current_speaker_ = speaker;
+    }
+    if (speaker.valid) {
+        ESP_LOGI(TAG, "current_speaker = %s (subject_id=%d, %.2f)",
+                 speaker.name.c_str(), speaker.subject_id, speaker.similarity);
+    } else {
+        ESP_LOGI(TAG, "current_speaker = <unknown>");
+    }
+}
+
+void FaceRecognition::ClearCurrentSpeaker() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    current_speaker_ = SpeakerIdentity{};
+}
+
+FaceRecognition::SpeakerIdentity FaceRecognition::GetCurrentSpeaker() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return current_speaker_;
+}
+
 void FaceRecognition::SetMatchThreshold(float threshold) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     match_threshold_ = threshold;
@@ -368,6 +437,9 @@ bool FaceRecognition::DeliverPendingNotification() {
     xSemaphoreGive(notification_mutex_);
 
     ESP_LOGI(TAG, "Delivering deferred notification: %s", wake_word.c_str());
+    // Same wake-window guard as TriggerNotification: this deferred delivery
+    // also opens a conversation while face mode is still streaming events.
+    SscmaCamera::SetDropEvents(true);
     Application::GetInstance().Schedule([wake_word]() {
         Application::GetInstance().WakeWordInvoke(wake_word);
     });

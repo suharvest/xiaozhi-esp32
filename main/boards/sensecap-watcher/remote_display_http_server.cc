@@ -1,6 +1,9 @@
 #include "remote_display_http_server.h"
 #include "remote_display.h"
 #include "sscma_camera.h"
+#include "face_database.h"
+
+#include <vector>
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -22,6 +25,23 @@ RemoteDisplayHttpServer* RemoteDisplayHttpServer::instance_ = nullptr;
 
 // Max request body size (256 bytes is plenty for {"ws_url":"ws://..."})
 #define MAX_REQ_BODY 256
+
+// ---- /api/face/batch-update limits ----------------------------------------
+// The on-device face/NPU model identity. The batch-update full-sync MUST carry
+// a matching model_tag, otherwise the device would ingest embeddings from a
+// different model (incompatible vector space) and silently mis-match faces.
+// MobileFaceNet, 128-D. Wire embeddings are fp16 (256B/face) by default; a
+// float32 (512B) legacy path is still accepted. Bump the suffix if the embedder
+// (vector space) ever changes — the byte ENCODING is carried separately in the
+// `embedding_format` field, not the model_tag.
+#define DEVICE_FACE_MODEL_TAG "we2-mfn128-v1"
+// Upper bound on how many faces a single batch may carry (matches FACE_MAX_COUNT).
+#define FACE_BATCH_MAX_FACES FACE_MAX_COUNT
+// Dedicated body cap for the batch handler — MAX_REQ_BODY=256 is far too small.
+// fp16 path: 20 faces * (~344 b64 chars for 256B + name + JSON envelope) ≈ 8KB.
+// 16KB ceiling keeps margin (incl. the legacy float32 512B/face path at ~16KB)
+// while bounding the SPIRAM allocation to prevent OOM heaping.
+#define FACE_BATCH_MAX_BODY (16 * 1024)
 
 // Rate limit for /api/face/embed: minimum interval between *accepted* calls.
 // Caps hammering of Himax / internal SRAM. Tune as needed; verify-once callers
@@ -224,6 +244,174 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceEmbed(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ---------- Face DB full sync (server library push) ----------
+
+esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
+    httpd_resp_set_type(req, "application/json");
+
+    // 1) Bounded read into a SPIRAM buffer (MAX_REQ_BODY=256 is far too small).
+    int total = req->content_len;
+    if (total <= 0 || total > FACE_BATCH_MAX_BODY) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"body_too_large\"}");
+        return ESP_OK;
+    }
+    char* body = static_cast<char*>(heap_caps_malloc(total + 1, MALLOC_CAP_SPIRAM));
+    if (body == nullptr) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"oom\"}");
+        return ESP_OK;
+    }
+    int off = 0;
+    while (off < total) {
+        int r = httpd_req_recv(req, body + off, total - off);
+        if (r <= 0) {
+            heap_caps_free(body);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"recv_failed\"}");
+            return ESP_OK;
+        }
+        off += r;
+    }
+    body[total] = '\0';
+
+    cJSON* root = cJSON_Parse(body);
+    heap_caps_free(body);
+    if (root == nullptr) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"invalid_json\"}");
+        return ESP_OK;
+    }
+
+    // 2) model_tag validation — reject the WHOLE batch (4xx) on mismatch so we
+    //    never mix vector spaces from different models.
+    cJSON* mt = cJSON_GetObjectItem(root, "model_tag");
+    if (!cJSON_IsString(mt) || strcmp(mt->valuestring, DEVICE_FACE_MODEL_TAG) != 0) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"model_tag_mismatch\"}");
+        return ESP_OK;
+    }
+
+    // 2b) embedding_format dispatch. The decoded byte width per face depends on
+    //     the encoding; we never reinterpret bytes as the wrong width.
+    //       "fp16"    -> 256 bytes = 128 IEEE-754 binary16 LE  (current pinned contract)
+    //       "float32" -> 512 bytes = 128 float32 LE            (legacy compat)
+    //       (absent)  -> "float32" (old clients predate the field)
+    //       unknown   -> 409 Conflict
+    //     FUTURE int8 extension point: add an `else if "int8"` branch here that
+    //     sets expected_bytes = 128 (+ a per-vector scale read elsewhere) and a
+    //     FMT_INT8 mode; the per-face loop below would dequantize int8 -> float32
+    //     exactly like fp16 does. faces_ / NVS-save paths need no change because
+    //     ReplaceAll receives canonical float32 regardless of wire encoding.
+    enum EmbFmt { FMT_FP16, FMT_FLOAT32 };
+    EmbFmt emb_fmt = FMT_FLOAT32;
+    size_t expected = FACE_EMBEDDING_DIM * sizeof(float);  // float32 default = 512
+    {
+        cJSON* jfmt = cJSON_GetObjectItem(root, "embedding_format");
+        const char* fmt = (cJSON_IsString(jfmt) && jfmt->valuestring) ? jfmt->valuestring : "float32";
+        if (strcmp(fmt, "fp16") == 0) {
+            emb_fmt = FMT_FP16;
+            expected = FACE_EMBEDDING_DIM * sizeof(uint16_t);  // 256
+        } else if (strcmp(fmt, "float32") == 0) {
+            emb_fmt = FMT_FLOAT32;
+            expected = FACE_EMBEDDING_DIM * sizeof(float);     // 512
+        // } else if (strcmp(fmt, "int8") == 0) { /* FUTURE: 128B + scale -> float32 */ }
+        } else {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"unknown_embedding_format\"}");
+            return ESP_OK;
+        }
+    }
+
+    cJSON* faces = cJSON_GetObjectItem(root, "faces");
+    if (!cJSON_IsArray(faces)) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing_faces\"}");
+        return ESP_OK;
+    }
+    int n = cJSON_GetArraySize(faces);
+    if (n > FACE_BATCH_MAX_FACES) {
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"too_many_faces\"}");
+        return ESP_OK;
+    }
+
+    // 3) Decode each face → FaceEntry list. The decoded byte width is `expected`
+    //    (256 fp16 / 512 float32, set by the dispatch above). Either way the
+    //    FaceEntry embedding is filled with CANONICAL float32 before ReplaceAll.
+    //    Validate name length + embedding width up front so ReplaceAll never has
+    //    to truncate/skip.
+    std::vector<FaceEntry> entries;
+    entries.reserve(n);
+    const char* perr = nullptr;
+    for (int i = 0; i < n; i++) {
+        cJSON* f = cJSON_GetArrayItem(faces, i);
+        cJSON* jname = cJSON_GetObjectItem(f, "name");
+        cJSON* jsid  = cJSON_GetObjectItem(f, "subject_id");
+        cJSON* jemb  = cJSON_GetObjectItem(f, "embedding_b64");
+        if (!cJSON_IsString(jname) || !cJSON_IsString(jemb)) { perr = "bad_face_fields"; break; }
+        size_t nlen = strlen(jname->valuestring);
+        if (nlen == 0 || nlen >= FACE_NAME_MAX_LEN) { perr = "bad_name_len"; break; }
+
+        FaceEntry e;
+        e.name = jname->valuestring;
+        e.subject_id = cJSON_IsNumber(jsid) ? jsid->valueint : 0;
+
+        // 512B buffer covers the larger (float32) format; fp16 uses the first 256B.
+        uint8_t decoded[FACE_EMBEDDING_DIM * sizeof(float)];
+        size_t dlen = 0;
+        int rc = mbedtls_base64_decode(decoded, sizeof(decoded), &dlen,
+                    reinterpret_cast<const unsigned char*>(jemb->valuestring),
+                    strlen(jemb->valuestring));
+        if (rc != 0 || dlen != expected) { perr = "bad_embedding"; break; }
+
+        if (emb_fmt == FMT_FP16) {
+            // 128 binary16 LE -> float32 (byte-wise unpack: alignment-safe).
+            for (int j = 0; j < FACE_EMBEDDING_DIM; j++) {
+                uint16_t half = (uint16_t)decoded[2 * j] |
+                                ((uint16_t)decoded[2 * j + 1] << 8);
+                e.embedding[j] = FaceDatabase::HalfToFloat32(half);
+            }
+        } else {  // FMT_FLOAT32
+            memcpy(e.embedding, decoded, FACE_EMBEDDING_DIM * sizeof(float));
+        }
+        entries.push_back(std::move(e));
+    }
+    cJSON_Delete(root);
+
+    if (perr != nullptr) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        char resp[64];
+        snprintf(resp, sizeof(resp), "{\"ok\":false,\"error\":\"%s\"}", perr);
+        httpd_resp_sendstr(req, resp);
+        return ESP_OK;
+    }
+
+    // 4) Apply under an inference pause so the write window can't race the
+    //    passive-greeting / Match path. Resume runs on EVERY exit path below
+    //    (finally-equivalent), even when ReplaceAll fails.
+    SscmaCamera* camera = instance_ ? instance_->camera_ : nullptr;
+    if (camera != nullptr) camera->PauseInference();
+    bool applied = FaceDatabase::GetInstance().ReplaceAll(entries);
+    if (camera != nullptr) camera->ResumeInference();
+
+    if (!applied) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"persist_failed\"}");
+        return ESP_OK;
+    }
+
+    std::string resp = "{\"ok\":true,\"applied_count\":";
+    resp += std::to_string(entries.size());
+    resp += "}";
+    httpd_resp_sendstr(req, resp.c_str());
+    return ESP_OK;
+}
+
 // ---------- UDP Beacon ----------
 
 void RemoteDisplayHttpServer::StartBeacon(int port) {
@@ -394,6 +582,16 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
         .user_ctx = nullptr,
     };
     httpd_register_uri_handler(server_, &face_embed_uri);
+
+    // POST /api/face/batch-update — full face-DB sync from the server library.
+    // LAN-only; model_tag gated; no token auth this round.
+    httpd_uri_t face_batch_uri = {
+        .uri = "/api/face/batch-update",
+        .method = HTTP_POST,
+        .handler = HandleFaceBatchUpdate,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(server_, &face_batch_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", port);
 

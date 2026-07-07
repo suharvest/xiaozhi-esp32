@@ -15,6 +15,7 @@ class SscmaCamera;  // forward decl — avoids pulling the heavy camera header h
 //   POST /api/stop_cast
 //   GET  /api/status
 //   POST /api/face/embed  -> {"ok":true,"format":"float32_le_b64","dim":128,...}
+//   POST /api/face/batch-update {"model_tag":"...","faces":[{name,subject_id,embedding_b64}]}
 class RemoteDisplayHttpServer {
 public:
     RemoteDisplayHttpServer() = default;
@@ -44,6 +45,7 @@ private:
     static esp_err_t HandleStopCast(httpd_req_t* req);
     static esp_err_t HandleStatus(httpd_req_t* req);
     static esp_err_t HandleFaceEmbed(httpd_req_t* req);
+    static esp_err_t HandleFaceBatchUpdate(httpd_req_t* req);
 
     void StartBeacon(int port);
     void StopBeacon();

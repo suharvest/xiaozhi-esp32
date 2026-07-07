@@ -9,6 +9,8 @@
 #include "led/single_led.h"
 #include "power_save_timer.h"
 #include "sscma_camera.h"
+#include "face_recognition.h"
+#include <font_awesome.h>
 #include "lvgl_theme.h"
 #include "remote_display.h"
 #include "remote_display_http_server.h"
@@ -84,12 +86,20 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             lv_obj_set_parent(battery_label_, top_bar_);
             lv_obj_set_style_margin_left(battery_label_, 0, 0);
 
-            // 针对圆形屏幕调整位置
-            //      network  mute  battery     //
-            //               status            //
-            lv_obj_align(network_label_, LV_ALIGN_TOP_MID, -1.5 * icon_font->line_height, 0);
-            lv_obj_align(mute_label_, LV_ALIGN_TOP_MID, 1.0 * icon_font->line_height, 0);
-            lv_obj_align(battery_label_, LV_ALIGN_TOP_MID, 2.5 * icon_font->line_height, 0);
+            // Vision mode indicator (read-only): face recognition vs object detection.
+            mode_label_ = lv_label_create(top_bar_);
+            lv_label_set_text(mode_label_, "");
+            lv_obj_set_style_text_font(mode_label_, icon_font, 0);
+            lv_obj_set_style_text_color(mode_label_, lvgl_theme->text_color(), 0);
+
+            // 针对圆形屏幕调整位置：四个图标沿顶部居中均匀铺开（间距 1.5 行高），
+            // 避免右侧图标互相挤压。mute 常隐藏，留的槽位空着不影响观感。
+            //    network   mute   mode   battery    //
+            //                 status                //
+            lv_obj_align(network_label_, LV_ALIGN_TOP_MID, -2.25 * icon_font->line_height, 0);
+            lv_obj_align(mute_label_, LV_ALIGN_TOP_MID, -0.75 * icon_font->line_height, 0);
+            lv_obj_align(mode_label_, LV_ALIGN_TOP_MID, 0.75 * icon_font->line_height, 0);
+            lv_obj_align(battery_label_, LV_ALIGN_TOP_MID, 2.25 * icon_font->line_height, 0);
 
             lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, 0);
             lv_obj_set_flex_grow(status_label_, 0);
@@ -108,6 +118,39 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             // 针对圆形屏幕调整底部对话框位置，避免被圆角遮挡
             lv_obj_set_style_pad_bottom(bottom_bar_, 30, 0);
             lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.75); // 限制宽度，避免文字贴边
+        }
+
+        // Refresh the vision mode indicator alongside the standard status bar.
+        void UpdateStatusBar(bool update_all = false) override {
+            SpiLcdDisplay::UpdateStatusBar(update_all);
+            DisplayLockGuard lock(this);
+            if (mode_label_ == nullptr) {
+                return;
+            }
+            // 四态：关闭(不唤醒) / 物体检测 / 人脸识别·普通 / 人脸识别·免打扰(DND)
+            const char* icon = nullptr;
+            auto* cam = static_cast<SscmaCamera*>(Board::GetInstance().GetCamera());
+            if (cam != nullptr) {
+                switch (cam->GetVisionWakeMode()) {
+                    case SscmaCamera::VISION_FACE_DND:
+                        icon = FONT_AWESOME_MOON;              // 人脸识别·免打扰(熟人 DND)
+                        break;
+                    case SscmaCamera::VISION_FACE:
+                        icon = FONT_AWESOME_USER;              // 人脸识别·普通(见人打招呼)
+                        break;
+                    case SscmaCamera::VISION_OBJECT:
+                        icon = FONT_AWESOME_MAGNIFYING_GLASS;  // 物体检测
+                        break;
+                    case SscmaCamera::VISION_OFF:
+                    default:
+                        icon = FONT_AWESOME_CIRCLE_XMARK;      // 完全不唤醒
+                        break;
+                }
+            }
+            if (mode_icon_ != icon) {
+                mode_icon_ = icon;
+                lv_label_set_text(mode_label_, icon ? icon : "");
+            }
         }
 
         // 重写方法以支持远程显示状态同步
@@ -142,6 +185,10 @@ class CustomLcdDisplay : public SpiLcdDisplay {
                 remote->SendTheme(theme->name().c_str());
             }
         }
+
+    private:
+        lv_obj_t* mode_label_ = nullptr;     // vision mode indicator
+        const char* mode_icon_ = nullptr;    // cached icon to avoid redundant redraws
 };
 
 class SensecapWatcher : public WifiBoard {
