@@ -1474,6 +1474,102 @@ std::string SscmaCamera::Explain(const std::string& question) {
     return result;
 }
 
+int SscmaCamera::RemoteRecognize(const std::string& base_url, const std::string& token,
+                                 std::string* out_name, float* out_confidence) {
+    // Mirrors the legacy FaceRecognition() HTTP path (proven memory pattern),
+    // but URL/token come from NVS-pushed warehouse config instead of a
+    // hardcoded IP, and the result is returned structured instead of XML.
+    if (jpeg_data_.len == 0 || jpeg_data_.buf == nullptr) {
+        ESP_LOGE(TAG, "RemoteRecognize: no captured image");
+        return -1;
+    }
+
+    size_t base64_len = 0;
+    mbedtls_base64_encode(NULL, 0, &base64_len, jpeg_data_.buf, jpeg_data_.len);
+    uint8_t* base64_buf = (uint8_t*)heap_caps_aligned_alloc(16, base64_len + 1, MALLOC_CAP_SPIRAM);
+    if (!base64_buf) {
+        ESP_LOGE(TAG, "RemoteRecognize: OOM base64 buffer (%zu bytes)", base64_len + 1);
+        return -2;
+    }
+    if (mbedtls_base64_encode(base64_buf, base64_len + 1, &base64_len,
+                              jpeg_data_.buf, jpeg_data_.len) != 0) {
+        heap_caps_free(base64_buf);
+        return -2;
+    }
+    base64_buf[base64_len] = '\0';
+
+    cJSON* json = cJSON_CreateObject();
+    if (!json) {
+        heap_caps_free(base64_buf);
+        return -2;
+    }
+    cJSON_AddStringToObject(json, "image_base64", (const char*)base64_buf);
+    char* json_str = cJSON_PrintUnformatted(json);
+    if (!json_str) {
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        return -2;
+    }
+
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(3);
+    http->SetHeader("Content-Type", "application/json");
+    if (!token.empty()) {
+        http->SetHeader("Authorization", ("Bearer " + token).c_str());
+    }
+    http->SetContent(std::string(json_str));
+
+    std::string url = base_url;
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    url += "/recognize";
+    ESP_LOGI(TAG, "RemoteRecognize -> %s (image %zu bytes)", url.c_str(), jpeg_data_.len);
+
+    if (!http->Open("POST", url)) {
+        ESP_LOGE(TAG, "RemoteRecognize: failed to connect %s", url.c_str());
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        return -3;
+    }
+    int status_code = http->GetStatusCode();
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "RemoteRecognize: HTTP %d", status_code);
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        http->Close();
+        return -3;
+    }
+    std::string response_str = http->ReadAll();
+    http->Close();
+    heap_caps_free(base64_buf);
+    cJSON_Delete(json);
+    free(json_str);
+
+    cJSON* response = cJSON_Parse(response_str.c_str());
+    if (!response) {
+        ESP_LOGE(TAG, "RemoteRecognize: bad JSON: %.120s", response_str.c_str());
+        return -4;
+    }
+    cJSON* matched = cJSON_GetObjectItem(response, "matched");
+    cJSON* name = cJSON_GetObjectItem(response, "name");
+    cJSON* confidence = cJSON_GetObjectItem(response, "confidence");
+    if (!cJSON_IsBool(matched)) {
+        cJSON_Delete(response);
+        return -4;
+    }
+    int rc = 1;  // authoritative no-match
+    if (cJSON_IsTrue(matched) && cJSON_IsString(name)) {
+        if (out_name) *out_name = name->valuestring;
+        if (out_confidence) {
+            *out_confidence = cJSON_IsNumber(confidence) ? (float)confidence->valuedouble : 0.0f;
+        }
+        rc = 0;
+    }
+    cJSON_Delete(response);
+    return rc;
+}
+
 std::string SscmaCamera::FaceRecognition() {
     // Check if we have a captured image
     if (jpeg_data_.len == 0) {
@@ -1905,29 +2001,66 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // conversation speaker is refreshed so later tools in this conversation
     // see the identity without re-capturing.
     mcp_server.AddTool("self.face.identify",
-        "立即拍照并做一次本地人脸识别（不依赖唤醒时缓存的会话身份）。\n"
+        "立即拍照并做一次人脸识别（不依赖唤醒时缓存的会话身份）。\n"
         "用途：出入库等有权限要求的操作前，若 self.conversation.speaker 返回 "
         "valid=false，调用本工具现场认人（先提醒用户面向摄像头）。\n"
+        "识别在本地 NPU 还是局域网服务上做由仓管平台的人脸配置决定，对你透明。\n"
         "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
         "valid=false 表示没拍到人脸或不认识（陌生人）。",
         PropertyList(),
         [this](const PropertyList&) -> ReturnValue {
-            float embedding[FACE_EMBEDDING_DIM];
-            SingleShotTiming t;
-            if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
-                return std::string(
-                    "{\"valid\":false,\"error\":\"no_face_or_timeout\"}");
-            }
+            // Mode + endpoint come from the warehouse platform's face config,
+            // pushed down with the library (batch-update -> NVS face.id_*):
+            //   local (default) — on-device NPU embedding + local DB match
+            //   lan             — fresh JPEG POSTed to <id_url>/recognize
+            //                     (big-model server; name-only identity).
+            // A lan transport error falls back to the local path so identify
+            // degrades instead of hard-failing when the LAN service is down;
+            // a lan "no match" is authoritative (its library is broader).
+            Settings settings("face", false);
+            std::string id_mode = settings.GetString("id_mode", "local");
+            std::string id_url = settings.GetString("id_url", "");
             auto& rec = FaceRecognition::GetInstance();
-            FaceMatchResult m = FaceDatabase::GetInstance().Match(
-                embedding, rec.GetMatchThreshold());
             FaceRecognition::SpeakerIdentity s;
-            if (m.matched) {
-                s.valid = true;
-                s.name = FaceDatabase::DecodeName(m.name);
-                s.subject_id = m.subject_id;
-                s.similarity = m.similarity;
-                rec.SetCurrentSpeaker(s);
+            bool remote_answered = false;
+            if (id_mode == "lan" && !id_url.empty()) {
+                TaskPriorityReset priority_reset(1);
+                if (this->Capture()) {
+                    std::string rname;
+                    float rconf = 0.0f;
+                    int rc = this->RemoteRecognize(
+                        id_url, settings.GetString("id_token", ""), &rname, &rconf);
+                    if (rc == 0) {
+                        s.valid = true;
+                        s.name = rname;
+                        s.subject_id = 0;  // remote library is name-keyed
+                        s.similarity = rconf;
+                        rec.SetCurrentSpeaker(s);
+                        remote_answered = true;
+                    } else if (rc == 1) {
+                        remote_answered = true;
+                    }
+                    // rc < 0: transport/protocol error -> local fallback below
+                } else {
+                    ESP_LOGW(TAG, "identify(lan): capture failed, local fallback");
+                }
+            }
+            if (!remote_answered) {
+                float embedding[FACE_EMBEDDING_DIM];
+                SingleShotTiming t;
+                if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
+                    return std::string(
+                        "{\"valid\":false,\"error\":\"no_face_or_timeout\"}");
+                }
+                FaceMatchResult m = FaceDatabase::GetInstance().Match(
+                    embedding, rec.GetMatchThreshold());
+                if (m.matched) {
+                    s.valid = true;
+                    s.name = FaceDatabase::DecodeName(m.name);
+                    s.subject_id = m.subject_id;
+                    s.similarity = m.similarity;
+                    rec.SetCurrentSpeaker(s);
+                }
             }
             std::string name;  // minimal JSON string escaping
             for (char c : s.name) {

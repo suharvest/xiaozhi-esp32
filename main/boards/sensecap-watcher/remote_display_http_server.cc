@@ -2,6 +2,8 @@
 #include "remote_display.h"
 #include "sscma_camera.h"
 #include "face_database.h"
+#include "face_recognition.h"
+#include "settings.h"
 
 #include <vector>
 
@@ -381,6 +383,34 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
         }
         entries.push_back(std::move(e));
     }
+
+    // 3b) Optional device-side face config pushed alongside the library (the
+    //     warehouse platform's face config page is the source of truth).
+    //     Parsed here while root is alive; applied only after ReplaceAll
+    //     succeeds so a rejected batch never half-applies config.
+    //       match_threshold   int 0-100 -> NVS face.threshold (applies live)
+    //       identify_mode     "local"|"lan" -> NVS face.id_mode
+    //       identify_endpoint string       -> NVS face.id_url
+    //       identify_token    string       -> NVS face.id_token
+    int cfg_threshold = -1;
+    std::string cfg_id_mode, cfg_id_url, cfg_id_token;
+    bool has_id_cfg = false;
+    {
+        cJSON* jt = cJSON_GetObjectItem(root, "match_threshold");
+        if (cJSON_IsNumber(jt) && jt->valueint >= 0 && jt->valueint <= 100) {
+            cfg_threshold = jt->valueint;
+        }
+        cJSON* jm = cJSON_GetObjectItem(root, "identify_mode");
+        if (cJSON_IsString(jm) && (strcmp(jm->valuestring, "local") == 0 ||
+                                   strcmp(jm->valuestring, "lan") == 0)) {
+            has_id_cfg = true;
+            cfg_id_mode = jm->valuestring;
+            cJSON* ju = cJSON_GetObjectItem(root, "identify_endpoint");
+            cJSON* jk = cJSON_GetObjectItem(root, "identify_token");
+            if (cJSON_IsString(ju) && strlen(ju->valuestring) < 160) cfg_id_url = ju->valuestring;
+            if (cJSON_IsString(jk) && strlen(jk->valuestring) < 128) cfg_id_token = jk->valuestring;
+        }
+    }
     cJSON_Delete(root);
 
     if (perr != nullptr) {
@@ -403,6 +433,24 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"persist_failed\"}");
         return ESP_OK;
+    }
+
+    // 5) Persist pushed config; threshold applies live. A re-push overwrites
+    //    NVS wholesale (platform config is authoritative, no merge).
+    if (cfg_threshold >= 0 || has_id_cfg) {
+        Settings settings("face", true);
+        if (cfg_threshold >= 0) {
+            settings.SetInt("threshold", cfg_threshold);
+            FaceRecognition::GetInstance().SetMatchThreshold(cfg_threshold / 100.0f);
+            ESP_LOGI(TAG, "face threshold <- %d (pushed)", cfg_threshold);
+        }
+        if (has_id_cfg) {
+            settings.SetString("id_mode", cfg_id_mode);
+            settings.SetString("id_url", cfg_id_url);
+            settings.SetString("id_token", cfg_id_token);
+            ESP_LOGI(TAG, "face identify mode <- %s url=%s (pushed)",
+                     cfg_id_mode.c_str(), cfg_id_url.c_str());
+        }
     }
 
     std::string resp = "{\"ok\":true,\"applied_count\":";

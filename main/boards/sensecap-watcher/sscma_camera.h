@@ -145,6 +145,14 @@ public:
     };
     bool BenchSingleShotFaceEmbedding(float* out_embedding, SingleShotTiming* out_timing);
 
+    // On-demand remote recognition against the warehouse-configured LAN
+    // face_rec_api: POSTs the last Capture()d JPEG to <base_url>/recognize.
+    // Caller must run Capture() first. Returns 0 on matched (out_name /
+    // out_confidence filled), 1 on an authoritative no-match, negative on
+    // transport / protocol errors (caller may fall back to local matching).
+    int RemoteRecognize(const std::string& base_url, const std::string& token,
+                        std::string* out_name, float* out_confidence);
+
     // Gate for HTTP/MCP callers. Returns nullptr if a single-shot face embed is
     // allowed right now, otherwise a short machine-readable reason:
     //   "upgrading"       — OTA / firmware upgrade in progress (must not touch Himax)
