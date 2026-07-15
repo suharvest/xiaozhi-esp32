@@ -2017,12 +2017,48 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
-    // NOTE (§8e): the `self.face.identify` MCP tool was intentionally removed.
-    // Identity is now pulled backend-direct via the HTTP
-    // GET /api/face/current-speaker?fresh=1 endpoint (which calls IdentifyOnce),
-    // so the LLM no longer needs — and must not have — a tool to trigger identify.
-    // Dropping it also removes one prompt-injection surface. IdentifyOnce() is
-    // retained below as the shared primitive for that HTTP endpoint.
+    // Conversational identify tool (experience only — NOT an authorization path).
+    // Stock-op security is enforced backend-direct via GET /api/face/current-
+    // speaker?fresh=1, which never trusts LLM-forwarded identity. This tool exists
+    // purely so the model can answer "认出我是谁 / who am I": a prompt injection
+    // could at worst make it say a wrong name in chat — it cannot move inventory,
+    // because the warehouse gate does not consult this tool's result. Shares
+    // IdentifyOnce()/identify_op_mutex_ with the backend pull, so the two never
+    // race a frame (one gets kBusy). allow_preview=true: runs on the main loop,
+    // where SetPreviewImage is safe, so the user sees their photo.
+    mcp_server.AddTool("self.face.identify",
+        "现场拍一张照做人脸识别，回答「你是谁」这类问题（体验用途，不用于任何鉴权）。\n"
+        "使用场景：用户问「你能认出我吗 / 我是谁 / 看看这是谁」时调用。\n"
+        "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
+        "valid=false 表示没拍到人脸或不认识（陌生人）；忙时返回 error=busy。",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            IdentifyStatus st = IdentifyStatus::kOk;
+            const char* reason = nullptr;
+            FaceRecognition::SpeakerIdentity s =
+                this->IdentifyOnce(/*allow_preview=*/true, &st, &reason);
+            if (st != IdentifyStatus::kOk) {
+                std::string e = "{\"valid\":false,\"error\":\"";
+                e += (reason ? reason : "busy");
+                e += "\"}";
+                return e;
+            }
+            std::string name;  // minimal JSON string escaping
+            for (char c : s.name) {
+                if (c == '"' || c == '\\') name += '\\';
+                name += c;
+            }
+            char sim[16];
+            snprintf(sim, sizeof(sim), "%.4f", s.similarity);
+            std::string result = "{\"valid\":";
+            result += (s.valid ? "true" : "false");
+            result += ",\"name\":\"" + name + "\",\"subject_id\":";
+            result += std::to_string(s.subject_id);
+            result += ",\"similarity\":";
+            result += sim;
+            result += "}";
+            return result;
+        });
 
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }
