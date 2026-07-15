@@ -1316,10 +1316,11 @@ bool SscmaCamera::CaptureImpl(bool drive_preview) {
     }
     heap_caps_free(data.img);
 
-    // F4: no-preview variant (httpd-worker identify path). jpeg_data_ is now
-    // populated for RemoteRecognize; skip BOTH the remote-cast upload and the
-    // local LVGL decode/display (SetPreviewImage from a non-main thread is not
-    // thread-safe). Return with the JPEG ready and no UI side effects.
+    // drive_preview now means "should this capture show an on-screen preview".
+    // When false, jpeg_data_ is still populated for RemoteRecognize; we just skip
+    // the remote-cast upload and the local decode/display. When true, the display
+    // step below is marshaled to the main loop (§8e F4), so this path is now
+    // thread-safe from an httpd worker too.
     if (!drive_preview) {
         capture_in_progress_ = false;
         return true;
@@ -1368,26 +1369,37 @@ bool SscmaCamera::CaptureImpl(bool drive_preview) {
         return true;
     }
 
-    // 显示预览图片
-    auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
-    if (display != nullptr) {
+    // 显示预览图片 — thread-safe marshaling (§8e F4).
+    // The decoded RGB565 frame is copied into an independent heap buffer here (on
+    // whatever thread ran the capture — possibly an httpd worker for the
+    // backend-direct /current-speaker?fresh=1 pull). Constructing the LVGL image
+    // and calling SetPreviewImage touches LVGL, which is only safe on the main
+    // loop, so that step is deferred via Application::Schedule. This lets the
+    // httpd-worker path also show the live photo without racing LVGL.
+    // Ownership of `data` moves into the scheduled lambda: LvglAllocatedImage
+    // frees it in its destructor (freed manually if no display is present).
+    {
         uint16_t w = preview_image_.header.w;
         uint16_t h = preview_image_.header.h;
-        size_t image_size = w * h * 2;
-        size_t stride = preview_image_.header.w * 2;
+        size_t image_size = (size_t)w * (size_t)h * 2;
+        size_t stride = (size_t)preview_image_.header.w * 2;
 
         uint8_t* data = (uint8_t*)heap_caps_malloc(image_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (data == nullptr) {
+        if (data != nullptr) {
+            memcpy(data, preview_image_.data, image_size);
+            Application::GetInstance().Schedule([data, image_size, w, h, stride]() {
+                auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+                if (display == nullptr) {
+                    heap_caps_free(data);  // no display: avoid leaking the copy
+                    return;
+                }
+                auto image = std::make_unique<LvglAllocatedImage>(
+                    data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
+                display->SetPreviewImage(std::move(image));
+            });
+        } else {
             ESP_LOGE(TAG, "Failed to allocate memory for display image");
-            heap_caps_free((void*)preview_image_.data);
-            preview_image_.data = nullptr;
-            capture_in_progress_ = false;
-            return true;
         }
-        memcpy(data, preview_image_.data, image_size);
-        
-        auto image = std::make_unique<LvglAllocatedImage>(data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
-        display->SetPreviewImage(std::move(image));
     }
     heap_caps_free((void*)preview_image_.data);
     preview_image_.data = nullptr;
@@ -2005,54 +2017,12 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
-    // Tool: on-demand identify (fresh capture + local DB match). Unlike
-    // self.conversation.speaker (identity frozen on the conversation rising
-    // edge — needs a confident match <=15s BEFORE wake), this drives one
-    // SCRFD+MobileFaceNet pass right now and matches against the local face
-    // DB, so permission-gated commands still work when the user woke the
-    // device without facing the camera. On a successful match the frozen
-    // conversation speaker is refreshed so later tools in this conversation
-    // see the identity without re-capturing.
-    mcp_server.AddTool("self.face.identify",
-        "立即拍照并做一次人脸识别（不依赖唤醒时缓存的会话身份）。\n"
-        "用途：出入库等有权限要求的操作前，若 self.conversation.speaker 返回 "
-        "valid=false，调用本工具现场认人（先提醒用户面向摄像头）。\n"
-        "识别在本地 NPU 还是局域网服务上做由仓管平台的人脸配置决定，对你透明。\n"
-        "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
-        "valid=false 表示没拍到人脸或不认识（陌生人）。",
-        PropertyList(),
-        [this](const PropertyList&) -> ReturnValue {
-            // Delegate to the shared IdentifyOnce (same code path as the HTTP
-            // /api/face/current-speaker?fresh=1 endpoint). allow_preview=true so
-            // the LLM-triggered identify keeps its on-screen photo preview (this
-            // runs on the main loop, where SetPreviewImage is safe). busy/blocked
-            // surface as valid=false + error so the model can retry / deny.
-            IdentifyStatus st = IdentifyStatus::kOk;
-            const char* reason = nullptr;
-            FaceRecognition::SpeakerIdentity s =
-                this->IdentifyOnce(/*allow_preview=*/true, &st, &reason);
-            if (st != IdentifyStatus::kOk) {
-                std::string e = "{\"valid\":false,\"error\":\"";
-                e += (reason ? reason : "busy");
-                e += "\"}";
-                return e;
-            }
-            std::string name;  // minimal JSON string escaping
-            for (char c : s.name) {
-                if (c == '"' || c == '\\') name += '\\';
-                name += c;
-            }
-            char sim[16];
-            snprintf(sim, sizeof(sim), "%.4f", s.similarity);
-            std::string result = "{\"valid\":";
-            result += (s.valid ? "true" : "false");
-            result += ",\"name\":\"" + name + "\",\"subject_id\":";
-            result += std::to_string(s.subject_id);
-            result += ",\"similarity\":";
-            result += sim;
-            result += "}";
-            return result;
-        });
+    // NOTE (§8e): the `self.face.identify` MCP tool was intentionally removed.
+    // Identity is now pulled backend-direct via the HTTP
+    // GET /api/face/current-speaker?fresh=1 endpoint (which calls IdentifyOnce),
+    // so the LLM no longer needs — and must not have — a tool to trigger identify.
+    // Dropping it also removes one prompt-injection surface. IdentifyOnce() is
+    // retained below as the shared primitive for that HTTP endpoint.
 
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }

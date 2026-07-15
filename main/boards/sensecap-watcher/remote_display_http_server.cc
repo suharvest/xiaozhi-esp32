@@ -394,8 +394,9 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
     //       identify_endpoint string       -> NVS face.id_url
     //       identify_token    string       -> NVS face.id_token
     int cfg_threshold = -1;
-    std::string cfg_id_mode, cfg_id_url, cfg_id_token;
+    std::string cfg_id_mode, cfg_id_url, cfg_id_token, cfg_pull_token;
     bool has_id_cfg = false;
+    bool has_pull_token = false;
     {
         cJSON* jt = cJSON_GetObjectItem(root, "match_threshold");
         if (cJSON_IsNumber(jt) && jt->valueint >= 0 && jt->valueint <= 100) {
@@ -410,6 +411,14 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
             cJSON* jk = cJSON_GetObjectItem(root, "identify_token");
             if (cJSON_IsString(ju) && strlen(ju->valuestring) < 160) cfg_id_url = ju->valuestring;
             if (cJSON_IsString(jk) && strlen(jk->valuestring) < 128) cfg_id_token = jk->valuestring;
+        }
+        // pull_token (§8d): independent of identify_mode — both local and lan
+        // modes must receive it so the backend-direct current-speaker pull
+        // authenticates regardless of whether a remote endpoint is configured.
+        cJSON* jp = cJSON_GetObjectItem(root, "pull_token");
+        if (cJSON_IsString(jp) && strlen(jp->valuestring) < 128) {
+            has_pull_token = true;
+            cfg_pull_token = jp->valuestring;
         }
     }
     cJSON_Delete(root);
@@ -438,7 +447,7 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
 
     // 5) Persist pushed config; threshold applies live. A re-push overwrites
     //    NVS wholesale (platform config is authoritative, no merge).
-    if (cfg_threshold >= 0 || has_id_cfg) {
+    if (cfg_threshold >= 0 || has_id_cfg || has_pull_token) {
         Settings settings("face", true);
         if (cfg_threshold >= 0) {
             settings.SetInt("threshold", cfg_threshold);
@@ -451,6 +460,12 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
             settings.SetString("id_token", cfg_id_token);
             ESP_LOGI(TAG, "face identify mode <- %s url=%s (pushed)",
                      cfg_id_mode.c_str(), cfg_id_url.c_str());
+        }
+        if (has_pull_token) {
+            // §8d: independent per-device pull_token for current-speaker auth.
+            settings.SetString("pull_token", cfg_pull_token);
+            ESP_LOGI(TAG, "face pull_token <- (pushed, len=%d)",
+                     (int)cfg_pull_token.size());
         }
     }
 
@@ -489,14 +504,15 @@ static std::string BuildSpeakerJson(const FaceRecognition::SpeakerIdentity& s,
 esp_err_t RemoteDisplayHttpServer::HandleFaceCurrentSpeaker(httpd_req_t* req) {
     httpd_resp_set_type(req, "application/json");
 
-    // --- Auth: X-Face-Token must equal the NVS-pushed id_token (batch-update
-    //     identify_token). Fail-closed: missing header, or an unprovisioned
-    //     (empty) device token, both -> 401. Prevents same-LAN hosts from
-    //     impersonating the backend to pull an identity.
+    // --- Auth: X-Face-Token must equal the NVS-pushed pull_token (batch-update
+    //     pull_token, §8d). Independent of id_token/identify_token so it works in
+    //     both local and lan modes. Fail-closed: missing header, or an
+    //     unprovisioned (empty) device token, both -> 401. Prevents same-LAN
+    //     hosts from impersonating the backend to pull an identity.
     std::string expected;
     {
         Settings settings("face", false);
-        expected = settings.GetString("id_token", "");
+        expected = settings.GetString("pull_token", "");
     }
     std::string got;
     size_t tlen = httpd_req_get_hdr_value_len(req, "X-Face-Token");
@@ -565,11 +581,14 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceCurrentSpeaker(httpd_req_t* req) {
     }
     instance_->last_face_call_us_.store(now_us);
 
-    // F4: allow_preview=false — the httpd worker must not drive the LVGL display.
+    // §8e F4: allow_preview=true — the backend-direct pull should show the live
+    // photo on screen. The httpd worker no longer touches LVGL directly; the
+    // preview upshow is marshaled to the main loop via Application::Schedule
+    // inside CaptureImpl/BenchSingleShot, so this is thread-safe.
     SscmaCamera::IdentifyStatus st = SscmaCamera::IdentifyStatus::kOk;
     const char* reason = nullptr;
     FaceRecognition::SpeakerIdentity s =
-        camera->IdentifyOnce(/*allow_preview=*/false, &st, &reason);
+        camera->IdentifyOnce(/*allow_preview=*/true, &st, &reason);
 
     if (st == SscmaCamera::IdentifyStatus::kBusy) {
         // F3: op lock held -> transient busy.
