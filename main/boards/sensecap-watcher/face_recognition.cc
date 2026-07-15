@@ -395,6 +395,16 @@ void FaceRecognition::ClearCurrentSpeaker() {
     current_speaker_ = SpeakerIdentity{};
 }
 
+void FaceRecognition::SetCurrentSpeaker(const SpeakerIdentity& speaker) {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_speaker_ = speaker;
+    }
+    ESP_LOGI(TAG, "current_speaker (on-demand) = %s (subject_id=%d, %.2f)",
+             speaker.valid ? speaker.name.c_str() : "<unknown>",
+             speaker.subject_id, speaker.similarity);
+}
+
 FaceRecognition::SpeakerIdentity FaceRecognition::GetCurrentSpeaker() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return current_speaker_;

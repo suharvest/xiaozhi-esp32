@@ -93,6 +93,9 @@ public:
     void CaptureCurrentSpeaker();
     void ClearCurrentSpeaker();
     SpeakerIdentity GetCurrentSpeaker() const;
+    // Overwrite the frozen speaker with an on-demand match (self.face.identify),
+    // so later tools in the same conversation see the refreshed identity.
+    void SetCurrentSpeaker(const SpeakerIdentity& speaker);
 
     // Deferred notification: stores wake word and delivers when device returns to idle.
     void SetPendingNotification(const std::string& wake_word);

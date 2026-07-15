@@ -1896,6 +1896,56 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
+    // Tool: on-demand identify (fresh capture + local DB match). Unlike
+    // self.conversation.speaker (identity frozen on the conversation rising
+    // edge — needs a confident match <=15s BEFORE wake), this drives one
+    // SCRFD+MobileFaceNet pass right now and matches against the local face
+    // DB, so permission-gated commands still work when the user woke the
+    // device without facing the camera. On a successful match the frozen
+    // conversation speaker is refreshed so later tools in this conversation
+    // see the identity without re-capturing.
+    mcp_server.AddTool("self.face.identify",
+        "立即拍照并做一次本地人脸识别（不依赖唤醒时缓存的会话身份）。\n"
+        "用途：出入库等有权限要求的操作前，若 self.conversation.speaker 返回 "
+        "valid=false，调用本工具现场认人（先提醒用户面向摄像头）。\n"
+        "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
+        "valid=false 表示没拍到人脸或不认识（陌生人）。",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            float embedding[FACE_EMBEDDING_DIM];
+            SingleShotTiming t;
+            if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
+                return std::string(
+                    "{\"valid\":false,\"error\":\"no_face_or_timeout\"}");
+            }
+            auto& rec = FaceRecognition::GetInstance();
+            FaceMatchResult m = FaceDatabase::GetInstance().Match(
+                embedding, rec.GetMatchThreshold());
+            FaceRecognition::SpeakerIdentity s;
+            if (m.matched) {
+                s.valid = true;
+                s.name = FaceDatabase::DecodeName(m.name);
+                s.subject_id = m.subject_id;
+                s.similarity = m.similarity;
+                rec.SetCurrentSpeaker(s);
+            }
+            std::string name;  // minimal JSON string escaping
+            for (char c : s.name) {
+                if (c == '"' || c == '\\') name += '\\';
+                name += c;
+            }
+            char sim[16];
+            snprintf(sim, sizeof(sim), "%.4f", s.similarity);
+            std::string result = "{\"valid\":";
+            result += (s.valid ? "true" : "false");
+            result += ",\"name\":\"" + name + "\",\"subject_id\":";
+            result += std::to_string(s.subject_id);
+            result += ",\"similarity\":";
+            result += sim;
+            result += "}";
+            return result;
+        });
+
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
 }
 
