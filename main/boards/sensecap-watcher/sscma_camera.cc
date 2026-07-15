@@ -1244,6 +1244,10 @@ void SscmaCamera::SetExplainUrl(const std::string& url, const std::string& token
 }
 
 bool SscmaCamera::Capture() {
+    return CaptureImpl(true);
+}
+
+bool SscmaCamera::CaptureImpl(bool drive_preview) {
 
     SscmaData data;
     int ret = 0;
@@ -1311,6 +1315,15 @@ bool SscmaCamera::Capture() {
         return false;
     }
     heap_caps_free(data.img);
+
+    // F4: no-preview variant (httpd-worker identify path). jpeg_data_ is now
+    // populated for RemoteRecognize; skip BOTH the remote-cast upload and the
+    // local LVGL decode/display (SetPreviewImage from a non-main thread is not
+    // thread-safe). Return with the JPEG ready and no UI side effects.
+    if (!drive_preview) {
+        capture_in_progress_ = false;
+        return true;
+    }
 
     // 发送到远程显示
     auto* remote = RemoteDisplay::GetInstance();
@@ -2009,58 +2022,20 @@ void SscmaCamera::InitializeFaceMcpTools() {
         "valid=false 表示没拍到人脸或不认识（陌生人）。",
         PropertyList(),
         [this](const PropertyList&) -> ReturnValue {
-            // Mode + endpoint come from the warehouse platform's face config,
-            // pushed down with the library (batch-update -> NVS face.id_*):
-            //   local (default) — on-device NPU embedding + local DB match
-            //   lan             — fresh JPEG POSTed to <id_url>/recognize
-            //                     (big-model server; name-only identity).
-            // A lan transport error falls back to the local path so identify
-            // degrades instead of hard-failing when the LAN service is down;
-            // a lan "no match" is authoritative (its library is broader).
-            Settings settings("face", false);
-            std::string id_mode = settings.GetString("id_mode", "local");
-            std::string id_url = settings.GetString("id_url", "");
-            auto& rec = FaceRecognition::GetInstance();
-            FaceRecognition::SpeakerIdentity s;
-            bool remote_answered = false;
-            if (id_mode == "lan" && !id_url.empty()) {
-                TaskPriorityReset priority_reset(1);
-                if (this->Capture()) {
-                    std::string rname;
-                    float rconf = 0.0f;
-                    int rc = this->RemoteRecognize(
-                        id_url, settings.GetString("id_token", ""), &rname, &rconf);
-                    if (rc == 0) {
-                        s.valid = true;
-                        s.name = rname;
-                        s.subject_id = 0;  // remote library is name-keyed
-                        s.similarity = rconf;
-                        rec.SetCurrentSpeaker(s);
-                        remote_answered = true;
-                    } else if (rc == 1) {
-                        remote_answered = true;
-                    }
-                    // rc < 0: transport/protocol error -> local fallback below
-                } else {
-                    ESP_LOGW(TAG, "identify(lan): capture failed, local fallback");
-                }
-            }
-            if (!remote_answered) {
-                float embedding[FACE_EMBEDDING_DIM];
-                SingleShotTiming t;
-                if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
-                    return std::string(
-                        "{\"valid\":false,\"error\":\"no_face_or_timeout\"}");
-                }
-                FaceMatchResult m = FaceDatabase::GetInstance().Match(
-                    embedding, rec.GetMatchThreshold());
-                if (m.matched) {
-                    s.valid = true;
-                    s.name = FaceDatabase::DecodeName(m.name);
-                    s.subject_id = m.subject_id;
-                    s.similarity = m.similarity;
-                    rec.SetCurrentSpeaker(s);
-                }
+            // Delegate to the shared IdentifyOnce (same code path as the HTTP
+            // /api/face/current-speaker?fresh=1 endpoint). allow_preview=true so
+            // the LLM-triggered identify keeps its on-screen photo preview (this
+            // runs on the main loop, where SetPreviewImage is safe). busy/blocked
+            // surface as valid=false + error so the model can retry / deny.
+            IdentifyStatus st = IdentifyStatus::kOk;
+            const char* reason = nullptr;
+            FaceRecognition::SpeakerIdentity s =
+                this->IdentifyOnce(/*allow_preview=*/true, &st, &reason);
+            if (st != IdentifyStatus::kOk) {
+                std::string e = "{\"valid\":false,\"error\":\"";
+                e += (reason ? reason : "busy");
+                e += "\"}";
+                return e;
             }
             std::string name;  // minimal JSON string escaping
             for (char c : s.name) {
@@ -2080,6 +2055,90 @@ void SscmaCamera::InitializeFaceMcpTools() {
         });
 
     ESP_LOGI(TAG, "Face recognition MCP tools initialized");
+}
+
+// Shared on-demand identify — see the header for the F1..F4 contract. Called by
+// the self.face.identify MCP tool (allow_preview=true, main loop) and the HTTP
+// /api/face/current-speaker?fresh=1 endpoint (allow_preview=false, httpd worker).
+FaceRecognition::SpeakerIdentity SscmaCamera::IdentifyOnce(
+        bool allow_preview, IdentifyStatus* out_status, const char** out_reason) {
+    FaceRecognition::SpeakerIdentity s;
+    if (out_status) *out_status = IdentifyStatus::kOk;
+    if (out_reason) *out_reason = nullptr;
+
+    // F3: forbidden to queue. If another identify (MCP or HTTP) already holds the
+    // op lock, bail out immediately so the caller can answer 503 instead of
+    // blocking Himax behind a serialized backlog.
+    std::unique_lock<std::mutex> op(identify_op_mutex_, std::try_to_lock);
+    if (!op.owns_lock()) {
+        if (out_status) *out_status = IdentifyStatus::kBusy;
+        if (out_reason) *out_reason = "busy";
+        return s;  // valid=false
+    }
+
+    // F2: TOCTOU re-check. The caller may have checked FaceEmbedBlockReason()
+    // before entering, but state (upgrading / greeting / capture / single-shot)
+    // can flip between that check and acquiring the op lock. Re-check now that we
+    // hold the lock and own the operation; deny if not allowed.
+    const char* block = FaceEmbedBlockReason();
+    if (block != nullptr) {
+        if (out_status) *out_status = IdentifyStatus::kBlocked;
+        if (out_reason) *out_reason = block;
+        return s;  // valid=false
+    }
+
+    // ---- dispatch (moved verbatim from the self.face.identify lambda) ----
+    // Mode + endpoint come from the warehouse platform's face config, pushed down
+    // with the library (batch-update -> NVS face.id_*):
+    //   local (default) — on-device NPU embedding + local DB match
+    //   lan             — fresh JPEG POSTed to <id_url>/recognize (name-only).
+    // A lan transport error falls back to local; a lan "no match" is authoritative.
+    Settings settings("face", false);
+    std::string id_mode = settings.GetString("id_mode", "local");
+    std::string id_url = settings.GetString("id_url", "");
+    auto& rec = FaceRecognition::GetInstance();
+    bool remote_answered = false;
+    if (id_mode == "lan" && !id_url.empty()) {
+        TaskPriorityReset priority_reset(1);
+        // F4: httpd-worker path passes allow_preview=false -> CaptureImpl skips
+        // preview upload; MCP main-loop path keeps the on-screen preview.
+        if (this->CaptureImpl(allow_preview)) {
+            std::string rname;
+            float rconf = 0.0f;
+            int rc = this->RemoteRecognize(
+                id_url, settings.GetString("id_token", ""), &rname, &rconf);
+            if (rc == 0) {
+                s.valid = true;
+                s.name = rname;
+                s.subject_id = 0;  // remote library is name-keyed
+                s.similarity = rconf;
+                rec.SetCurrentSpeaker(s);
+                remote_answered = true;
+            } else if (rc == 1) {
+                remote_answered = true;
+            }
+            // rc < 0: transport/protocol error -> local fallback below
+        } else {
+            ESP_LOGW(TAG, "identify(lan): capture failed, local fallback");
+        }
+    }
+    if (!remote_answered) {
+        float embedding[FACE_EMBEDDING_DIM];
+        SingleShotTiming t;
+        if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
+            return s;  // valid=false (no face / timeout); status stays kOk
+        }
+        FaceMatchResult m = FaceDatabase::GetInstance().Match(
+            embedding, rec.GetMatchThreshold());
+        if (m.matched) {
+            s.valid = true;
+            s.name = FaceDatabase::DecodeName(m.name);
+            s.subject_id = m.subject_id;
+            s.similarity = m.similarity;
+            rec.SetCurrentSpeaker(s);
+        }
+    }
+    return s;
 }
 
 void SscmaCamera::PauseInference() {

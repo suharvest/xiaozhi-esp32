@@ -46,6 +46,9 @@ private:
     static esp_err_t HandleStatus(httpd_req_t* req);
     static esp_err_t HandleFaceEmbed(httpd_req_t* req);
     static esp_err_t HandleFaceBatchUpdate(httpd_req_t* req);
+    // GET /api/face/current-speaker?fresh=0|1 — backend-direct identity pull.
+    // Header X-Face-Token must match NVS face.id_token, else 401. See §9 contract.
+    static esp_err_t HandleFaceCurrentSpeaker(httpd_req_t* req);
 
     void StartBeacon(int port);
     void StopBeacon();

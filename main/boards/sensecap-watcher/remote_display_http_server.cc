@@ -15,6 +15,7 @@
 #include <freertos/task.h>
 #include <cJSON.h>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <mbedtls/base64.h>
 #include <sys/socket.h>
@@ -460,6 +461,145 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
     return ESP_OK;
 }
 
+// ---------- Backend-direct identity pull (§8c/§9) ----------
+
+// Build the {valid,name,subject_id,similarity,mode,age_ms} response body, reusing
+// the same minimal JSON string escaping as the MCP face tools.
+static std::string BuildSpeakerJson(const FaceRecognition::SpeakerIdentity& s,
+                                    const std::string& mode, int64_t age_ms) {
+    std::string name;  // minimal JSON string escaping
+    for (char c : s.name) {
+        if (c == '"' || c == '\\') name += '\\';
+        name += c;
+    }
+    char sim[16];
+    snprintf(sim, sizeof(sim), "%.4f", s.similarity);
+    std::string r = "{\"valid\":";
+    r += (s.valid ? "true" : "false");
+    r += ",\"name\":\"" + name + "\",\"subject_id\":";
+    r += std::to_string(s.subject_id);
+    r += ",\"similarity\":";
+    r += sim;
+    r += ",\"mode\":\"" + mode + "\",\"age_ms\":";
+    r += std::to_string(age_ms);
+    r += "}";
+    return r;
+}
+
+esp_err_t RemoteDisplayHttpServer::HandleFaceCurrentSpeaker(httpd_req_t* req) {
+    httpd_resp_set_type(req, "application/json");
+
+    // --- Auth: X-Face-Token must equal the NVS-pushed id_token (batch-update
+    //     identify_token). Fail-closed: missing header, or an unprovisioned
+    //     (empty) device token, both -> 401. Prevents same-LAN hosts from
+    //     impersonating the backend to pull an identity.
+    std::string expected;
+    {
+        Settings settings("face", false);
+        expected = settings.GetString("id_token", "");
+    }
+    std::string got;
+    size_t tlen = httpd_req_get_hdr_value_len(req, "X-Face-Token");
+    if (tlen > 0) {
+        got.resize(tlen + 1);
+        if (httpd_req_get_hdr_value_str(req, "X-Face-Token", &got[0], tlen + 1) == ESP_OK) {
+            got.resize(tlen);
+        } else {
+            got.clear();
+        }
+    }
+    if (expected.empty() || got != expected) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_sendstr(req, "{\"valid\":false,\"error\":\"unauthorized\"}");
+        return ESP_OK;
+    }
+
+    // --- Parse fresh=0|1 from the query string (default 0).
+    int fresh = 0;
+    {
+        char query[64];
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+            char val[8];
+            if (httpd_query_key_value(query, "fresh", val, sizeof(val)) == ESP_OK) {
+                fresh = atoi(val);
+            }
+        }
+    }
+
+    auto& rec = FaceRecognition::GetInstance();
+    std::string mode;
+    {
+        Settings settings("face", false);
+        mode = settings.GetString("id_mode", "local");
+    }
+
+    // --- fresh=0: return the in-memory frozen speaker (zero hardware action).
+    //     age_ms = now - GetLastMatchTimeUs (age of the frozen identity); -1 if
+    //     no match has ever been recorded.
+    if (fresh == 0) {
+        FaceRecognition::SpeakerIdentity s = rec.GetCurrentSpeaker();
+        int64_t last_us = rec.GetLastMatchTimeUs();
+        int64_t age_ms = (last_us > 0)
+                             ? (esp_timer_get_time() - last_us) / 1000
+                             : -1;
+        httpd_resp_sendstr(req, BuildSpeakerJson(s, mode, age_ms).c_str());
+        return ESP_OK;
+    }
+
+    // --- fresh=1: drive one live identify via the shared IdentifyOnce path.
+    SscmaCamera* camera = instance_ ? instance_->camera_ : nullptr;
+    if (camera == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "{\"valid\":false,\"error\":\"camera_unavailable\"}");
+        return ESP_OK;
+    }
+
+    // Rate limit: reuse the /api/face/embed cadence (only accepted calls advance
+    // the timestamp) so a fast poller is throttled, not permanently starved.
+    int64_t now_us = esp_timer_get_time();
+    int64_t last_call = instance_->last_face_call_us_.load();
+    if (last_call != 0 && (now_us - last_call) < FACE_EMBED_MIN_INTERVAL_US) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_sendstr(req, "{\"valid\":false,\"error\":\"rate_limited\"}");
+        return ESP_OK;
+    }
+    instance_->last_face_call_us_.store(now_us);
+
+    // F4: allow_preview=false — the httpd worker must not drive the LVGL display.
+    SscmaCamera::IdentifyStatus st = SscmaCamera::IdentifyStatus::kOk;
+    const char* reason = nullptr;
+    FaceRecognition::SpeakerIdentity s =
+        camera->IdentifyOnce(/*allow_preview=*/false, &st, &reason);
+
+    if (st == SscmaCamera::IdentifyStatus::kBusy) {
+        // F3: op lock held -> transient busy.
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        char body[64];
+        snprintf(body, sizeof(body), "{\"valid\":false,\"error\":\"%s\"}",
+                 reason ? reason : "busy");
+        httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    }
+    if (st == SscmaCamera::IdentifyStatus::kBlocked) {
+        // Same mapping as /api/face/embed: busy -> 503 (transient), other
+        // reasons (upgrading / greeting_active) -> 409 (state conflict).
+        const char* status = (reason && strcmp(reason, "busy") == 0)
+                                 ? "503 Service Unavailable"
+                                 : "409 Conflict";
+        httpd_resp_set_status(req, status);
+        char body[64];
+        snprintf(body, sizeof(body), "{\"valid\":false,\"error\":\"%s\"}",
+                 reason ? reason : "conflict");
+        httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    }
+
+    // kOk: identify ran (s.valid may be false = no face / no match). Just-captured,
+    // so age_ms = 0.
+    httpd_resp_sendstr(req, BuildSpeakerJson(s, mode, 0).c_str());
+    return ESP_OK;
+}
+
 // ---------- UDP Beacon ----------
 
 void RemoteDisplayHttpServer::StartBeacon(int port) {
@@ -640,6 +780,16 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
         .user_ctx = nullptr,
     };
     httpd_register_uri_handler(server_, &face_batch_uri);
+
+    // GET /api/face/current-speaker?fresh=0|1 — backend-direct identity pull.
+    // Header X-Face-Token gated (must match NVS face.id_token). See §8c/§9.
+    httpd_uri_t face_speaker_uri = {
+        .uri = "/api/face/current-speaker",
+        .method = HTTP_GET,
+        .handler = HandleFaceCurrentSpeaker,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(server_, &face_speaker_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", port);
 

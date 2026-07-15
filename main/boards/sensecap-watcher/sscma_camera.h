@@ -85,6 +85,30 @@ public:
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();
+
+    // Outcome of IdentifyOnce (below), so HTTP/MCP callers can map to a status.
+    enum class IdentifyStatus {
+        kOk,       // identify ran; result may still be valid=false (no face/no match)
+        kBusy,     // operation lock already held (try_lock failed) -> caller returns 503
+        kBlocked,  // FaceEmbedBlockReason() denied AFTER acquiring the lock (TOCTOU-safe)
+    };
+    // Unified on-demand identify used by BOTH the self.face.identify MCP tool and
+    // the /api/face/current-speaker?fresh=1 HTTP endpoint. Selects local(single-
+    // shot + local DB match) vs lan(Capture + RemoteRecognize) from NVS face.id_*,
+    // exactly as the old MCP lambda did — one code path, no fork between triggers.
+    // F1: the ENTIRE Capture()+RemoteRecognize() / single-shot sequence runs under
+    //     identify_op_mutex_ so the two trigger paths can't race a shared frame.
+    // F2: FaceEmbedBlockReason() is re-checked AFTER the lock (TOCTOU) -> kBlocked.
+    // F3: try_lock — if the op lock is held, return kBusy immediately (no queueing).
+    // F4: allow_preview=false suppresses preview upload (httpd worker must not drive
+    //     the LVGL display); the MCP tool passes true to keep the on-screen preview.
+    // out_status / out_reason are optional; out_reason points at a static string
+    // ("busy" for kBusy, or the FaceEmbedBlockReason() token for kBlocked).
+    // NOTE: ::FaceRecognition (global scope) — the class also has a member method
+    // named FaceRecognition(), which would otherwise shadow the class name here.
+    ::FaceRecognition::SpeakerIdentity IdentifyOnce(bool allow_preview,
+                                                    IdentifyStatus* out_status = nullptr,
+                                                    const char** out_reason = nullptr);
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
@@ -172,6 +196,14 @@ private:
     std::atomic<int64_t> capture_started_at_{0};
     std::mutex sscma_mutex_;
     std::mutex pause_state_mutex_;
+    // F1: operation-level lock serializing a whole identify (Capture+RemoteRecognize
+    // for lan, or BenchSingleShotFaceEmbedding+Match for local). Held for the full
+    // sequence by IdentifyOnce so the MCP tool and the HTTP endpoint can't race the
+    // shared capture frame / single-shot buffer. try_lock only — never queues.
+    std::mutex identify_op_mutex_;
+    // Shared body for Capture(); drive_preview=false skips both the remote-cast and
+    // local LVGL preview upload (used by the httpd-worker identify path — F4).
+    bool CaptureImpl(bool drive_preview);
     static constexpr int INFERENCE_PAUSE_TIMEOUT_SEC = 300;  // 5 min auto-resume
     static constexpr int CAPTURE_TIMEOUT_SEC = 30;  // 30s capture timeout
 
