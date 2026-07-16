@@ -2129,6 +2129,17 @@ FaceRecognition::SpeakerIdentity SscmaCamera::IdentifyOnce(
         }
     }
     if (!remote_answered) {
+        // Local mode's face-inference pipeline (BenchSingleShotFaceEmbedding)
+        // yields only an embedding — no displayable frame. When a preview is
+        // wanted (MCP tool / backend pull), grab one JPEG frame first purely for
+        // on-screen feedback (CaptureImpl marshals SetPreviewImage to the main
+        // loop), then run the single-shot for the actual match. Best-effort: a
+        // capture failure must not block identification, so the result is ignored.
+        // Cost: an extra sensor-mode switch (~1-2s); himax_face_warm_ is cleared
+        // by the capture so the single-shot below takes its cold path.
+        if (allow_preview) {
+            this->CaptureImpl(/*drive_preview=*/true);
+        }
         float embedding[FACE_EMBEDDING_DIM];
         SingleShotTiming t;
         if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
