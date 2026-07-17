@@ -916,6 +916,7 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
     }
     single_shot_jpeg_len_ = 0;
     single_shot_want_image_.store(want_image);
+    single_shot_previewed_.store(false);  // reset per-call; set true iff 做法 B 上屏
 
     // Capture voice-busy once and use it consistently for both the warm-path
     // decision and the teardown decision. The warm flag is only trusted during
@@ -1087,6 +1088,7 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
                 jpeg_io_->inbuf_len = jpeg_io_->inbuf_remain;
                 if (jpeg_dec_process(jpeg_dec_, jpeg_io_) == JPEG_ERR_OK) {
                     MarshalPreviewFrame(rgb, jw, jh);
+                    single_shot_previewed_.store(true);  // 做法 B 成功上屏（预览==匹配帧）
                 } else {
                     ESP_LOGW(TAG, "[BENCH] preview JPEG decode failed");
                 }
@@ -2243,6 +2245,12 @@ FaceRecognition::SpeakerIdentity SscmaCamera::IdentifyOnce(
         SingleShotTiming t;
         if (!this->BenchSingleShotFaceEmbedding(embedding, &t, /*want_image=*/allow_preview)) {
             return s;  // valid=false (no face / timeout); status stays kOk
+        }
+        // 做法 A 兜底：若单拍带图预览没成功（Himax 人脸模式事件未附 JPEG 等），
+        // 补拍一张 JPEG 上屏，保证屏幕能看到东西。Himax 若支持带图则 B 已上屏、
+        // previewed=true，这里跳过。仅在需要预览时兜底。
+        if (allow_preview && !single_shot_previewed_.load()) {
+            this->CaptureImpl(/*drive_preview=*/true);
         }
         FaceMatchResult m = FaceDatabase::GetInstance().Match(
             embedding, rec.GetMatchThreshold());
