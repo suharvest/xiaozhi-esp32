@@ -497,6 +497,10 @@ static std::string BuildSpeakerJson(const FaceRecognition::SpeakerIdentity& s,
     r += sim;
     r += ",\"mode\":\"" + mode + "\",\"age_ms\":";
     r += std::to_string(age_ms);
+    // conv_seq: bumped each conversation rising edge. Backend keys 仅首次
+    // (verify-once-per-conversation) caching on it.
+    r += ",\"conv_seq\":";
+    r += std::to_string(FaceRecognition::GetInstance().GetConversationSeq());
     r += "}";
     return r;
 }

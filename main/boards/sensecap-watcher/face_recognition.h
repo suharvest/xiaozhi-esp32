@@ -93,6 +93,12 @@ public:
     void CaptureCurrentSpeaker();
     void ClearCurrentSpeaker();
     SpeakerIdentity GetCurrentSpeaker() const;
+    // Monotonic conversation counter, bumped every time CaptureCurrentSpeaker
+    // runs (i.e. each new conversation's rising edge). The backend uses it to
+    // implement verify-once-per-conversation (仅首次): a verify whose conv_seq
+    // matches the last verified one is served from cache (免验), a new conv_seq
+    // triggers a fresh device verify. Never 0 after the first conversation.
+    uint32_t GetConversationSeq() const;
     // Overwrite the frozen speaker with an on-demand match (self.face.identify),
     // so later tools in the same conversation see the refreshed identity.
     void SetCurrentSpeaker(const SpeakerIdentity& speaker);
@@ -136,6 +142,7 @@ private:
     FaceMatchResult last_match_;
     int64_t last_match_time_us_ = 0;
     SpeakerIdentity current_speaker_;  // frozen for the active conversation
+    uint32_t conversation_seq_ = 0;    // bumped on each CaptureCurrentSpeaker
     static constexpr int64_t kSpeakerMaxAgeUs = 15LL * 1000000;  // 15s freshness
 
     float match_threshold_;

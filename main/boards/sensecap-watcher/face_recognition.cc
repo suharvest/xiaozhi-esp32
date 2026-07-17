@@ -381,6 +381,7 @@ void FaceRecognition::CaptureCurrentSpeaker() {
             }
         }
         current_speaker_ = speaker;
+        conversation_seq_++;  // new conversation rising edge → bump seq (仅首次 key)
     }
     if (speaker.valid) {
         ESP_LOGI(TAG, "current_speaker = %s (subject_id=%d, %.2f)",
@@ -393,6 +394,11 @@ void FaceRecognition::CaptureCurrentSpeaker() {
 void FaceRecognition::ClearCurrentSpeaker() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     current_speaker_ = SpeakerIdentity{};
+}
+
+uint32_t FaceRecognition::GetConversationSeq() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return conversation_seq_;
 }
 
 void FaceRecognition::SetCurrentSpeaker(const SpeakerIdentity& speaker) {

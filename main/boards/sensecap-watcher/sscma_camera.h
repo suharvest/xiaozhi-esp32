@@ -234,10 +234,6 @@ private:
     // MarshalPreviewFrame, and is the sole owner that frees single_shot_jpeg_.
     std::atomic<bool> single_shot_want_image_{false};
     std::atomic<bool> single_shot_jpeg_ready_{false};
-    // True iff 做法 B successfully put the match frame on-screen this call; when
-    // false and a preview was wanted, IdentifyOnce falls back to a CaptureImpl
-    // preview (做法 A) so the screen always shows something.
-    std::atomic<bool> single_shot_previewed_{false};
     uint8_t* single_shot_jpeg_ = nullptr;   // raw JPEG bytes (SPIRAM), owned by BenchSingleShot
     size_t single_shot_jpeg_len_ = 0;
 
