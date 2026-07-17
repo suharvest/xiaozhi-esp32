@@ -167,7 +167,12 @@ public:
         int   face_score = 0;
         float face_quality = 0.0f;
     };
-    bool BenchSingleShotFaceEmbedding(float* out_embedding, SingleShotTiming* out_timing);
+    // want_image=true additionally captures the JPEG of the SAME frame that
+    // produced the embedding (invoke show=true) and puts it on-screen via
+    // MarshalPreviewFrame — so the preview shows exactly the matched frame
+    // (做法 B). Best-effort: preview failure never affects the returned result.
+    bool BenchSingleShotFaceEmbedding(float* out_embedding, SingleShotTiming* out_timing,
+                                      bool want_image = false);
 
     // On-demand remote recognition against the warehouse-configured LAN
     // face_rec_api: POSTs the last Capture()d JPEG to <base_url>/recognize.
@@ -204,6 +209,12 @@ private:
     // Shared body for Capture(); drive_preview=false skips both the remote-cast and
     // local LVGL preview upload (used by the httpd-worker identify path — F4).
     bool CaptureImpl(bool drive_preview);
+    // Single owner of the "decoded RGB565 frame -> heap copy -> Application::
+    // Schedule -> SetPreviewImage" marshaling. Both CaptureImpl and the single-
+    // shot preview path call this so LVGL ownership (LvglAllocatedImage frees the
+    // copy exactly once) lives in one place. Copies `rgb565` (w*h*2 bytes); the
+    // source buffer stays owned by the caller.
+    void MarshalPreviewFrame(const uint8_t* rgb565, uint16_t w, uint16_t h);
     static constexpr int INFERENCE_PAUSE_TIMEOUT_SEC = 300;  // 5 min auto-resume
     static constexpr int CAPTURE_TIMEOUT_SEC = 30;  // 30s capture timeout
 
@@ -215,6 +226,16 @@ private:
     float single_shot_embedding_[FACE_EMBEDDING_DIM] = {0};
     std::atomic<int> single_shot_face_score_{0};
     std::atomic<int> single_shot_face_quality_x1000_{0};  // quality * 1000, int for atomicity
+
+    // 做法 B single-shot preview state. When single_shot_want_image_ is set, the
+    // on_event hook fetches the SAME frame's JPEG (invoke show=true), base64-
+    // decodes it into single_shot_jpeg_ (SPIRAM), and sets single_shot_jpeg_ready_.
+    // BenchSingleShotFaceEmbedding then decodes it to RGB565 and calls
+    // MarshalPreviewFrame, and is the sole owner that frees single_shot_jpeg_.
+    std::atomic<bool> single_shot_want_image_{false};
+    std::atomic<bool> single_shot_jpeg_ready_{false};
+    uint8_t* single_shot_jpeg_ = nullptr;   // raw JPEG bytes (SPIRAM), owned by BenchSingleShot
+    size_t single_shot_jpeg_len_ = 0;
 
     // Hot-standby (热待命): true means Himax is left resident in face mode with
     // the sensor warm at 240x240 (AT+FACE=1 active, invoke broken). A single-shot

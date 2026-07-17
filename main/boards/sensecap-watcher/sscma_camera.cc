@@ -183,6 +183,38 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                             if (self->single_shot_pending_.load() &&
                                 !self->single_shot_valid_.load() &&
                                 face_data.has_embedding) {
+                                // 做法 B: grab the JPEG of THIS frame (the one that
+                                // produced the matched embedding) for on-screen
+                                // preview. Best-effort — failure never blocks the
+                                // embedding. fetch_image returns a base64 string
+                                // (__strdup'd, freed with heap_caps_free like the
+                                // 640x480 path); decode it to raw JPEG in SPIRAM.
+                                if (self->single_shot_want_image_.load() &&
+                                    !self->single_shot_jpeg_ready_.load()) {
+                                    char* b64img = NULL;
+                                    int b64len = 0;
+                                    if (sscma_utils_fetch_image_from_reply(reply, &b64img, &b64len) == ESP_OK &&
+                                        b64img != NULL && b64len > 0) {
+                                        uint8_t* raw = (uint8_t*)heap_caps_malloc(b64len, MALLOC_CAP_SPIRAM);
+                                        if (raw != NULL) {
+                                            size_t raw_len = 0;
+                                            int drc = mbedtls_base64_decode(
+                                                raw, b64len, &raw_len,
+                                                (const unsigned char*)b64img, b64len);
+                                            if (drc == 0 && raw_len > 0) {
+                                                self->single_shot_jpeg_ = raw;
+                                                self->single_shot_jpeg_len_ = raw_len;
+                                                self->single_shot_jpeg_ready_.store(true);
+                                                ESP_LOGI(TAG, "[BENCH] single-shot preview JPEG captured (%zu bytes)", raw_len);
+                                            } else {
+                                                heap_caps_free(raw);
+                                            }
+                                        }
+                                    }
+                                    if (b64img != NULL) {
+                                        heap_caps_free(b64img);
+                                    }
+                                }
                                 memcpy(self->single_shot_embedding_,
                                        face_data.embedding,
                                        sizeof(float) * FACE_EMBEDDING_DIM);
@@ -862,7 +894,8 @@ const char* SscmaCamera::FaceEmbedBlockReason() const {
 //     so the main loop re-establishes passive face / object-detection mode
 //     (otherwise passive greeting would silently stall — pre-existing bug).
 bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
-                                               SingleShotTiming* out_timing) {
+                                               SingleShotTiming* out_timing,
+                                               bool want_image) {
     if (out_embedding == nullptr) {
         return false;
     }
@@ -873,6 +906,16 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         return false;
     }
     single_shot_valid_.store(false);
+
+    // 做法 B preview state (owned by this call only — guarded by single_shot_pending_).
+    // Drop any stale JPEG from a prior aborted run before arming the hook.
+    single_shot_jpeg_ready_.store(false);
+    if (single_shot_jpeg_ != nullptr) {
+        heap_caps_free(single_shot_jpeg_);
+        single_shot_jpeg_ = nullptr;
+    }
+    single_shot_jpeg_len_ = 0;
+    single_shot_want_image_.store(want_image);
 
     // Capture voice-busy once and use it consistently for both the warm-path
     // decision and the teardown decision. The warm flag is only trusted during
@@ -914,6 +957,7 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
                 if (ret != ESP_OK) {
                     ESP_LOGE(TAG, "[BENCH] AT+FACE=1 failed: %d", ret);
                     himax_face_warm_.store(false);
+                    single_shot_want_image_.store(false);
                     single_shot_pending_.store(false);
                     return false;
                 }
@@ -933,7 +977,14 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
         // on the first face it sees, and the teardown sscma_client_break()
         // below stops Himax. End result is functionally the same as
         // "single shot" from the caller's perspective.
-        esp_err_t ret = sscma_client_invoke(sscma_client_handle_, -1, false, false);
+        //
+        // 做法 B: show=want_image. When a preview is wanted we ask Himax to attach
+        // the JPEG to the face event so on_event can grab the SAME frame that
+        // produced the embedding (invoke show=true). Note the historical SRAM
+        // caveat of show=true on invoke(-1): the on_event hook breaks out on the
+        // first face, and teardown's sscma_client_break() below stops the stream
+        // promptly, so only one image-bearing frame is parsed.
+        esp_err_t ret = sscma_client_invoke(sscma_client_handle_, -1, false, want_image);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "[BENCH] invoke failed: %d", ret);
             sscma_client_break(sscma_client_handle_);
@@ -1008,6 +1059,53 @@ bool SscmaCamera::BenchSingleShotFaceEmbedding(float* out_embedding,
     if (out_timing) {
         *out_timing = t;
     }
+
+    // 做法 B preview: decode the single-shot's OWN JPEG (the exact frame that
+    // matched, captured in on_event) to RGB565 and hand it to the shared
+    // MarshalPreviewFrame — so preview frame == match frame. Done outside the
+    // SPI lock (JPEG decode is not SPI), mirroring CaptureImpl. Best-effort: any
+    // failure just skips the preview; `got` is already decided. The 240x240 face
+    // JPEG's real dimensions come from the decoded header (not the 640x480
+    // preview_image_ descriptor, which is only for the object/photo path).
+    if (want_image && single_shot_jpeg_ready_.load() &&
+        single_shot_jpeg_ != nullptr &&
+        jpeg_dec_ && jpeg_io_ && jpeg_out_) {
+        memset(jpeg_io_, 0, sizeof(jpeg_dec_io_t));
+        memset(jpeg_out_, 0, sizeof(jpeg_dec_header_info_t));
+        jpeg_io_->inbuf = single_shot_jpeg_;
+        jpeg_io_->inbuf_len = single_shot_jpeg_len_;
+        int jret = jpeg_dec_parse_header(jpeg_dec_, jpeg_io_, jpeg_out_);
+        if (jret >= 0 && jpeg_out_->width > 0 && jpeg_out_->height > 0) {
+            uint16_t jw = jpeg_out_->width;
+            uint16_t jh = jpeg_out_->height;
+            size_t rgb_size = (size_t)jw * (size_t)jh * 2;
+            uint8_t* rgb = (uint8_t*)jpeg_calloc_align(rgb_size, 16);
+            if (rgb != nullptr) {
+                jpeg_io_->outbuf = rgb;
+                int consumed = jpeg_io_->inbuf_len - jpeg_io_->inbuf_remain;
+                jpeg_io_->inbuf = single_shot_jpeg_ + consumed;
+                jpeg_io_->inbuf_len = jpeg_io_->inbuf_remain;
+                if (jpeg_dec_process(jpeg_dec_, jpeg_io_) == JPEG_ERR_OK) {
+                    MarshalPreviewFrame(rgb, jw, jh);
+                } else {
+                    ESP_LOGW(TAG, "[BENCH] preview JPEG decode failed");
+                }
+                heap_caps_free(rgb);
+            }
+        } else {
+            ESP_LOGW(TAG, "[BENCH] preview JPEG header parse failed (ret=%d)", jret);
+        }
+    }
+
+    // Unified single-shot image cleanup — sole owner frees the JPEG exactly once.
+    single_shot_want_image_.store(false);
+    single_shot_jpeg_ready_.store(false);
+    if (single_shot_jpeg_ != nullptr) {
+        heap_caps_free(single_shot_jpeg_);
+        single_shot_jpeg_ = nullptr;
+    }
+    single_shot_jpeg_len_ = 0;
+
     single_shot_pending_.store(false);
     return got;
 }
@@ -1247,6 +1345,37 @@ bool SscmaCamera::Capture() {
     return CaptureImpl(true);
 }
 
+// Single owner of the preview marshaling (§8e F4). Copies the decoded RGB565
+// frame into an independent SPIRAM buffer and schedules the LVGL upload onto the
+// main loop; LvglAllocatedImage frees the copy exactly once in its destructor
+// (freed manually here only when no display is present). The `rgb565` source
+// stays owned by the caller. Used by BOTH CaptureImpl (640x480 photo) and the
+// single-shot preview path (240x240 face frame) — see the header note.
+void SscmaCamera::MarshalPreviewFrame(const uint8_t* rgb565, uint16_t w, uint16_t h) {
+    if (rgb565 == nullptr || w == 0 || h == 0) {
+        return;
+    }
+    size_t image_size = (size_t)w * (size_t)h * 2;
+    size_t stride = (size_t)w * 2;
+
+    uint8_t* data = (uint8_t*)heap_caps_malloc(image_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (data == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate memory for display image");
+        return;
+    }
+    memcpy(data, rgb565, image_size);
+    Application::GetInstance().Schedule([data, image_size, w, h, stride]() {
+        auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+        if (display == nullptr) {
+            heap_caps_free(data);  // no display: avoid leaking the copy
+            return;
+        }
+        auto image = std::make_unique<LvglAllocatedImage>(
+            data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
+        display->SetPreviewImage(std::move(image));
+    });
+}
+
 bool SscmaCamera::CaptureImpl(bool drive_preview) {
 
     SscmaData data;
@@ -1369,38 +1498,12 @@ bool SscmaCamera::CaptureImpl(bool drive_preview) {
         return true;
     }
 
-    // 显示预览图片 — thread-safe marshaling (§8e F4).
-    // The decoded RGB565 frame is copied into an independent heap buffer here (on
-    // whatever thread ran the capture — possibly an httpd worker for the
-    // backend-direct /current-speaker?fresh=1 pull). Constructing the LVGL image
-    // and calling SetPreviewImage touches LVGL, which is only safe on the main
-    // loop, so that step is deferred via Application::Schedule. This lets the
-    // httpd-worker path also show the live photo without racing LVGL.
-    // Ownership of `data` moves into the scheduled lambda: LvglAllocatedImage
-    // frees it in its destructor (freed manually if no display is present).
-    {
-        uint16_t w = preview_image_.header.w;
-        uint16_t h = preview_image_.header.h;
-        size_t image_size = (size_t)w * (size_t)h * 2;
-        size_t stride = (size_t)preview_image_.header.w * 2;
-
-        uint8_t* data = (uint8_t*)heap_caps_malloc(image_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (data != nullptr) {
-            memcpy(data, preview_image_.data, image_size);
-            Application::GetInstance().Schedule([data, image_size, w, h, stride]() {
-                auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
-                if (display == nullptr) {
-                    heap_caps_free(data);  // no display: avoid leaking the copy
-                    return;
-                }
-                auto image = std::make_unique<LvglAllocatedImage>(
-                    data, image_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
-                display->SetPreviewImage(std::move(image));
-            });
-        } else {
-            ESP_LOGE(TAG, "Failed to allocate memory for display image");
-        }
-    }
+    // 显示预览图片 — thread-safe marshaling (§8e F4) via the shared helper. The
+    // decoded RGB565 frame (whatever thread ran the capture — possibly an httpd
+    // worker for the backend-direct /current-speaker?fresh=1 pull) is copied and
+    // its LVGL upload deferred to the main loop inside MarshalPreviewFrame.
+    MarshalPreviewFrame((const uint8_t*)preview_image_.data,
+                        preview_image_.header.w, preview_image_.header.h);
     heap_caps_free((void*)preview_image_.data);
     preview_image_.data = nullptr;
     capture_in_progress_ = false;
@@ -2129,20 +2232,16 @@ FaceRecognition::SpeakerIdentity SscmaCamera::IdentifyOnce(
         }
     }
     if (!remote_answered) {
-        // Local mode's face-inference pipeline (BenchSingleShotFaceEmbedding)
-        // yields only an embedding — no displayable frame. When a preview is
-        // wanted (MCP tool / backend pull), grab one JPEG frame first purely for
-        // on-screen feedback (CaptureImpl marshals SetPreviewImage to the main
-        // loop), then run the single-shot for the actual match. Best-effort: a
-        // capture failure must not block identification, so the result is ignored.
-        // Cost: an extra sensor-mode switch (~1-2s); himax_face_warm_ is cleared
-        // by the capture so the single-shot below takes its cold path.
-        if (allow_preview) {
-            this->CaptureImpl(/*drive_preview=*/true);
-        }
+        // 做法 B: the single-shot itself now supplies the preview frame. Instead
+        // of taking a SEPARATE preview capture (做法 A: a different frame 1-2s
+        // apart from the match — "screen shows nobody but matched half a face"),
+        // we pass want_image=allow_preview so BenchSingleShotFaceEmbedding grabs
+        // the JPEG of the SAME frame that produced the matched embedding and puts
+        // it on-screen. Preview frame == match frame. Best-effort: preview failure
+        // never blocks identification.
         float embedding[FACE_EMBEDDING_DIM];
         SingleShotTiming t;
-        if (!this->BenchSingleShotFaceEmbedding(embedding, &t)) {
+        if (!this->BenchSingleShotFaceEmbedding(embedding, &t, /*want_image=*/allow_preview)) {
             return s;  // valid=false (no face / timeout); status stays kOk
         }
         FaceMatchResult m = FaceDatabase::GetInstance().Match(
