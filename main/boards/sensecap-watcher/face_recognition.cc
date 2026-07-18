@@ -214,12 +214,21 @@ void FaceRecognition::NotifyNoFace() {
         ESP_LOGI(TAG, "NotifyNoFace (state=%d)", (int)state_);
     }
 
+    int64_t now = esp_timer_get_time();
+    // Face gone for the debounce period → this person is done. Reset the
+    // unknown-grace streak so the NEXT person to appear gets a fresh grace
+    // window (otherwise a stale grace start would prematurely declare them
+    // "person"). Applies in any state (a person may leave mid-grace, before
+    // any greeting / cooldown).
+    if ((now - last_face_seen_us_) >= kFaceGoneDebounceUs) {
+        unknown_grace_start_us_ = 0;
+    }
+
     // Check if we can exit cooldown: time elapsed AND face gone for debounce period
     if (state_ != FaceDetectionState::COOLDOWN) {
         return;
     }
 
-    int64_t now = esp_timer_get_time();
     bool time_passed = (now - cooldown_start_time_) >= cooldown_duration_us_;
     bool face_gone = (now - last_face_seen_us_) >= kFaceGoneDebounceUs;
 
@@ -227,6 +236,7 @@ void FaceRecognition::NotifyNoFace() {
         state_ = FaceDetectionState::DETECTING;
         voting_buffer_.Clear();
         last_notified_name_.clear();
+        unknown_grace_start_us_ = 0;
         ESP_LOGI(TAG, "Cooldown complete and face left, back to detecting");
     }
 }
@@ -273,6 +283,7 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
                  match.similarity, threshold, familiar_mode);
 
         if (match.matched) {
+            unknown_grace_start_us_ = 0;  // resolved to a name → end any unknown streak
             // Familiar DND: ignore familiar faces (don't wake)
             if (familiar_mode) {
                 ESP_LOGI(TAG, "ProcessFaceData: -> SuppressCurrentFace (familiar DND): %s (sim=%.3f)", match.name.c_str(), match.similarity);
@@ -283,10 +294,23 @@ void FaceRecognition::ProcessFaceData(const HimaxFaceData& face_data) {
                 HandleRecognitionResult(match);
             }
         } else {
-            // Unknown person detected
-            // Familiar DND: "stranger" alert, Normal mode: "person" notification
-            ESP_LOGI(TAG, "ProcessFaceData: -> HandleUnknownPersonDetected (stranger_alert=%d)", familiar_mode);
-            HandleUnknownPersonDetected(familiar_mode);
+            // Unknown: hold before declaring person/stranger. A known face still
+            // approaching (far/angled → low similarity) gets a grace window to
+            // resolve to a name; only after kUnknownGraceUs of continuous no-match
+            // do we greet person/stranger. Avoids the premature "person detected"
+            // flash for a familiar person walking up.
+            int64_t now = esp_timer_get_time();
+            if (unknown_grace_start_us_ == 0) {
+                unknown_grace_start_us_ = now;
+                ESP_LOGI(TAG, "ProcessFaceData: unmatched face, starting %llds grace before declaring unknown",
+                         (long long)(kUnknownGraceUs / 1000000));
+            } else if (now - unknown_grace_start_us_ >= kUnknownGraceUs) {
+                ESP_LOGI(TAG, "ProcessFaceData: grace elapsed, -> HandleUnknownPersonDetected (stranger_alert=%d)", familiar_mode);
+                HandleUnknownPersonDetected(familiar_mode);
+            } else {
+                ESP_LOGD(TAG, "ProcessFaceData: unmatched, still within grace (%.1fs), waiting",
+                         (now - unknown_grace_start_us_) / 1e6);
+            }
         }
     }
 }

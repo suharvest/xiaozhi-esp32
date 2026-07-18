@@ -155,6 +155,15 @@ private:
     bool need_start_cooldown_ = false;  // Defer cooldown start until face mode resumes
     static constexpr int64_t kFaceGoneDebounceUs = 2000000;  // 2s: face must be gone this long
 
+    // Unknown-face grace: a detected-but-unmatched face (approaching / far / angled)
+    // does NOT immediately greet "person" — we hold for kUnknownGraceUs measured from
+    // the first unmatched consensus, giving an approaching known face time to resolve
+    // to a name. A match within the window greets by name (grace reset); only if the
+    // window elapses with no match do we declare person/stranger. Best of both:
+    // familiar → name (no "person" flash), true stranger → still detected (after grace).
+    int64_t unknown_grace_start_us_ = 0;  // 0 = not in an unknown streak
+    static constexpr int64_t kUnknownGraceUs = 2000000;  // 2s
+
     std::string last_notified_name_;
 
     // Deferred notification state (accessed from SSCMA process task + camera task)
