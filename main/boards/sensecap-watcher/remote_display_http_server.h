@@ -49,6 +49,8 @@ private:
     // GET /api/face/current-speaker?fresh=0|1 — backend-direct identity pull.
     // Header X-Face-Token must match NVS face.id_token, else 401. See §9 contract.
     static esp_err_t HandleFaceCurrentSpeaker(httpd_req_t* req);
+    // GET /api/face/capture — lan option 3 后端拉图。X-Face-Token(pull_token) 鉴权。
+    static esp_err_t HandleFaceCapture(httpd_req_t* req);
 
     void StartBeacon(int port);
     void StopBeacon();

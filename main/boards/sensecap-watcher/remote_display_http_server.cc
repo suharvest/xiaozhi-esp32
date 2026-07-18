@@ -623,6 +623,72 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceCurrentSpeaker(httpd_req_t* req) {
     return ESP_OK;
 }
 
+static bool FaceCaptureJpegSink(void* ctx, const uint8_t* buf, size_t len) {
+    httpd_req_t* req = static_cast<httpd_req_t*>(ctx);
+    httpd_resp_set_type(req, "image/jpeg");
+    return httpd_resp_send(req, reinterpret_cast<const char*>(buf), len) == ESP_OK;
+}
+
+esp_err_t RemoteDisplayHttpServer::HandleFaceCapture(httpd_req_t* req) {
+    // Auth：与 current-speaker 同源的 X-Face-Token / NVS face.pull_token，fail-closed。
+    std::string expected;
+    {
+        Settings settings("face", false);
+        expected = settings.GetString("pull_token", "");
+    }
+    std::string got;
+    size_t tlen = httpd_req_get_hdr_value_len(req, "X-Face-Token");
+    if (tlen > 0) {
+        got.resize(tlen + 1);
+        if (httpd_req_get_hdr_value_str(req, "X-Face-Token", &got[0], tlen + 1) == ESP_OK) {
+            got.resize(tlen);
+        } else {
+            got.clear();
+        }
+    }
+    if (expected.empty() || got != expected) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
+        return ESP_OK;
+    }
+
+    SscmaCamera* camera = instance_ ? instance_->camera_ : nullptr;
+    if (camera == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"camera_unavailable\"}");
+        return ESP_OK;
+    }
+
+    // 限流：复用 current-speaker/embed 的节奏（instance_->last_face_call_us_）。
+    int64_t now_us = esp_timer_get_time();
+    int64_t last_call = instance_->last_face_call_us_.load();
+    if (last_call != 0 && (now_us - last_call) < FACE_EMBED_MIN_INTERVAL_US) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"rate_limited\"}");
+        return ESP_OK;
+    }
+    instance_->last_face_call_us_.store(now_us);
+
+    int status = camera->CaptureJpegLocked(FaceCaptureJpegSink, req);
+    if (status == 200) {
+        return ESP_OK;  // JPEG 已在 sink 内发出
+    }
+    // 非 200：sink 未发送任何 body，返回 JSON 错误。
+    if (status == 503) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"busy\"}");
+    } else {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"capture_failed\"}");
+    }
+    return ESP_OK;
+}
+
 // ---------- UDP Beacon ----------
 
 void RemoteDisplayHttpServer::StartBeacon(int port) {
@@ -813,6 +879,15 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
         .user_ctx = nullptr,
     };
     httpd_register_uri_handler(server_, &face_speaker_uri);
+
+    // GET /api/face/capture — lan option 3 后端拉图，X-Face-Token(pull_token) 鉴权。
+    httpd_uri_t face_capture_uri = {
+        .uri = "/api/face/capture",
+        .method = HTTP_GET,
+        .handler = HandleFaceCapture,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(server_, &face_capture_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", port);
 

@@ -1345,6 +1345,27 @@ bool SscmaCamera::Capture() {
     return CaptureImpl(true);
 }
 
+int SscmaCamera::CaptureJpegLocked(bool (*sink)(void*, const uint8_t*, size_t), void* ctx) {
+    // 与 IdentifyOnce/current-speaker 拉取串行化，避免并发抢帧/覆盖 jpeg_data_。
+    std::unique_lock<std::mutex> lk(identify_op_mutex_, std::try_to_lock);
+    if (!lk.owns_lock()) {
+        return 503;  // 另一路 identify/capture 正在进行
+    }
+    // TOCTOU：拿锁后复查阻断原因（问候识别 active 等），与 IdentifyOnce 一致。
+    const char* block = FaceEmbedBlockReason();
+    if (block != nullptr) {
+        ESP_LOGW(TAG, "CaptureJpegLocked blocked: %s", block);
+        return 503;
+    }
+    TaskPriorityReset priority_reset(1);  // 抓拍期间降优先级（take_photo 同款）
+    if (!Capture() || jpeg_data_.buf == nullptr || jpeg_data_.len == 0) {
+        ESP_LOGE(TAG, "CaptureJpegLocked: Capture failed / empty JPEG");
+        return 500;
+    }
+    // 持锁期间发送，jpeg_data_ 不会被并发抓拍覆盖（零拷贝）。
+    return sink(ctx, jpeg_data_.buf, jpeg_data_.len) ? 200 : 500;
+}
+
 // Single owner of the preview marshaling (§8e F4). Copies the decoded RGB565
 // frame into an independent SPIRAM buffer and schedules the LVGL upload onto the
 // main loop; LvglAllocatedImage frees the copy exactly once in its destructor

@@ -109,6 +109,10 @@ public:
     ::FaceRecognition::SpeakerIdentity IdentifyOnce(bool allow_preview,
                                                     IdentifyStatus* out_status = nullptr,
                                                     const char** out_reason = nullptr);
+    // lan option 3：后端拉图。复用 Capture()(take_photo 路径)+常驻 jpeg_data_，
+    // 抓一张 JPEG 并在持有 identify_op_mutex_ 期间交给 sink 发送（防并发覆盖，零新增分配）。
+    // 返回 HTTP 状态：200 ok / 503 忙(锁被占或 FaceEmbedBlockReason 阻断) / 500 抓帧失败。
+    int CaptureJpegLocked(bool (*sink)(void* ctx, const uint8_t* buf, size_t len), void* ctx);
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
