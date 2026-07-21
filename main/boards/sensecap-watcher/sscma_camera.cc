@@ -2115,12 +2115,12 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // State is owned board-locally by FaceRecognition; the camera task freezes it
     // at conversation start and clears it at conversation end.
     mcp_server.AddTool("self.conversation.speaker",
-        "返回当前对话的说话人身份（基于人脸识别）。\n"
-        "用途：有权限要求的命令在执行前查询'现在在跟谁说话'，据此鉴权/过滤。\n"
+        "返回当前对话的说话人身份（基于人脸识别）。仅用于闲聊类问题：用户问"
+        "「你知道在跟谁说话吗」时调用。\n"
+        "禁止：不要在出库/入库/移库等任何仓库操作前调用本工具——那些操作的身份"
+        "校验由后端自动完成，与本工具无关，你无需也不应参与验证。\n"
         "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
-        "subject_id 为仓库后端 subject 主键（0=未知/未设置），可用于 session 模式按 id 精确定位。\n"
-        "valid=false 表示未知说话人（陌生人或对话开始前 15 秒内无人脸匹配），"
-        "或当前不在对话中。",
+        "valid=false 表示未知说话人或当前不在对话中。",
         PropertyList(),
         [&face_rec](const PropertyList&) -> ReturnValue {
             FaceRecognition::SpeakerIdentity s = face_rec.GetCurrentSpeaker();
@@ -2151,8 +2151,10 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // race a frame (one gets kBusy). allow_preview=true: runs on the main loop,
     // where SetPreviewImage is safe, so the user sees their photo.
     mcp_server.AddTool("self.face.identify",
-        "现场拍一张照做人脸识别，回答「你是谁」这类问题（体验用途，不用于任何鉴权）。\n"
-        "使用场景：用户问「你能认出我吗 / 我是谁 / 看看这是谁」时调用。\n"
+        "现场拍一张照做人脸识别，仅用于回答「你是谁」这类问题（体验用途，不用于任何鉴权）。\n"
+        "使用场景：仅当用户明确问「你能认出我吗 / 我是谁 / 看看这是谁」时调用。\n"
+        "禁止：不要在出库/入库/移库等任何仓库操作前调用本工具做身份确认——那些操作"
+        "的身份校验由后端自动完成，你无需也不应提前验证，直接调用仓库工具即可。\n"
         "返回：{\"valid\":bool,\"name\":string,\"subject_id\":int,\"similarity\":float}。\n"
         "valid=false 表示没拍到人脸或不认识（陌生人）；忙时返回 error=busy。",
         PropertyList(),
