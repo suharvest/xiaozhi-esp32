@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <mutex>
+#include <string>
 
 // Multi-frame voting configuration
 #define FACE_VOTING_BUFFER_SIZE 5
@@ -50,6 +51,23 @@ private:
 
     void PruneOldEntries(int64_t current_time_us);
 };
+
+// Wake-word size budget. The official cloud rejects listen/state=detect
+// payloads above a black-box size heuristic, answering with
+// {"type":"alert","status":"ERROR","message":"Detect is only for wake words,
+//  do not send long texts."} — which application.cc renders as an ERROR screen.
+// The metric is neither character count nor byte count nor BPE tokens (measured:
+// "a"x40 passes while 40 distinct chars are rejected; a 48-byte CJK string passes
+// while a 26-byte tagged one is rejected), so no formula is reproducible. What is
+// reproducible is the envelope: across 60 probes every payload <=25 UTF-8 bytes
+// passed, and no rejection occurred below 26 bytes. Budget in BYTES, not chars.
+// The <f></f> / <d></d> wrappers cost 7 bytes, leaving 18 for the payload.
+constexpr size_t kWakeWordMaxBytes = 25;
+constexpr size_t kWakeWordPayloadMaxBytes = kWakeWordMaxBytes - 7;
+
+// Truncate to at most max_bytes, backing off to a UTF-8 character boundary so a
+// long name can never emit a half sequence (which would break the server parse).
+std::string TruncateUtf8(const std::string& s, size_t max_bytes);
 
 // Face recognition state machine (mirrors object detection)
 enum class FaceDetectionState {

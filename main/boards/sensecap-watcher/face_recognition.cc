@@ -10,6 +10,19 @@ static const char* TAG = "FaceRecognition";
 // Default cooldown: 5 seconds (matches object detection default interval)
 #define DEFAULT_COOLDOWN_US 5000000
 
+std::string TruncateUtf8(const std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) {
+        return s;
+    }
+    // s[end] is the first byte we drop; if it continues a multi-byte sequence
+    // (0b10xxxxxx) walk back until we land on a lead byte.
+    size_t end = max_bytes;
+    while (end > 0 && (static_cast<unsigned char>(s[end]) & 0xC0) == 0x80) {
+        --end;
+    }
+    return s.substr(0, end);
+}
+
 // ============== FaceVotingBuffer Implementation ==============
 
 FaceVotingBuffer::FaceVotingBuffer()
@@ -353,7 +366,11 @@ void FaceRecognition::HandleRecognitionResult(const FaceMatchResult& result) {
     std::string display_name = FaceDatabase::DecodeName(result.name);
     ESP_LOGI(TAG, "Recognized: %s (similarity: %.2f)", display_name.c_str(), result.similarity);
 
-    std::string wake_word = "<face>" + display_name + " detected</face>";
+    // Short tag + name only: the cloud rejects anything past ~25 bytes (see
+    // kWakeWordMaxBytes). <f></f> costs 7 bytes, so the name gets 18 — about
+    // 6 CJK characters, truncated on a character boundary beyond that.
+    std::string wake_word =
+        "<f>" + TruncateUtf8(display_name, kWakeWordPayloadMaxBytes) + "</f>";
     TriggerNotification(wake_word);
 
 }
@@ -362,7 +379,8 @@ void FaceRecognition::HandleUnknownPersonDetected(bool is_stranger_alert) {
     const char* person_id = is_stranger_alert ? "stranger" : "person";
 
     ESP_LOGI(TAG, "%s detected", person_id);
-    std::string wake_word = std::string("<face>") + person_id + " detected</face>";
+    // "stranger" / "person" are 8 / 6 bytes — comfortably inside the budget.
+    std::string wake_word = std::string("<f>") + person_id + "</f>";
     TriggerNotification(wake_word);
 
     {

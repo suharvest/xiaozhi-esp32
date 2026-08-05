@@ -368,10 +368,18 @@ if (result.matched) {
 
 ```cpp
 // 触发唤醒词
-WakeWordInvoke("<face>检测到张三</face>");
+WakeWordInvoke("<f>张三</f>");
 ```
 
 这会让设备说出识别结果，实现自然的人机交互。
+
+> **唤醒词长度预算**：官方云对 `listen/state=detect` 的 `text` 有体量上限，超限会回
+> `{"type":"alert","status":"ERROR","message":"Detect is only for wake words, do not send long texts."}`，
+> 设备端直接弹成 ERROR 屏。实测安全线为 **UTF-8 ≤ 25 字节**（按字节，不是按字符）。
+> 因此标签压到 `<f></f>`（人脸）/ `<d></d>`（物体），各占 7 字节，正文余 18 字节
+> ≈ 6 个汉字，超出部分由 `TruncateUtf8()` 按字符边界截断。
+> 该上限是闭源云的黑盒启发式，改动前请重跑
+> `warehouse_system/e2e_voice_mcp/test_detect_limit_official.py` 复测。
 
 ### 有效的语音命令示例
 

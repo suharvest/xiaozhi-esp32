@@ -21,6 +21,17 @@
 
 #define IMG_JPEG_BUF_SIZE   48 * 1024
 
+// Object-detection wake word, kept inside the cloud's detect size budget
+// (see kWakeWordMaxBytes in face_recognition.h). <d></d> costs 7 bytes; the
+// count prefix eats a few more, and the class name takes whatever is left.
+static std::string MakeDetectWakeWord(int count, const std::string& class_name) {
+    std::string prefix = std::to_string(count) + " ";
+    size_t budget = kWakeWordPayloadMaxBytes > prefix.size()
+                        ? kWakeWordPayloadMaxBytes - prefix.size()
+                        : 0;
+    return "<d>" + prefix + TruncateUtf8(class_name, budget) + "</d>";
+}
+
 static bool __himax_keepalive_check(sscma_client_handle_t client)
 {
     esp_err_t ret = ESP_OK;
@@ -355,19 +366,19 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                         if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
                             cached_target_name = self->model->classes[detect_target];
                         }
-                        wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
+                        wake_word = MakeDetectWakeWord(obj_cnt, cached_target_name);
                     } else if ( model_type  == 1 ) {
                         std::string cached_target_name = "object";
                         if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
                             cached_target_name = self->model->classes[detect_target];
                         }
-                        wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
+                        wake_word = MakeDetectWakeWord(obj_cnt, cached_target_name);
                     } else if ( model_type  == 2 ) {
                         std::string cached_target_name = "object";
                         if( self->model != NULL && self->model->classes[detect_target] != NULL ) {
                             cached_target_name = self->model->classes[detect_target];
                         }
-                        wake_word = "<detect>" + std::to_string(obj_cnt) + " " + cached_target_name + " detected </detect>";
+                        wake_word = MakeDetectWakeWord(obj_cnt, cached_target_name);
                     }
                     printf("wake_word:%s\n", wake_word.c_str());
                     // Wake window: drop further event frames until the camera main
