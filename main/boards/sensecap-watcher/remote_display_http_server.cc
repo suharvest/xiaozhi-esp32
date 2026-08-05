@@ -9,7 +9,6 @@
 
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <esp_netif.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -19,8 +18,6 @@
 #include <string>
 #include <mbedtls/base64.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 static const char* TAG = "RemoteDisplayHttp";
 
@@ -51,10 +48,6 @@ RemoteDisplayHttpServer* RemoteDisplayHttpServer::instance_ = nullptr;
 // never hit this (their spacing is far above 1s).
 #define FACE_EMBED_MIN_INTERVAL_US (1000 * 1000)  // 1s
 
-// UDP beacon port and interval
-#define BEACON_UDP_PORT 12321
-#define BEACON_INTERVAL_US (2 * 1000 * 1000)  // 2 seconds
-
 RemoteDisplayHttpServer::~RemoteDisplayHttpServer() {
     Stop();
 }
@@ -83,33 +76,43 @@ esp_err_t RemoteDisplayHttpServer::HandleStartCast(httpd_req_t* req) {
         return ESP_FAIL;
     }
 
+    const char* requested_url = ws_url->valuestring;
+    if (strncmp(requested_url, "ws://", 5) != 0 &&
+        strncmp(requested_url, "wss://", 6) != 0) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid ws_url");
+        return ESP_FAIL;
+    }
+
     auto* remote = RemoteDisplay::GetInstance();
-    bool ok = false;
+    std::string server_url = requested_url;
+    cJSON_Delete(root);
 
-    if (remote->IsRunning()) {
-        // Already casting — stop first then reconnect
-        remote->Stop();
-    }
+    // Persist the new target as disabled before cancelling the old lifecycle.
+    // This guarantees a stale retry can neither reconnect the previous target
+    // nor survive a failed attempt to the new one.
+    auto config = RemoteDisplay::LoadConfig();
+    config.server_url = server_url;
+    config.enabled = false;
+    RemoteDisplay::SaveConfig(config);
+    remote->Stop();
 
-    // Stop beacon before WebSocket connect — RPi already found us
-    if (instance_) {
-        instance_->StopBeacon();
-    }
-
-    ok = remote->Start(ws_url->valuestring, 3000);
+    bool ok = remote->Start(server_url, 3000);
 
     if (ok) {
-        // Save to NVS so auto-reconnect works after reboot
-        auto config = RemoteDisplay::LoadConfig();
-        config.server_url = ws_url->valuestring;
+        config = RemoteDisplay::LoadConfig();
+        config.server_url = server_url;
         config.enabled = true;
         RemoteDisplay::SaveConfig(config);
+        if (!remote->IsRunning()) {
+            remote->RequestReconnect();
+        }
     }
-
-    cJSON_Delete(root);
 
     cJSON* resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "success", ok);
+    cJSON_AddBoolToObject(resp, "casting", remote->IsRunning());
+    cJSON_AddBoolToObject(resp, "enabled", ok);
     if (!ok) {
         cJSON_AddStringToObject(resp, "error", "Failed to connect");
     }
@@ -122,6 +125,10 @@ esp_err_t RemoteDisplayHttpServer::HandleStartCast(httpd_req_t* req) {
 }
 
 esp_err_t RemoteDisplayHttpServer::HandleStopCast(httpd_req_t* req) {
+    auto config = RemoteDisplay::LoadConfig();
+    config.enabled = false;
+    RemoteDisplay::SaveConfig(config);
+
     auto* remote = RemoteDisplay::GetInstance();
     remote->Stop();
 
@@ -136,6 +143,8 @@ esp_err_t RemoteDisplayHttpServer::HandleStatus(httpd_req_t* req) {
 
     cJSON* resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "casting", remote->IsRunning());
+    cJSON_AddBoolToObject(resp, "enabled", config.enabled);
+    cJSON_AddBoolToObject(resp, "configured", !config.server_url.empty());
     cJSON_AddStringToObject(resp, "server_url", config.server_url.c_str());
 
     char* resp_str = cJSON_PrintUnformatted(resp);
@@ -689,107 +698,9 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceCapture(httpd_req_t* req) {
     return ESP_OK;
 }
 
-// ---------- UDP Beacon ----------
-
-void RemoteDisplayHttpServer::StartBeacon(int port) {
-    // Idempotent: if a beacon is already running, leave it as-is. Prevents
-    // leaking the socket/timer when StartDiscovery() is called on an
-    // already-discovering server.
-    if (beacon_timer_ != nullptr || beacon_sock_ >= 0) {
-        ESP_LOGI(TAG, "Beacon already running, skip");
-        return;
-    }
-    beacon_port_ = port;
-
-    // Create UDP socket
-    beacon_sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (beacon_sock_ < 0) {
-        ESP_LOGE(TAG, "Failed to create beacon socket: errno %d", errno);
-        return;
-    }
-
-    // Enable broadcast
-    int broadcast = 1;
-    setsockopt(beacon_sock_, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
-
-    // Create periodic timer
-    esp_timer_create_args_t timer_args = {
-        .callback = BeaconTimerCallback,
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "beacon",
-        .skip_unhandled_events = true,
-    };
-    esp_err_t err = esp_timer_create(&timer_args, &beacon_timer_);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create beacon timer: %s", esp_err_to_name(err));
-        close(beacon_sock_);
-        beacon_sock_ = -1;
-        return;
-    }
-
-    esp_timer_start_periodic(beacon_timer_, BEACON_INTERVAL_US);
-
-    // Send first beacon immediately
-    SendBeacon();
-
-    ESP_LOGI(TAG, "UDP beacon started on port %d (broadcast every 2s)", BEACON_UDP_PORT);
-}
-
-void RemoteDisplayHttpServer::SendBeacon() {
-    if (beacon_sock_ < 0) return;
-
-    // Get own IP address
-    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!netif) return;
-
-    esp_netif_ip_info_t ip_info;
-    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) return;
-    if (ip_info.ip.addr == 0) return;
-
-    // Format: XZWATCH|name|ip|port|board|version
-    char packet[128];
-    int len = snprintf(packet, sizeof(packet),
-        "XZWATCH|SenseCAP Watcher|" IPSTR "|%d|sensecap-watcher|1.0",
-        IP2STR(&ip_info.ip), beacon_port_);
-
-    // Send broadcast
-    struct sockaddr_in dest = {};
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(BEACON_UDP_PORT);
-    dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-
-    int ret = sendto(beacon_sock_, packet, len, 0, (struct sockaddr*)&dest, sizeof(dest));
-
-    // Log first 3 beacons and then every 30th (~1 min)
-    static int count = 0;
-    count++;
-    if (count <= 3 || count % 30 == 0) {
-        ESP_LOGI(TAG, "Beacon #%d sent (%d bytes, ret=%d): %s", count, len, ret, packet);
-    }
-}
-
-void RemoteDisplayHttpServer::StopBeacon() {
-    if (beacon_timer_) {
-        esp_timer_stop(beacon_timer_);
-        esp_timer_delete(beacon_timer_);
-        beacon_timer_ = nullptr;
-    }
-    if (beacon_sock_ >= 0) {
-        close(beacon_sock_);
-        beacon_sock_ = -1;
-    }
-    ESP_LOGI(TAG, "UDP beacon stopped");
-}
-
-void RemoteDisplayHttpServer::BeaconTimerCallback(void* arg) {
-    auto* self = static_cast<RemoteDisplayHttpServer*>(arg);
-    self->SendBeacon();
-}
-
 // ---------- Start / Stop ----------
 
-bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
+bool RemoteDisplayHttpServer::Start(int port) {
     if (server_) {
         ESP_LOGW(TAG, "HTTP server already running");
         return true;
@@ -891,16 +802,10 @@ bool RemoteDisplayHttpServer::Start(int port, bool with_discovery) {
 
     ESP_LOGI(TAG, "HTTP server started on port %d", port);
 
-    // Start UDP beacon for discovery (only for first-time pairing)
-    if (with_discovery) {
-        StartBeacon(port);
-    }
-
     return true;
 }
 
 void RemoteDisplayHttpServer::Stop() {
-    StopBeacon();
     if (server_) {
         httpd_stop(server_);
         server_ = nullptr;

@@ -6,26 +6,21 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <deque>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+#include <freertos/semphr.h>
 
 class WebSocket;
 
 // 远程显示消息类型
 enum RemoteDisplayMessageType : uint8_t {
     MSG_TYPE_UI_STATE     = 0x10,   // UI 状态 (JSON)
-    MSG_TYPE_AUDIO_FRAME  = 0x02,   // 音频帧 (Opus) - 已废弃
-    MSG_TYPE_AUDIO_PCM    = 0x03,   // 音频 PCM 数据
+    MSG_TYPE_AUDIO_FRAME  = 0x02,   // 音频帧 (Opus)
+    MSG_TYPE_AUDIO_PCM    = 0x03,   // 兼容旧版 PCM 数据
     MSG_TYPE_HEARTBEAT    = 0x04,   // 心跳
-};
-
-// 发现的显示设备信息
-struct DiscoveredDisplay {
-    std::string name;       // 设备名称（如 "客厅显示器"）
-    std::string ip;         // IP 地址
-    uint16_t port;          // 端口号
 };
 
 // 远程显示配置
@@ -51,7 +46,11 @@ public:
     // timeout_ms: 连接超时时间，默认 1000ms（减少阻塞时间）
     bool Start(const std::string& server_url, int timeout_ms = 1000);
     void Stop();
-    bool IsRunning() const { return running_; }
+    bool IsRunning() const { return running_ && connected_; }
+
+    // Wake the background reconnect worker. The worker re-checks the persisted
+    // enabled flag and URL before doing any blocking network work.
+    void RequestReconnect();
 
     // UI 状态发送接口
     void SendEmotion(const char* emotion);
@@ -66,34 +65,56 @@ public:
     // Opus 音频转发 - 由 Application::OnIncomingAudio 回调调用
     void ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration);
 
-    // mDNS 发现本地网络上的投屏服务
-    // timeout_ms: 搜索超时时间
-    // 返回: 发现的设备列表
-    std::vector<DiscoveredDisplay> DiscoverDisplays(int timeout_ms = 3000);
-
-    // 使用简化 IP（最后一段）连接
-    // suffix: IP 地址最后一段 (0-255)
-    // port: 端口号，默认 8765
-    bool ConnectWithIPSuffix(int suffix, int port = 8765);
-
-    // 获取本机 IP 的网段前缀（如 192.168.1.）
-    std::string GetIPPrefix();
-
 private:
+    struct AudioFrame {
+        std::vector<uint8_t> payload;
+        int sample_rate;
+        int frame_duration;
+        uint32_t connect_generation;
+    };
+
     RemoteDisplay() = default;
     ~RemoteDisplay();
 
-    void SendUIState();
+    void SendUIState(bool force = false);
     void SendHello();
+    bool StartLocked(const std::string& server_url, int timeout_ms, uint32_t lifecycle_epoch);
+    void RetireWebSocketLocked(bool schedule_cleanup = true);
+    void CleanupDisconnectedSocketLocked();
+    void EnsureReconnectTaskLocked();
+    void ScheduleReconnect(uint32_t lifecycle_epoch);
+    void ScheduleUIFlush();
+    bool EnsureAudioTaskLocked();
+    void ClearAudioQueueAndNotify();
+    static void ReconnectTask(void* arg);
+    static void AudioTask(void* arg);
     static void OnCleanupTimer(TimerHandle_t timer);
 
     std::unique_ptr<WebSocket> websocket_;
+    // WebSocket callbacks can originate inside WebSocket::OnTcpData(). Moving
+    // an old socket here keeps it alive until the delayed worker cleanup runs.
+    std::vector<std::unique_ptr<WebSocket>> retired_websockets_;
     TimerHandle_t cleanup_timer_ = nullptr;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
+    std::atomic<bool> session_ready_{false};
+    std::atomic<bool> cleanup_due_{false};
+    std::atomic<bool> ui_state_dirty_{false};
+    std::atomic<uint32_t> ui_state_version_{0};
     std::atomic<uint32_t> connect_generation_{0};
+    std::atomic<uint32_t> lifecycle_epoch_{0};
+    std::atomic<uint32_t> reconnect_epoch_{0};
+    TaskHandle_t reconnect_task_ = nullptr;
+    TaskHandle_t audio_task_ = nullptr;
+    SemaphoreHandle_t audio_task_stopped_ = nullptr;
+    std::atomic<bool> audio_shutdown_{false};
+    std::atomic<bool> audio_task_create_failed_{false};
+    std::atomic<uint32_t> audio_drop_count_{0};
     std::string current_server_url_;  // 当前连接的服务器 URL
+
+    std::deque<AudioFrame> audio_queue_;
+    int audio_queued_duration_ms_ = 0;
 
     // UI 状态缓存
     std::string current_emotion_;
@@ -106,6 +127,7 @@ private:
 
     std::mutex state_mutex_;
     std::mutex send_mutex_;
+    std::mutex audio_queue_mutex_;
     std::mutex lifecycle_mutex_;
 };
 

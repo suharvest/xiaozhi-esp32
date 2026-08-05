@@ -156,34 +156,27 @@ class CustomLcdDisplay : public SpiLcdDisplay {
         // 重写方法以支持远程显示状态同步
         void SetEmotion(const char* emotion) override {
             SpiLcdDisplay::SetEmotion(emotion);
-            auto* remote = RemoteDisplay::GetInstance();
-            if (remote->IsRunning()) {
-                remote->SendEmotion(emotion);
-            }
+            RemoteDisplay::GetInstance()->SendEmotion(emotion);
         }
 
         void SetStatus(const char* status) override {
             SpiLcdDisplay::SetStatus(status);
-            auto* remote = RemoteDisplay::GetInstance();
-            if (remote->IsRunning()) {
-                remote->SendStatus(status);
-            }
+            RemoteDisplay::GetInstance()->SendStatus(status);
         }
 
         void SetChatMessage(const char* role, const char* content) override {
             SpiLcdDisplay::SetChatMessage(role, content);
-            auto* remote = RemoteDisplay::GetInstance();
-            if (remote->IsRunning()) {
-                remote->SendChatMessage(role, content);
-            }
+            RemoteDisplay::GetInstance()->SendChatMessage(role, content);
+        }
+
+        void ClearChatMessages() override {
+            SpiLcdDisplay::ClearChatMessages();
+            RemoteDisplay::GetInstance()->SendChatMessage("", "");
         }
 
         void SetTheme(Theme* theme) override {
             SpiLcdDisplay::SetTheme(theme);
-            auto* remote = RemoteDisplay::GetInstance();
-            if (remote->IsRunning()) {
-                remote->SendTheme(theme->name().c_str());
-            }
+            RemoteDisplay::GetInstance()->SendTheme(theme ? theme->name().c_str() : "");
         }
 
     private:
@@ -217,15 +210,6 @@ private:
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
-            // 唤醒时检查远程显示连接，如果断开则尝试重连
-            auto* remote = RemoteDisplay::GetInstance();
-            auto config = RemoteDisplay::LoadConfig();
-            if (config.enabled && !remote->IsRunning()) {
-                ESP_LOGI(TAG, "Remote display disconnected, attempting to reconnect...");
-                if (remote->StartWithConfig()) {
-                    ESP_LOGI(TAG, "Remote display reconnected successfully");
-                }
-            }
         });
         power_save_timer_->OnShutdownRequest([this]() {
             ESP_LOGI(TAG, "Shutting down");
@@ -730,6 +714,9 @@ private:
                         printf("Failed to connect. Check URL and network.\n");
                     }
                 } else if (strcmp(subcmd, "disconnect") == 0) {
+                    auto config = RemoteDisplay::LoadConfig();
+                    config.enabled = false;
+                    RemoteDisplay::SaveConfig(config);
                     remote->Stop();
                     printf("Disconnected.\n");
                 } else {
@@ -897,8 +884,7 @@ private:
     }
 
     void InitializeRemoteDisplay() {
-        // 启动一个任务，等待网络连接后注册 MCP 工具和自动重连
-        // 注意：HTTP 服务器和 UDP beacon 不在启动时启动，改为按需启动（节省内存）
+        // 启动任务注册投屏回调，等待联网后启动常驻 HTTP 服务并恢复连接。
         xTaskCreate([](void* arg) {
             auto* self = static_cast<SensecapWatcher*>(arg);
 
@@ -927,10 +913,9 @@ private:
             }
             ESP_LOGI(TAG, "WiFi connected, IP: %s", wifi.GetIpAddress().c_str());
 
-            // 联网后无条件常驻 HTTP 服务器：它承载 /api/face/embed 端点，供云端
-            // 业务流程随时调用本机人脸识别。beacon 不启动（仅首次投屏配对才需要）。
+            // 联网后无条件常驻 HTTP 服务器，承载投屏控制与人脸端点。
             self->remote_display_http_server_.SetCamera(self->camera_);
-            self->remote_display_http_server_.Start(80, false);
+            self->remote_display_http_server_.Start(80);
 
             // 如果 NVS 中有保存的配置，尝试自动重连（HTTP 服务器已常驻，无需再启动）
             auto config = RemoteDisplay::LoadConfig();
@@ -939,7 +924,7 @@ private:
                 if (remote->StartWithConfig()) {
                     ESP_LOGI(TAG, "Remote display auto-reconnected to %s", config.server_url.c_str());
                 } else {
-                    ESP_LOGW(TAG, "Remote display auto-reconnect failed");
+                    ESP_LOGW(TAG, "Remote display initial connection failed; background retry scheduled");
                 }
             }
 
@@ -953,7 +938,7 @@ private:
             "控制投屏功能的开启与关闭。\n"
             "当用户说'开启投屏'、'打开投屏'时，使用 enable=1 开启。\n"
             "当用户说'关闭投屏'、'停止投屏'时，使用 enable=0 关闭。\n"
-            "开启后设备将通过 UDP 广播，等待树莓派连接。配对成功后广播自动关闭以节省内存。\n"
+            "树莓派需手动输入本设备 IP，通过 HTTP 发起连接。\n"
             "不传参数则查询当前投屏状态。",
             PropertyList({
                 Property("enable", kPropertyTypeInteger, 0, 1)
@@ -964,7 +949,7 @@ private:
                     int en = enable_prop.value<int>();
                     ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
                     if (en == 1) {
-                        return StartScreenCastDiscovery();
+                        return StartScreenCast();
                     } else {
                         return StopScreenCast();
                     }
@@ -973,9 +958,10 @@ private:
                     ESP_LOGW(TAG, "screen_cast tool: no enable param, caught: %s", e.what());
                     auto* remote = RemoteDisplay::GetInstance();
                     bool casting = remote && remote->IsRunning();
-                    bool http_running = remote_display_http_server_.IsRunning();
+                    auto config = RemoteDisplay::LoadConfig();
                     return std::string("{\"casting\":") + (casting ? "true" : "false") +
-                           ",\"discovery\":" + (http_running ? "true" : "false") + "}";
+                           ",\"enabled\":" + (config.enabled ? "true" : "false") +
+                           ",\"configured\":" + (!config.server_url.empty() ? "true" : "false") + "}";
                 }
             });
 
@@ -996,47 +982,55 @@ private:
             });
     }
 
-    std::string StartScreenCastDiscovery() {
-        ESP_LOGI(TAG, "StartScreenCastDiscovery() called");
+    std::string StartScreenCast() {
+        ESP_LOGI(TAG, "StartScreenCast() called");
         // 如果已经在投屏，返回状态
         auto* remote = RemoteDisplay::GetInstance();
         if (remote && remote->IsRunning()) {
             ESP_LOGI(TAG, "Already casting, skip");
-            return std::string("{\"success\":true,\"message\":\"已在投屏中\"}");
+            return std::string("{\"success\":true,\"casting\":true,\"enabled\":true,\"configured\":true,\"message\":\"已在投屏中\"}");
         }
 
-        // HTTP 服务器已常驻（承载 face 端点）。这里只需再起 UDP beacon 让树莓派发现。
-        // 兜底：若联网早于服务器常驻启动而尚未运行，则补启动一次（不带 beacon）。
+        // HTTP server normally starts as soon as Wi-Fi is available. Keep an
+        // idempotent fallback in case the voice command races initialization.
         if (!remote_display_http_server_.IsRunning()) {
             ESP_LOGI(TAG, "HTTP server not running yet, starting...");
             remote_display_http_server_.SetCamera(camera_);
-            bool ok = remote_display_http_server_.Start(80, false);
+            bool ok = remote_display_http_server_.Start(80);
             if (!ok || !remote_display_http_server_.IsRunning()) {
-                return std::string("{\"success\":false,\"message\":\"投屏发现服务启动失败\"}");
+                return std::string("{\"success\":false,\"casting\":false,\"enabled\":false,\"configured\":false,\"message\":\"投屏控制服务启动失败\"}");
             }
         }
-        remote_display_http_server_.StartDiscovery(80);
 
-        return std::string("{\"success\":true,\"message\":\"投屏发现服务已开启，等待树莓派连接\"}");
+        auto config = RemoteDisplay::LoadConfig();
+        if (config.server_url.empty()) {
+            return std::string("{\"success\":false,\"casting\":false,\"enabled\":false,\"configured\":false,\"message\":\"请在树莓派投屏页面输入本设备 IP 发起连接\"}");
+        }
+
+        config.enabled = true;
+        RemoteDisplay::SaveConfig(config);
+        bool connected = remote->StartWithConfig();
+        if (connected) {
+            return std::string("{\"success\":true,\"casting\":true,\"enabled\":true,\"configured\":true,\"message\":\"投屏已连接\"}");
+        }
+        return std::string("{\"success\":true,\"casting\":false,\"enabled\":true,\"configured\":true,\"message\":\"暂时无法连接，已在后台重试\"}");
     }
 
     std::string StopScreenCast() {
-        // 停止投屏
-        auto* remote = RemoteDisplay::GetInstance();
-        if (remote && remote->IsRunning()) {
-            remote->Stop();
-        }
-
-        // 只停 UDP beacon，保留 HTTP 服务器常驻（/api/face/embed 端点需一直可用）
-        remote_display_http_server_.StopBeaconOnly();
-
-        // 清除 NVS 配置
-        RemoteDisplayConfig config;
+        // Persist disable before stopping so queued retries cannot reconnect.
+        auto config = RemoteDisplay::LoadConfig();
         config.enabled = false;
         RemoteDisplay::SaveConfig(config);
 
-        ESP_LOGI(TAG, "Screen cast stopped, discovery services stopped");
-        return std::string("{\"success\":true,\"message\":\"投屏已关闭\"}");
+        auto* remote = RemoteDisplay::GetInstance();
+        if (remote) {
+            remote->Stop();
+        }
+
+        ESP_LOGI(TAG, "Screen cast stopped");
+        return std::string("{\"success\":true,\"casting\":false,\"enabled\":false,\"configured\":") +
+               (!config.server_url.empty() ? "true" : "false") +
+               ",\"message\":\"投屏已关闭\"}";
     }
 
 public:

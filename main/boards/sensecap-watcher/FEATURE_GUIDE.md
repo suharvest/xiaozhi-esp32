@@ -251,27 +251,37 @@ ESP32-S3 通过 UART 发送 AT 命令控制 Himax WE2：
 
 ## 远程显示功能
 
-RemoteDisplay 组件提供远程预览和控制能力：
+RemoteDisplay 组件将设备 UI、音频和预览图同步到局域网内的树莓派显示服务。设备联网后常驻 HTTP 控制接口；用户在树莓派页面输入设备 IP 后，由树莓派请求设备反向建立 WebSocket：
 
 ```cpp
 // remote_display.h
 class RemoteDisplay {
+    // 连接/断开树莓派显示服务
+    bool Start(const std::string& server_url, int timeout_ms = 1000);
+    void Stop();
+
     // 发送预览图像
     void SendPreviewImage(const uint8_t* jpeg_data, size_t size);
 
-    // 发送 UI 状态
-    void SendUIState(const UIState& state);
-
-    // mDNS 自动发现
-    void StartMDNS();
+    // 缓存并同步 UI 状态
+    void SendEmotion(const char* emotion);
+    void SendStatus(const char* status);
+    void SendChatMessage(const char* role, const char* content);
 };
 ```
 
 功能：
-- WebSocket 服务器用于实时通信
+- HTTP 控制接口：`POST /api/start_cast`、`POST /api/stop_cast`、`GET /api/status`
+- WebSocket 客户端用于实时通信，断线后按配置自动重试
 - 预览图像传输 (JPEG)
-- UI 状态同步 (表情、背景)
-- mDNS 服务发现
+- UI 状态同步 (表情、状态、聊天、主题、音量)
+- Opus 音频转发
+- 手动输入设备 IP，不依赖 UDP/mDNS 自动发现
+
+音频实现约束：
+- 上游每个 Opus 包代表 60 ms 音频，不能因 WebSocket 发送锁短暂繁忙就在协议回调里直接丢弃；应先进入有界队列，由独立任务发送。
+- 浏览器端需预缓冲并按 `AudioContext` 连续时间轴排程。不要在每段 `onended` 后才以当前时间启动下一段，否则主线程调度会在分片之间引入可听间隙。
+- 固件和浏览器缓冲都必须限制总时长；过载时宁可记录并丢弃旧数据，也不能让投屏延迟持续增长。
 
 ## 配置参数
 

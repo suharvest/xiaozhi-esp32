@@ -2,14 +2,13 @@
 #define REMOTE_DISPLAY_HTTP_SERVER_H
 
 #include <esp_http_server.h>
-#include <esp_timer.h>
 #include <atomic>
 #include <cstdint>
 
 class SscmaCamera;  // forward decl — avoids pulling the heavy camera header here
 
-// Lightweight HTTP server for remote display control + UDP beacon discovery
-// + on-device face embedding for external (cloud) callers.
+// Lightweight HTTP server for remote display control and on-device face
+// embedding for external (cloud) callers.
 // Endpoints:
 //   POST /api/start_cast  {"ws_url":"ws://rpi:8765"}
 //   POST /api/stop_cast
@@ -21,18 +20,9 @@ public:
     RemoteDisplayHttpServer() = default;
     ~RemoteDisplayHttpServer();
 
-    // Start HTTP server on given port.
-    // with_discovery: true = also start UDP beacon for discovery (first-time pairing)
-    bool Start(int port = 80, bool with_discovery = true);
+    // Start the always-on HTTP server on the given port.
+    bool Start(int port = 80);
     void Stop();
-
-    // Stop only the UDP discovery beacon, leaving the HTTP server running.
-    // Used when screen-cast ends but the server must stay up for the always-on
-    // face embedding endpoint.
-    void StopBeaconOnly() { StopBeacon(); }
-
-    // Start the UDP discovery beacon on the already-running server (idempotent).
-    void StartDiscovery(int port = 80) { StartBeacon(port); }
 
     // Inject the camera used by the face-embedding endpoint. Must be set before
     // /api/face/embed is called; if null, the endpoint returns 503.
@@ -52,18 +42,10 @@ private:
     // GET /api/face/capture — lan option 3 后端拉图。X-Face-Token(pull_token) 鉴权。
     static esp_err_t HandleFaceCapture(httpd_req_t* req);
 
-    void StartBeacon(int port);
-    void StopBeacon();
-    void SendBeacon();
-    static void BeaconTimerCallback(void* arg);
-
     SscmaCamera* camera_ = nullptr;
     // Rate limit for /api/face/embed: timestamp (us) of the last *accepted* call.
     std::atomic<int64_t> last_face_call_us_{0};
     httpd_handle_t server_ = nullptr;
-    esp_timer_handle_t beacon_timer_ = nullptr;
-    int beacon_sock_ = -1;
-    int beacon_port_ = 80;
     static RemoteDisplayHttpServer* instance_;
 };
 
