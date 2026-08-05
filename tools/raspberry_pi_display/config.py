@@ -9,11 +9,6 @@ class Config:
     HOST = os.getenv("RD_HOST", "0.0.0.0")
     PORT = int(os.getenv("RD_PORT", "8765"))
 
-    # Device name for mDNS service discovery
-    # Set RD_DEVICE_NAME environment variable to customize
-    # Example: RD_DEVICE_NAME="客厅显示器" python server.py
-    DEVICE_NAME = os.getenv("RD_DEVICE_NAME", "Raspberry Pi Display")
-
     # Screen settings
     SCREEN_WIDTH = 412
     SCREEN_HEIGHT = 412

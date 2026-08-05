@@ -22,7 +22,6 @@ import struct
 import signal
 import logging
 import socket
-import traceback
 from pathlib import Path
 from typing import Optional, Set
 
@@ -35,16 +34,6 @@ from audio_player import AudioPlayer
 import subprocess
 import shutil
 import tempfile
-
-# Optional mDNS support
-try:
-    from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceStateChange
-    from zeroconf.asyncio import AsyncZeroconf
-    MDNS_AVAILABLE = True
-except ImportError:
-    MDNS_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("zeroconf not installed, mDNS service discovery disabled. Install with: pip install zeroconf")
 
 import aiohttp
 
@@ -204,12 +193,7 @@ class RemoteDisplayServer:
         self.web_dir = self.base_dir / "web"
         self.assets_dir = self.base_dir / "assets"
 
-        # mDNS service
-        self.async_zeroconf: Optional['AsyncZeroconf'] = None
-        self.service_info: Optional['ServiceInfo'] = None
-
-        # UDP beacon discovery
-        self._beacon_devices: dict = {}  # keyed by IP: {name, ip, port, board, version, last_seen}
+        self.device_ip: Optional[str] = None
 
         # Narrate mode
         self.narrate_config: dict = {
@@ -284,12 +268,22 @@ class RemoteDisplayServer:
         data = {k: self.narrate_config.get(k) for k in NARRATE_FIELDS}
         await asyncio.to_thread(self._atomic_write_json, self.narrate_config_path, data)
 
-    def _get_local_ip(self) -> str:
-        """Get local IP address for mDNS registration"""
+    def _get_local_ip(self, target_ip: Optional[str] = None) -> str:
+        """Get the local address that can route to a device, with safe fallbacks."""
         # Allow manual override via environment variable
         manual_ip = os.getenv("RD_LOCAL_IP")
         if manual_ip:
             return manual_ip
+
+        # Route-aware source selection is the most reliable choice on hosts
+        # with Ethernet/Wi-Fi/VPN/Docker interfaces. UDP connect sends no data.
+        if target_ip:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((target_ip, 9))
+                    return sock.getsockname()[0]
+            except OSError:
+                pass
 
         try:
             # Get all network interfaces
@@ -300,7 +294,7 @@ class RemoteDisplayServer:
             )
             # Look for 192.168.x.x or 10.x.x.x addresses (typical LAN)
             import re
-            for pattern in [r'192\.168\.\d+\.\d+', r'10\.\d+\.\d+\.\d+', r'172\.(1[6-9]|2\d|3[01])\.\d+\.\d+']:
+            for pattern in [r'192\.168\.\d+\.\d+', r'10\.\d+\.\d+\.\d+', r'172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+']:
                 matches = re.findall(pattern, result.stdout)
                 if matches:
                     return matches[0]
@@ -316,99 +310,6 @@ class RemoteDisplayServer:
             return ip
         except Exception:
             return "127.0.0.1"
-
-    async def start_mdns(self):
-        """Start mDNS service broadcast"""
-        if not MDNS_AVAILABLE:
-            logger.warning("mDNS not available, skipping service registration")
-            return
-
-        try:
-            self.async_zeroconf = AsyncZeroconf()
-
-            # Get local IP
-            local_ip = self._get_local_ip()
-            logger.info(f"Local IP for mDNS: {local_ip}")
-
-            # Get device name from config (sanitize for mDNS - replace spaces with dashes)
-            device_name = self.config.DEVICE_NAME
-            mdns_name = device_name.replace(" ", "-")
-
-            self.service_info = ServiceInfo(
-                "_xiaozhi-display._tcp.local.",  # Service type
-                f"{mdns_name}._xiaozhi-display._tcp.local.",  # Instance name
-                addresses=[socket.inet_aton(local_ip)],
-                port=self.config.PORT,
-                properties={
-                    "version": "1.0",
-                    "device": device_name
-                }
-            )
-            await self.async_zeroconf.async_register_service(self.service_info)
-            logger.info(f"mDNS service registered: {device_name} at {local_ip}:{self.config.PORT}")
-        except Exception as e:
-            logger.error(f"Failed to start mDNS service: {type(e).__name__}: {e}")
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(traceback.format_exc())
-
-    async def stop_mdns(self):
-        """Stop mDNS service"""
-        if self.async_zeroconf and self.service_info:
-            try:
-                await self.async_zeroconf.async_unregister_service(self.service_info)
-                await self.async_zeroconf.async_close()
-                logger.info("mDNS service unregistered")
-            except Exception as e:
-                logger.error(f"Failed to stop mDNS service: {e}")
-            finally:
-                self.async_zeroconf = None
-                self.service_info = None
-
-    async def start_beacon_listener(self):
-        """Listen for UDP beacon broadcasts from ESP32 devices on port 12321.
-        Uses asyncio.DatagramProtocol for compatibility with Python 3.9+."""
-        BEACON_PORT = 12321
-        server_ref = self
-
-        class BeaconProtocol(asyncio.DatagramProtocol):
-            def datagram_received(self, data: bytes, addr: tuple):
-                try:
-                    text = data.decode('utf-8', errors='ignore')
-                    if not text.startswith('XZWATCH|'):
-                        return
-                    parts = text.split('|')
-                    if len(parts) < 6:
-                        return
-                    # XZWATCH|name|ip|port|board|version
-                    _, name, ip, port_str, board, version = parts[:6]
-                    source_ip = addr[0]  # Use source IP as authoritative
-                    server_ref._beacon_devices[source_ip] = {
-                        "name": name,
-                        "ip": source_ip,
-                        "port": int(port_str),
-                        "board": board,
-                        "version": version,
-                        "last_seen": asyncio.get_event_loop().time(),
-                    }
-                except Exception as e:
-                    logger.debug(f"Failed to parse beacon: {e}")
-
-            def error_received(self, exc):
-                logger.debug(f"Beacon listener error: {exc}")
-
-        try:
-            loop = asyncio.get_event_loop()
-            kwargs = {"local_addr": ('0.0.0.0', BEACON_PORT), "allow_broadcast": True}
-            if hasattr(socket, 'SO_REUSEPORT'):
-                kwargs["reuse_port"] = True
-            transport, _ = await loop.create_datagram_endpoint(
-                BeaconProtocol, **kwargs
-            )
-            self._beacon_transport = transport
-            logger.info(f"UDP beacon listener started on port {BEACON_PORT}")
-        except Exception as e:
-            logger.error(f"Failed to start beacon listener: {e}")
-            self._beacon_transport = None
 
     async def handle_root(self, request: web.Request) -> web.Response:
         """Handle root path - WebSocket for device, HTML for browser"""
@@ -440,7 +341,7 @@ class RemoteDisplayServer:
                 if msg.type == WSMsgType.TEXT:
                     await self._handle_text_message(ws, msg.data, client_addr)
                 elif msg.type == WSMsgType.BINARY:
-                    await self._handle_binary_message(msg.data)
+                    await self._handle_binary_message(ws, msg.data)
                 elif msg.type == WSMsgType.ERROR:
                     logger.error(f"WebSocket error: {ws.exception()}")
         except Exception as e:
@@ -449,11 +350,14 @@ class RemoteDisplayServer:
             # Clean up
             if self.device_ws == ws:
                 self.device_ws = None
+                self.device_ip = None
+                self.current_ui_state = None
                 logger.info(f"Device disconnected: {client_addr}")
                 # Notify browsers that device disconnected
                 await self._broadcast_to_browsers({
                     "type": "device_status",
                     "connected": False,
+                    "address": client_addr,
                 })
             elif ws in self.browser_clients:
                 self.browser_clients.discard(ws)
@@ -474,10 +378,13 @@ class RemoteDisplayServer:
         # Send current device connection status to new client
         try:
             device_connected = self.device_ws is not None and not self.device_ws.closed
-            await ws.send_json({
+            status = {
                 "type": "device_status",
                 "connected": device_connected,
-            })
+            }
+            if self.device_ip:
+                status["address"] = self.device_ip
+            await ws.send_json(status)
         except Exception as e:
             logger.error(f"Failed to send device status: {e}")
 
@@ -512,7 +419,12 @@ class RemoteDisplayServer:
             if msg_type == "hello":
                 # Device hello message
                 logger.info(f"Device hello: {msg}")
+                old_ws = self.device_ws
                 self.device_ws = ws
+                self.device_ip = client_addr
+                self.current_ui_state = None
+                if old_ws is not None and old_ws is not ws and not old_ws.closed:
+                    await old_ws.close(code=1000, message=b"Replaced by new device")
 
                 # Send acknowledgment
                 response = {
@@ -531,6 +443,8 @@ class RemoteDisplayServer:
                 })
 
             elif msg_type == "ui_state":
+                if self.device_ws is not ws:
+                    return
                 # UI state update from device
                 self.current_ui_state = msg
                 self.ui_state_count += 1
@@ -541,23 +455,27 @@ class RemoteDisplayServer:
                     logger.info(f"Received {self.ui_state_count} UI state updates")
 
                 # Broadcast to all browser clients
-                await self._broadcast_to_browsers(msg)
+                await self._broadcast_to_browsers(msg, ws)
 
             elif msg_type == "preview_image":
+                if self.device_ws is not ws:
+                    return
                 # Preview image from camera - forward to browsers
                 image_size = msg.get("size", 0)
                 logger.info(f"Received preview image: {image_size} bytes")
 
                 # Broadcast to all browser clients
-                await self._broadcast_to_browsers(msg)
+                await self._broadcast_to_browsers(msg, ws)
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON: {e}")
         except Exception as e:
             logger.error(f"Error handling text message: {e}")
 
-    async def _handle_binary_message(self, data: bytes):
+    async def _handle_binary_message(self, ws: web.WebSocketResponse, data: bytes):
         """Handle binary message (audio frame)"""
+        if self.device_ws is not ws:
+            return
         if len(data) < 1:
             logger.warning("Message too short")
             return
@@ -569,16 +487,16 @@ class RemoteDisplayServer:
             logger.info(f"Received first binary audio message: type=0x{msg_type:02x}, size={len(data)}")
 
         if msg_type == MSG_TYPE_AUDIO_FRAME:
-            await self._handle_opus_audio(data)
+            await self._handle_opus_audio(ws, data)
         elif msg_type == MSG_TYPE_AUDIO_PCM:
             # Legacy PCM format (deprecated)
-            await self._handle_pcm_audio(data)
+            await self._handle_pcm_audio(ws, data)
         elif msg_type == MSG_TYPE_HEARTBEAT:
             pass  # Heartbeat, no action needed
         else:
             logger.debug(f"Unknown binary message type: 0x{msg_type:02x}, size={len(data)}")
 
-    async def _handle_opus_audio(self, data: bytes):
+    async def _handle_opus_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle Opus audio frame from ESP32, decode to PCM for browser/local playback"""
         if len(data) < 4:  # type(1) + sample_rate(2) + frame_duration(1)
             return
@@ -597,6 +515,8 @@ class RemoteDisplayServer:
         pcm_data = self._decode_opus(opus_data, sample_rate, frame_duration)
         if pcm_data is None:
             return
+        if self.device_ws is not ws:
+            return
 
         # Play locally (if enabled, default is browser-only)
         if self.audio_player:
@@ -604,7 +524,7 @@ class RemoteDisplayServer:
 
         # Forward PCM to browser clients (default audio path)
         if self.browser_clients:
-            await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
+            await self._broadcast_audio_to_browsers(pcm_data, sample_rate, ws)
 
         # Log periodically
         if self.audio_count == 1:
@@ -642,9 +562,10 @@ class RemoteDisplayServer:
             logger.error(f"Opus decode error: {e}")
             return None
 
-    async def _broadcast_audio_to_browsers(self, pcm_data: bytes, sample_rate: int):
+    async def _broadcast_audio_to_browsers(self, pcm_data: bytes, sample_rate: int,
+                                           source_ws: Optional[web.WebSocketResponse] = None):
         """Broadcast PCM audio to all browser clients"""
-        if not self.browser_clients:
+        if not self.browser_clients or (source_ws is not None and self.device_ws is not source_ws):
             return
 
         import base64
@@ -656,6 +577,8 @@ class RemoteDisplayServer:
 
         disconnected = set()
         for client in self.browser_clients:
+            if source_ws is not None and self.device_ws is not source_ws:
+                break
             try:
                 await client.send_json(audio_msg)
             except Exception:
@@ -663,7 +586,7 @@ class RemoteDisplayServer:
 
         self.browser_clients -= disconnected
 
-    async def _handle_pcm_audio(self, data: bytes):
+    async def _handle_pcm_audio(self, ws: web.WebSocketResponse, data: bytes):
         """Handle legacy PCM audio frame (deprecated, for backward compatibility)"""
         if len(data) < 9:  # type(1) + sample_rate(4) + samples(4)
             return
@@ -676,18 +599,23 @@ class RemoteDisplayServer:
             return
 
         self.audio_count += 1
+        if self.device_ws is not ws:
+            return
         if self.audio_player:
             self.audio_player.play_pcm(pcm_data, sample_rate)
-        await self._broadcast_audio_to_browsers(pcm_data, sample_rate)
+        await self._broadcast_audio_to_browsers(pcm_data, sample_rate, ws)
 
-    async def _broadcast_to_browsers(self, msg: dict):
+    async def _broadcast_to_browsers(self, msg: dict,
+                                     source_ws: Optional[web.WebSocketResponse] = None):
         """Broadcast message to all connected browser clients"""
-        if not self.browser_clients:
+        if not self.browser_clients or (source_ws is not None and self.device_ws is not source_ws):
             return
 
         # Send to all clients, remove disconnected ones
         disconnected = set()
         for client in self.browser_clients:
+            if source_ws is not None and self.device_ws is not source_ws:
+                break
             try:
                 await client.send_json(msg)
             except Exception as e:
@@ -908,81 +836,6 @@ class RemoteDisplayServer:
 
     # ========== Cast Control APIs ==========
 
-    async def handle_get_devices(self, request: web.Request) -> web.Response:
-        """GET /api/devices - Discover ESP32 devices via UDP beacon (with mDNS fallback)"""
-        devices = []
-
-        # First: collect from beacon cache (prune entries older than 10s)
-        now = asyncio.get_event_loop().time()
-        stale_keys = [ip for ip, d in self._beacon_devices.items()
-                      if now - d["last_seen"] > 10]
-        for k in stale_keys:
-            del self._beacon_devices[k]
-
-        for d in self._beacon_devices.values():
-            devices.append({
-                "name": d["name"],
-                "ip": d["ip"],
-                "port": d["port"],
-                "board": d.get("board", ""),
-                "version": d.get("version", ""),
-            })
-
-        # Fallback: if no beacon devices found, try mDNS
-        if not devices and MDNS_AVAILABLE:
-            try:
-                loop = asyncio.get_event_loop()
-                devices = await loop.run_in_executor(None, self._discover_devices_sync)
-            except Exception as e:
-                logger.error(f"mDNS discovery failed: {e}")
-
-        logger.info(f"Discovered {len(devices)} device(s)")
-        return web.json_response({"success": True, "devices": devices})
-
-    def _discover_devices_sync(self) -> list:
-        """Synchronous mDNS browse (runs in thread executor)"""
-        import time
-        import threading
-
-        devices = []
-        event = threading.Event()
-
-        def on_service_state_change(zeroconf: Zeroconf, service_type: str,
-                                    name: str, state_change: ServiceStateChange):
-            if state_change != ServiceStateChange.Added:
-                return
-            info = zeroconf.get_service_info(service_type, name)
-            if info is None:
-                return
-            addresses = info.parsed_addresses()
-            if not addresses:
-                return
-            ip = addresses[0]
-            port = info.port
-            props = {k.decode(): v.decode() if isinstance(v, bytes) else v
-                     for k, v in info.properties.items()}
-            instance_name = name.replace(f".{service_type}", "")
-            devices.append({
-                "name": instance_name,
-                "ip": ip,
-                "port": port,
-                "board": props.get("board", ""),
-                "version": props.get("version", ""),
-            })
-            event.set()
-
-        zc = Zeroconf()
-        browser = ServiceBrowser(zc, "_xiaozhi-watcher._tcp.local.",
-                                 handlers=[on_service_state_change])
-        # Wait: up to 3s total, but return early if at least one device found
-        event.wait(timeout=3)
-        if devices:
-            # Give a short extra window for more devices
-            time.sleep(0.5)
-        browser.cancel()
-        zc.close()
-        return devices
-
     async def handle_cast_start(self, request: web.Request) -> web.Response:
         """POST /api/cast/start - Tell ESP32 to connect back to our WS"""
         try:
@@ -994,7 +847,7 @@ class RemoteDisplayServer:
                 return web.json_response({"success": False, "error": "Missing ip"}, status=400)
 
             # Build our WS URL that ESP32 should connect to
-            local_ip = self._get_local_ip()
+            local_ip = self._get_local_ip(ip)
             ws_url = f"ws://{local_ip}:{self.config.PORT}"
 
             # POST to ESP32's HTTP server
@@ -1003,8 +856,16 @@ class RemoteDisplayServer:
                 async with session.post(esp32_url,
                                         json={"ws_url": ws_url},
                                         timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    result = await resp.json()
-                    return web.json_response(result)
+                    text = await resp.text()
+                    try:
+                        result = json.loads(text)
+                    except json.JSONDecodeError:
+                        result = {
+                            "success": False,
+                            "error": "Device returned invalid JSON",
+                            "device_status": resp.status,
+                        }
+                    return web.json_response(result, status=resp.status)
 
         except aiohttp.ClientError as e:
             logger.error(f"Failed to reach ESP32: {e}")
@@ -1027,8 +888,16 @@ class RemoteDisplayServer:
             async with aiohttp.ClientSession() as session:
                 async with session.post(esp32_url,
                                         timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    result = await resp.json()
-                    return web.json_response(result)
+                    text = await resp.text()
+                    try:
+                        result = json.loads(text)
+                    except json.JSONDecodeError:
+                        result = {
+                            "success": False,
+                            "error": "Device returned invalid JSON",
+                            "device_status": resp.status,
+                        }
+                    return web.json_response(result, status=resp.status)
 
         except aiohttp.ClientError as e:
             logger.error(f"Failed to reach ESP32: {e}")
@@ -1039,11 +908,6 @@ class RemoteDisplayServer:
 
     async def cleanup(self):
         """Cleanup resources"""
-        if hasattr(self, '_beacon_transport') and self._beacon_transport:
-            self._beacon_transport.close()
-            self._beacon_transport = None
-            logger.info("UDP beacon listener stopped")
-        await self.stop_mdns()
         await self.mcp_manager.stop()
         if self.audio_player:
             self.audio_player.close()
@@ -1153,8 +1017,7 @@ async def main():
     app.router.add_post("/api/narrate", server.handle_narrate)
     app.router.add_post("/api/mcp", server.handle_mcp_control)
 
-    # Cast control APIs (RPi discovers ESP32, sends HTTP to start/stop casting)
-    app.router.add_get("/api/devices", server.handle_get_devices)
+    # Cast control APIs (the user enters the ESP32 IP manually)
     app.router.add_post("/api/cast/start", server.handle_cast_start)
     app.router.add_post("/api/cast/stop", server.handle_cast_stop)
 
@@ -1184,12 +1047,6 @@ async def main():
     site = web.TCPSite(runner, server.config.HOST, server.config.PORT)
     await site.start()
 
-    # Start UDP beacon listener for ESP32 discovery
-    await server.start_beacon_listener()
-
-    # Start mDNS service broadcast
-    await server.start_mdns()
-
     # Auto-start MCP if previously configured with autoConnect
     async def maybe_autostart_mcp():
         async with server._narrate_config_lock:
@@ -1204,8 +1061,7 @@ async def main():
 
     logger.info(f"Server running on http://{server.config.HOST}:{server.config.PORT}")
     logger.info(f"Browser UI: http://localhost:{server.config.PORT}")
-    logger.info(f"Device WebSocket: ws://localhost:{server.config.PORT}/device")
-    logger.info(f"mDNS service: _xiaozhi-display._tcp.local. ({server.config.DEVICE_NAME})")
+    logger.info(f"Device WebSocket: ws://localhost:{server.config.PORT}/")
 
     # Wait forever
     try:

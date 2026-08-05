@@ -83,20 +83,15 @@ uv run python server.py
 
 访问 `http://localhost:8765` 或 `http://树莓派IP:8765`
 
-### 3. 配置 ESP32
+### 3. 输入设备 IP 并连接
 
-编辑 `main/boards/sensecap-watcher/config.h`：
+确保树莓派与 SenseCAP Watcher 在同一局域网。在页面中打开左上角设置，在“投屏控制”中输入 Watcher 的 `IP[:HTTP端口]`（固件默认端口为 80），点击“连接”。
 
-```cpp
-#define REMOTE_DISPLAY_ENABLED      true
-#define REMOTE_DISPLAY_SERVER_URL   "ws://你的IP地址:8765"
-```
+树莓派会通过 Watcher 常驻的 HTTP 接口发起投屏，Watcher 随后反向连接树莓派的 WebSocket；无需 UDP/mDNS 自动发现，也无需重新编译固件写死服务器地址。
 
-然后重新编译烧录固件。
+### 4. 查看状态
 
-### 4. 连接
-
-设备启动后会自动连接到服务器，浏览器会实时显示 UI 状态。
+只有收到 Watcher 的 WebSocket 在线状态后，页面才显示“已连接”。上次输入的设备地址会保留，断开或刷新页面后可直接重连。
 
 ## 快捷键（浏览器中）
 
@@ -111,9 +106,9 @@ uv run python server.py
 |------|--------|------|
 | `RD_HOST` | `0.0.0.0` | 监听地址 |
 | `RD_PORT` | `8765` | 监听端口 |
+| `RD_LOCAL_IP` | 自动选择 | 指定 Watcher 反向连接的树莓派局域网 IP（多网卡时可覆盖）|
 | `RD_LOCAL_AUDIO` | `0` | 设为 `1` 启用服务端音频直出（PyAudio → HDMI）|
 | `RD_DATA_DIR` | `./data` | 持久化数据目录（存放 narrate_config.json）|
-| `RD_DEVICE_NAME` | `Xiaozhi Display` | mDNS 和 Web UI 中显示的设备名 |
 | `RD_SCALE` | `1.5` | 显示缩放倍数 |
 | `RD_NO_AUDIO` | `0` | 设为 `1` 完全禁用音频 |
 

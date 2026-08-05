@@ -5,8 +5,8 @@
 #   docker compose up -d
 #
 # Configure via environment variables or .env file:
-#   RD_DEVICE_NAME=客厅显示器
 #   RD_PORT=8765
+#   RD_LOCAL_IP=192.168.1.10  (optional override for multi-interface hosts)
 #   RD_LOCAL_AUDIO=1  (enable server-side audio, default: browser only)
 #   PUID=1000  (user ID for PulseAudio, run `id -u` to check)
 
@@ -21,18 +21,16 @@ services:
 
     # Network settings
     # Note: ports mapping is ignored when using host network mode
-    network_mode: host  # Required for mDNS service discovery
+    network_mode: host  # Allow the ESP32 to reach the reverse WebSocket directly on the LAN
 
     # Audio device passthrough (for HDMI/speaker output)
     devices:
       - /dev/snd:/dev/snd
 
-    # Share system sockets for audio and mDNS
+    # Share the system audio socket
     volumes:
       # PulseAudio socket (use PUID env var for user ID)
       - /run/user/${PUID:-1000}/pulse:/run/user/${PUID:-1000}/pulse:ro
-      # D-Bus for Avahi/mDNS (optional, may not exist on all systems)
-      - /var/run/dbus:/var/run/dbus:ro
       # Persistent data volume for config and uploads
       - xiaozhi-display-data:/data
       # Custom assets (optional)
@@ -40,10 +38,10 @@ services:
 
     # Environment configuration
     environment:
-      # Device name shown in mDNS and Web UI
-      - RD_DEVICE_NAME=${RD_DEVICE_NAME:-Xiaozhi Display}
       # Server port (default: 8765)
       - RD_PORT=${RD_PORT:-8765}
+      # Optional LAN address advertised to the ESP32 for its reverse WebSocket
+      - RD_LOCAL_IP=${RD_LOCAL_IP:-}
       # Enable server-side audio (HDMI/speaker), default: browser only
       - RD_LOCAL_AUDIO=${RD_LOCAL_AUDIO:-0}
       # Display scale factor

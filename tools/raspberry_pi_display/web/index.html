@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Xiaozhi Remote Display</title>
+    <link rel="icon" href="data:,">
     <style>
         * {
             margin: 0;
@@ -1034,44 +1035,15 @@
             color: #a6e3a1;
         }
 
-        .cast-badge.searching {
+        .cast-badge.connecting {
             background: rgba(249, 226, 175, 0.2);
             color: #f9e2af;
             animation: pulse 1.5s ease-in-out infinite;
         }
 
-        .cast-controls {
-            display: flex;
-            gap: 8px;
-        }
-
-        .cast-search-btn {
-            flex: 1;
-            padding: 10px 16px;
-            border-radius: 10px;
-            border: 1px solid rgba(137, 180, 250, 0.25);
-            background: linear-gradient(135deg, rgba(137, 180, 250, 0.1) 0%, rgba(116, 199, 236, 0.1) 100%);
-            color: #89b4fa;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-
-        .cast-search-btn:hover:not(:disabled) {
-            background: linear-gradient(135deg, rgba(137, 180, 250, 0.2) 0%, rgba(116, 199, 236, 0.2) 100%);
-            border-color: rgba(137, 180, 250, 0.4);
-        }
-
-        .cast-search-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
         .cast-manual-row {
             display: flex;
             gap: 8px;
-            margin-top: 8px;
         }
 
         .cast-manual-row input[type="text"] {
@@ -1124,100 +1096,6 @@
             cursor: not-allowed;
         }
 
-        .cast-device-list {
-            margin-top: 8px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .cast-device-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.04);
-        }
-
-        .cast-device-info {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            min-width: 0;
-            flex: 1;
-        }
-
-        .cast-device-name {
-            color: #cdd6f4;
-            font-size: 14px;
-            font-weight: 500;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .cast-device-addr {
-            color: #6c7086;
-            font-size: 12px;
-        }
-
-        .cast-connect-btn {
-            padding: 5px 14px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            flex-shrink: 0;
-            margin-left: 10px;
-        }
-
-        .cast-connect-btn.connect {
-            background: linear-gradient(135deg, rgba(166, 227, 161, 0.15) 0%, rgba(148, 226, 213, 0.15) 100%);
-            border-color: rgba(166, 227, 161, 0.25);
-            color: #a6e3a1;
-        }
-
-        .cast-connect-btn.connect:hover {
-            background: linear-gradient(135deg, rgba(166, 227, 161, 0.25) 0%, rgba(148, 226, 213, 0.25) 100%);
-            border-color: rgba(166, 227, 161, 0.4);
-        }
-
-        .cast-connect-btn.disconnect {
-            background: rgba(243, 139, 168, 0.15);
-            border-color: rgba(243, 139, 168, 0.25);
-            color: #f38ba8;
-        }
-
-        .cast-connect-btn.disconnect:hover {
-            background: rgba(243, 139, 168, 0.25);
-            border-color: rgba(243, 139, 168, 0.4);
-        }
-
-        .cast-connect-btn:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-
-        .cast-empty {
-            color: #585b70;
-            font-size: 13px;
-            text-align: center;
-            padding: 8px;
-        }
-
-        .cast-empty a {
-            color: #89b4fa;
-            text-decoration: none;
-        }
-
-        .cast-empty a:hover {
-            text-decoration: underline;
-        }
-
     </style>
 </head>
 <body>
@@ -1253,10 +1131,8 @@
                 <label>投屏控制</label>
                 <span id="cast-badge" class="cast-badge">未连接</span>
             </div>
-            <button id="cast-search-btn" class="cast-search-btn">搜索设备</button>
-            <div id="cast-device-list" class="cast-device-list"></div>
-            <div id="cast-manual-section" class="cast-manual-row" style="display:none;">
-                <input type="text" id="cast-manual-ip" placeholder="IP 地址，如 192.168.1.100">
+            <div class="cast-manual-row">
+                <input type="text" id="cast-manual-ip" placeholder="设备 IP[:端口]，如 192.168.1.100">
                 <button id="cast-manual-btn" class="cast-manual-btn">连接</button>
             </div>
         </div>
@@ -1369,8 +1245,16 @@
         // Web Audio API for PCM playback
         let audioContext = null;
         let audioQueue = [];
-        let isPlaying = false;
-        const AUDIO_BUFFER_SIZE = 10; // Max queued audio chunks
+        let queuedAudioDuration = 0;
+        let nextAudioStartTime = 0;
+        let audioPrimed = false;
+        let audioSessionEpoch = 0;
+        let audioDropCount = 0;
+        const scheduledAudioSources = new Set();
+        const AUDIO_PREBUFFER_FRAMES = 3;
+        const AUDIO_QUEUE_MAX_FRAMES = 5;
+        const AUDIO_MAX_BUFFER_SECONDS = 0.30;
+        const AUDIO_INITIAL_START_DELAY = 0.03;
 
         // Base size
         const BASE_SIZE = 412;
@@ -1470,9 +1354,14 @@
 
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
+                resetAudioPlayback();
                 connectionStatus.textContent = 'Disconnected';
                 connectionStatus.className = 'disconnected';
                 connectionStatus.style.opacity = '1';
+                // Without the control WebSocket the live device state is
+                // unknown. Show disconnected until the next status snapshot;
+                // updateCastBadge intentionally keeps the saved target IP.
+                updateCastBadge(false);
 
                 // Reconnect after 3s
                 setTimeout(connect, 3000);
@@ -1495,85 +1384,155 @@
                 // Server sends list of available emojis
                 data.emojis.forEach(name => availableEmojis.add(name));
             } else if (data.type === 'device_status') {
-                updateCastBadge(data.connected);
+                resetAudioPlayback();
+                updateCastBadge(data.connected, data.address);
             }
         }
 
         // Initialize Web Audio API
         function initAudio() {
-            if (audioContext) return;
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            console.log('Audio context initialized:', audioContext.sampleRate + 'Hz');
+            if (audioContext && audioContext.state !== 'closed') return true;
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('Audio context initialized:', audioContext.sampleRate + 'Hz');
+                return true;
+            } catch (error) {
+                audioContext = null;
+                console.warn('Failed to initialize audio context:', error);
+                resetAudioPlayback();
+                return false;
+            }
+        }
+
+        function recordAudioDrop(count = 1) {
+            audioDropCount += count;
+            if (audioDropCount === 1 || audioDropCount % 50 === 0) {
+                console.warn(`Browser audio dropped ${audioDropCount} frame(s)`);
+            }
+        }
+
+        function resetAudioPlayback() {
+            audioSessionEpoch += 1;
+            for (const source of scheduledAudioSources) {
+                try {
+                    source.stop();
+                } catch (error) {
+                    // A source that already ended is harmless during reset.
+                }
+            }
+            scheduledAudioSources.clear();
+            audioQueue = [];
+            queuedAudioDuration = 0;
+            nextAudioStartTime = 0;
+            audioPrimed = false;
+        }
+
+        function scheduledAudioDuration() {
+            if (!audioContext || scheduledAudioSources.size === 0) return 0;
+            return Math.max(0, nextAudioStartTime - audioContext.currentTime);
+        }
+
+        function pumpAudioQueue() {
+            if (!audioContext || audioContext.state !== 'running') return;
+
+            if (scheduledAudioSources.size === 0 &&
+                nextAudioStartTime > 0 && nextAudioStartTime <= audioContext.currentTime) {
+                nextAudioStartTime = 0;
+                audioPrimed = false;
+            }
+
+            if (!audioPrimed) {
+                if (audioQueue.length < AUDIO_PREBUFFER_FRAMES) return;
+                audioPrimed = true;
+                nextAudioStartTime = audioContext.currentTime + AUDIO_INITIAL_START_DELAY;
+            }
+
+            while (audioQueue.length > 0) {
+                const buffer = audioQueue.shift();
+                queuedAudioDuration = Math.max(0, queuedAudioDuration - buffer.duration);
+                const source = audioContext.createBufferSource();
+                const epoch = audioSessionEpoch;
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.onended = () => {
+                    scheduledAudioSources.delete(source);
+                    if (epoch !== audioSessionEpoch) return;
+                    pumpAudioQueue();
+                };
+
+                try {
+                    scheduledAudioSources.add(source);
+                    source.start(nextAudioStartTime);
+                    nextAudioStartTime += buffer.duration;
+                } catch (error) {
+                    scheduledAudioSources.delete(source);
+                    console.warn('Failed to schedule audio buffer:', error);
+                    resetAudioPlayback();
+                    return;
+                }
+            }
         }
 
         // Handle PCM audio from server
-        function handleAudio(data) {
+        async function handleAudio(data) {
             if (!audioStarted || !data.data) return;
+            const epoch = audioSessionEpoch;
 
             // Initialize audio context on first audio (needs user interaction)
-            if (!audioContext) {
-                initAudio();
-            }
+            if (!initAudio()) return;
 
             // Resume if suspended (browser may suspend when page loses focus)
-            if (audioContext.state === 'suspended') {
-                audioContext.resume();
+            if (audioContext.state !== 'running') {
+                try {
+                    await audioContext.resume();
+                    if (audioContext.state !== 'running') {
+                        throw new Error(`AudioContext state is ${audioContext.state}`);
+                    }
+                } catch (error) {
+                    console.warn('Failed to resume audio context:', error);
+                    resetAudioPlayback();
+                    return;
+                }
             }
+            if (epoch !== audioSessionEpoch || audioContext.state !== 'running') return;
 
-            // Decode base64 PCM data
-            const binaryString = atob(data.data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
+            let audioBuffer;
+            try {
+                const binaryString = atob(data.data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
 
-            // Convert Int16 PCM to Float32 for Web Audio API
-            const int16 = new Int16Array(bytes.buffer);
-            const float32 = new Float32Array(int16.length);
-            for (let i = 0; i < int16.length; i++) {
-                float32[i] = int16[i] / 32768.0; // Normalize to [-1, 1]
-            }
-
-            // Queue audio chunk (drop old if full to keep realtime)
-            if (audioQueue.length >= AUDIO_BUFFER_SIZE) {
-                audioQueue.shift();
-            }
-            audioQueue.push({
-                samples: float32,
-                sampleRate: data.sample_rate
-            });
-
-            // Start playback if not already playing
-            if (!isPlaying) {
-                playNextChunk();
-            }
-        }
-
-        // Play queued audio chunks
-        function playNextChunk() {
-            if (audioQueue.length === 0) {
-                isPlaying = false;
+                const int16 = new Int16Array(bytes.buffer);
+                audioBuffer = audioContext.createBuffer(1, int16.length, data.sample_rate);
+                const float32 = audioBuffer.getChannelData(0);
+                for (let i = 0; i < int16.length; i++) {
+                    float32[i] = int16[i] / 32768.0;
+                }
+            } catch (error) {
+                console.warn('Failed to decode audio frame:', error);
+                recordAudioDrop();
                 return;
             }
 
-            isPlaying = true;
-            const chunk = audioQueue.shift();
-
-            try {
-                // Create audio buffer
-                const buffer = audioContext.createBuffer(1, chunk.samples.length, chunk.sampleRate);
-                buffer.getChannelData(0).set(chunk.samples);
-
-                // Create source and play
-                const source = audioContext.createBufferSource();
-                source.buffer = buffer;
-                source.connect(audioContext.destination);
-                source.onended = playNextChunk;
-                source.start();
-            } catch (e) {
-                console.error('Audio playback error:', e);
-                isPlaying = false;
+            const scheduledDuration = scheduledAudioDuration();
+            while (audioQueue.length > 0 &&
+                   (audioQueue.length >= AUDIO_QUEUE_MAX_FRAMES ||
+                    scheduledDuration + queuedAudioDuration + audioBuffer.duration > AUDIO_MAX_BUFFER_SECONDS)) {
+                const dropped = audioQueue.shift();
+                queuedAudioDuration = Math.max(0, queuedAudioDuration - dropped.duration);
+                recordAudioDrop();
             }
+
+            if (audioQueue.length >= AUDIO_QUEUE_MAX_FRAMES ||
+                scheduledDuration + queuedAudioDuration + audioBuffer.duration > AUDIO_MAX_BUFFER_SECONDS) {
+                recordAudioDrop();
+                return;
+            }
+            audioQueue.push(audioBuffer);
+            queuedAudioDuration += audioBuffer.duration;
+            pumpAudioQueue();
         }
 
         // Show preview image from camera
@@ -1665,8 +1624,8 @@
             }
 
             // Try loading
-            tryLoad('gif')
-                .catch(() => tryLoad('png'))
+            tryLoad('png')
+                .catch(() => tryLoad('gif'))
                 .then(src => {
                     emojiCache[emotion] = src;
                     emojiImg.src = src;
@@ -1720,8 +1679,21 @@
             startOverlay.classList.add('hidden');
             // Initialize audio context on user interaction (required by browsers)
             initAudio();
-            if (audioContext && audioContext.state === 'suspended') {
-                audioContext.resume();
+            if (audioContext && audioContext.state !== 'running') {
+                const epoch = audioSessionEpoch;
+                audioContext.resume()
+                    .then(() => {
+                        if (epoch !== audioSessionEpoch) return;
+                        if (audioContext.state !== 'running') {
+                            console.warn(`Failed to resume audio context: state is ${audioContext.state}`);
+                            resetAudioPlayback();
+                        }
+                    })
+                    .catch((error) => {
+                        if (epoch !== audioSessionEpoch) return;
+                        console.warn('Failed to resume audio context:', error);
+                        resetAudioPlayback();
+                    });
             }
             connect();
         });
@@ -1902,6 +1874,13 @@
                 mcpStartBtn.disabled = false;
                 mcpStopBtn.disabled = true;
                 mcpRestartBtn.disabled = true;
+            }
+        }
+
+        async function fetchMcpStatus() {
+            const data = await apiCall('/api/config', { method: 'GET' });
+            if (data && !data.error) {
+                updateMcpStatus(Boolean(data.mcpConnected));
             }
         }
 
@@ -2249,112 +2228,90 @@
 
         // ========== Cast Control ==========
         const castBadge = document.getElementById('cast-badge');
-        const castSearchBtn = document.getElementById('cast-search-btn');
-        const castDeviceList = document.getElementById('cast-device-list');
+        const castManualIp = document.getElementById('cast-manual-ip');
+        const castManualBtn = document.getElementById('cast-manual-btn');
+        let castDeviceConnected = false;
+        let castRequestPending = false;
+        let castStatusTimer = null;
 
-        // Restore last connected device from localStorage
-        let castConnectedDevice = null;
-        try {
-            const saved = localStorage.getItem('cast-device');
-            if (saved) castConnectedDevice = JSON.parse(saved);
-        } catch (e) {}
-
-        function saveCastDevice(dev) {
-            castConnectedDevice = dev;
-            if (dev) {
-                localStorage.setItem('cast-device', JSON.stringify(dev));
-            } else {
-                localStorage.removeItem('cast-device');
+        function loadCastTarget() {
+            try {
+                const saved = JSON.parse(localStorage.getItem('cast-device-target') || 'null');
+                if (saved && saved.ip) {
+                    castManualIp.value = saved.port && saved.port !== 80
+                        ? `${saved.ip}:${saved.port}` : saved.ip;
+                }
+            } catch (e) {
+                console.warn('Failed to restore cast target:', e);
             }
         }
 
-        function updateCastBadge(connected) {
-            if (connected) {
+        function parseCastTarget() {
+            const raw = castManualIp.value.trim();
+            if (!raw) return null;
+            let ip = raw;
+            let port = 80;
+            const separator = raw.lastIndexOf(':');
+            if (separator > 0) {
+                const parsedPort = Number(raw.slice(separator + 1));
+                if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+                    return null;
+                }
+                ip = raw.slice(0, separator);
+                port = parsedPort;
+            }
+            return ip ? { ip, port } : null;
+        }
+
+        function saveCastTarget(target = parseCastTarget()) {
+            if (target) {
+                localStorage.setItem('cast-device-target', JSON.stringify(target));
+            }
+        }
+
+        function renderCastStatus() {
+            if (castDeviceConnected) {
                 castBadge.textContent = '已连接';
                 castBadge.className = 'cast-badge connected';
+                castManualBtn.textContent = castRequestPending ? '断开中...' : '断开';
+            } else if (castRequestPending) {
+                castBadge.textContent = '连接中';
+                castBadge.className = 'cast-badge connecting';
+                castManualBtn.textContent = '连接中...';
             } else {
                 castBadge.textContent = '未连接';
                 castBadge.className = 'cast-badge';
-                saveCastDevice(null);
-                renderDeviceList(lastDiscoveredDevices);
+                castManualBtn.textContent = '连接';
             }
+            castManualBtn.disabled = castRequestPending;
+            castManualIp.disabled = castRequestPending || castDeviceConnected;
         }
 
-        let lastDiscoveredDevices = [];
-
-        function renderDeviceList(devices, afterSearch) {
-            lastDiscoveredDevices = devices;
-            castDeviceList.innerHTML = '';
-            castManualSection.style.display = 'none';
-            if (!devices || devices.length === 0) {
-                if (afterSearch) {
-                    castDeviceList.innerHTML = '<div class="cast-empty">未发现设备，<a href="#" id="cast-manual-link">手动输入 IP</a></div>';
-                    document.getElementById('cast-manual-link').addEventListener('click', (e) => {
-                        e.preventDefault();
-                        castManualSection.style.display = 'flex';
-                        castManualIp.focus();
-                    });
-                }
-                return;
+        function updateCastBadge(connected, address = '') {
+            castDeviceConnected = Boolean(connected);
+            if (castDeviceConnected && address) {
+                const savedTarget = parseCastTarget();
+                const activeTarget = {
+                    ip: address,
+                    port: savedTarget && savedTarget.ip === address ? savedTarget.port : 80
+                };
+                castManualIp.value = activeTarget.port !== 80
+                    ? `${activeTarget.ip}:${activeTarget.port}` : activeTarget.ip;
+                saveCastTarget(activeTarget);
             }
-            devices.forEach(dev => {
-                const item = document.createElement('div');
-                item.className = 'cast-device-item';
-
-                const isConnected = castConnectedDevice &&
-                    castConnectedDevice.ip === dev.ip &&
-                    castConnectedDevice.port === dev.port;
-
-                item.innerHTML = `
-                    <div class="cast-device-info">
-                        <span class="cast-device-name">${dev.name || 'SenseCAP Watcher'}</span>
-                        <span class="cast-device-addr">${dev.ip}:${dev.port}</span>
-                    </div>
-                    <button class="cast-connect-btn ${isConnected ? 'disconnect' : 'connect'}"
-                            data-ip="${dev.ip}" data-port="${dev.port}">
-                        ${isConnected ? '断开' : '连接'}
-                    </button>
-                `;
-                const btn = item.querySelector('.cast-connect-btn');
-                btn.addEventListener('click', () => {
-                    if (isConnected) {
-                        stopCast(dev.ip, dev.port);
-                    } else {
-                        startCast(dev.ip, dev.port);
-                    }
-                });
-                castDeviceList.appendChild(item);
-            });
-        }
-
-        async function searchDevices() {
-            castSearchBtn.disabled = true;
-            castSearchBtn.textContent = '搜索中...';
-            castBadge.className = 'cast-badge searching';
-            castBadge.textContent = '搜索中';
-
-            const result = await apiCall('/api/devices');
-            castSearchBtn.disabled = false;
-            castSearchBtn.textContent = '搜索设备';
-
-            // Restore badge state
-            if (castConnectedDevice) {
-                updateCastBadge(true);
-            } else {
-                castBadge.textContent = '未连接';
-                castBadge.className = 'cast-badge';
+            castRequestPending = false;
+            if (castStatusTimer) {
+                clearTimeout(castStatusTimer);
+                castStatusTimer = null;
             }
-
-            if (result.success) {
-                renderDeviceList(result.devices, true);
-            } else {
-                castDeviceList.innerHTML = `<div class="cast-empty">搜索失败: ${result.error || '未知错误'}</div>`;
-            }
+            renderCastStatus();
         }
 
         async function startCast(ip, port) {
-            // Disable all buttons during operation
-            castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = true);
+            const target = { ip, port };
+            saveCastTarget(target);
+            castRequestPending = true;
+            renderCastStatus();
 
             const result = await apiCall('/api/cast/start', {
                 method: 'POST',
@@ -2362,17 +2319,25 @@
             });
 
             if (result.success) {
-                saveCastDevice({ ip, port });
-                updateCastBadge(true);
-                renderDeviceList(lastDiscoveredDevices);
+                // Only device_status:true may claim a live connection. Allow a
+                // short delivery window, then restore the button for retry.
+                if (!castDeviceConnected) {
+                    castStatusTimer = setTimeout(() => {
+                        castRequestPending = false;
+                        castStatusTimer = null;
+                        renderCastStatus();
+                    }, 3000);
+                }
             } else {
+                castRequestPending = false;
+                renderCastStatus();
                 alert('连接失败: ' + (result.error || '未知错误'));
-                castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = false);
             }
         }
 
         async function stopCast(ip, port) {
-            castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = true);
+            castRequestPending = true;
+            renderCastStatus();
 
             const result = await apiCall('/api/cast/stop', {
                 method: 'POST',
@@ -2380,37 +2345,39 @@
             });
 
             if (result.success) {
-                saveCastDevice(null);
-                updateCastBadge(false);
-                renderDeviceList(lastDiscoveredDevices);
+                // Keep the target. The WebSocket device_status:false event is
+                // authoritative for the connection badge.
+                castStatusTimer = setTimeout(() => {
+                    castRequestPending = false;
+                    castStatusTimer = null;
+                    renderCastStatus();
+                }, 3000);
             } else {
+                castRequestPending = false;
+                renderCastStatus();
                 alert('断开失败: ' + (result.error || '未知错误'));
-                castDeviceList.querySelectorAll('.cast-connect-btn').forEach(b => b.disabled = false);
             }
         }
 
-        castSearchBtn.addEventListener('click', searchDevices);
-
-        // Manual IP connect
-        const castManualSection = document.getElementById('cast-manual-section');
-        const castManualIp = document.getElementById('cast-manual-ip');
-        const castManualBtn = document.getElementById('cast-manual-btn');
-
         castManualBtn.addEventListener('click', () => {
-            const raw = castManualIp.value.trim();
-            if (!raw) return;
-            let ip = raw, port = 80;
-            if (raw.includes(':')) {
-                const parts = raw.split(':');
-                ip = parts[0];
-                port = parseInt(parts[1], 10) || 80;
+            const target = parseCastTarget();
+            if (!target) {
+                alert('请输入有效的设备 IP[:端口]');
+                return;
             }
-            startCast(ip, port);
+            if (castDeviceConnected) {
+                stopCast(target.ip, target.port);
+            } else {
+                startCast(target.ip, target.port);
+            }
         });
 
+        castManualIp.addEventListener('change', () => saveCastTarget());
         castManualIp.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') castManualBtn.click();
         });
+        loadCastTarget();
+        renderCastStatus();
 
     </script>
 </body>

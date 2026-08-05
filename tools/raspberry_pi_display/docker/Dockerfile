@@ -73,7 +73,6 @@ EXPOSE 8765
 ENV RD_HOST=0.0.0.0
 ENV RD_PORT=8765
 ENV RD_LOCAL_AUDIO=0
-ENV RD_DEVICE_NAME="Xiaozhi Display"
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8765/ || exit 1
