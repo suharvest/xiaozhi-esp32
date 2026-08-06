@@ -1136,38 +1136,15 @@ void SscmaCamera::InitializeMcpTools() {
     face_rec.SetCooldownInterval(detect_invoke_interval_sec.load());
 
     auto& mcp_server = McpServer::GetInstance();
-        // 获取模型参数配置
-    mcp_server.AddTool("self.model.param_get",
-        "获取当前视觉模型检测的参数配置信息。\n"
-        "返回结果包含：\n"
-        "  `threshold`: 检测置信度阈值 (0-100)，低于此值的检测结果将被忽略；\n"
-        "  `interval`: 触发对话后的冷却时间(秒)，防止频繁打断；\n"
-        "  `duration`: 持续检测确认时间(秒)；\n"
-        "  `target`: 当前关注的检测目标索引。",
-        PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            Settings settings("model", false);
-            int threshold = settings.GetInt("threshold", 75);
-            int interval = settings.GetInt("interval", 5);
-            int duration = settings.GetInt("duration", 3);
-            int target_type = settings.GetInt("target", 0);
-            
-            std::string result = "{\"threshold\":" + std::to_string(threshold) + 
-                            ",\"interval\":" + std::to_string(interval) + 
-                            ",\"duration\":" + std::to_string(duration) + 
-                            ",\"target_type\":" + std::to_string(target_type) + "}";
-            return result;
-    });
-
-    
-    // 设置模型参数配置
+    // 设置/查询模型参数配置（不带参数=查询，与 self.vision.mode 同款模式）
     mcp_server.AddTool("self.model.param_set",
-        "配置视觉模型检测参数。当用户希望调整检测灵敏度、频率或特定目标时使用。\n"
-        "参数(均为可选，未提供的参数将保持当前设置不变)：\n"
-        "  `threshold`: 置信度阈值 (0-100)。提高此值可减少误报，但可能漏检；\n"
-        "  `interval`: 冷却时间(秒)。设置对话结束后多久内不再触发检测；\n"
-        "  `duration`: 持续检测时间(秒)。\n"
-        "  `target`: 设置检测目标的索引 ID。",
+        "配置或查询视觉模型检测参数。不带任何参数调用=查询当前配置。\n"
+        "参数(均为可选，未提供的保持不变)：\n"
+        "  `threshold`: 置信度阈值 (0-100)。提高可减少误报，但可能漏检；\n"
+        "  `interval`: 冷却时间(秒)。对话结束后多久内不再触发检测；\n"
+        "  `duration`: 持续检测确认时间(秒)。\n"
+        "  `target`: 检测目标的索引 ID。\n"
+        "返回：应用后的完整配置 {threshold, interval, duration, target}。",
         PropertyList({
             Property("threshold", kPropertyTypeInteger, -1, -1, 100),
             Property("interval", kPropertyTypeInteger, -1, -1, 60),
@@ -1225,7 +1202,21 @@ void SscmaCamera::InitializeMcpTools() {
                 // target_type parameter not provided, skip
             }
 
-            return "{\"status\": \"success\", \"message\": \"Detection configuration updated\"}";
+            // Always echo the resulting config — this is also the query path
+            // (parameterless call sets nothing and just reads back), which is
+            // why the old self.model.param_get tool is gone.
+            // `target_type` is emitted alongside `target` for wire compat with
+            // param_get's old response shape.
+            int cur_threshold = settings.GetInt("threshold", 75);
+            int cur_interval = settings.GetInt("interval", 5);
+            int cur_duration = settings.GetInt("duration", 3);
+            int cur_target = settings.GetInt("target", 0);
+            return std::string(
+                "{\"threshold\":" + std::to_string(cur_threshold) +
+                ",\"interval\":" + std::to_string(cur_interval) +
+                ",\"duration\":" + std::to_string(cur_duration) +
+                ",\"target\":" + std::to_string(cur_target) +
+                ",\"target_type\":" + std::to_string(cur_target) + "}");
         });
 
     // 推理开关获取
