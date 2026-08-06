@@ -104,8 +104,8 @@ public:
     //     the LVGL display); the MCP tool passes true to keep the on-screen preview.
     // out_status / out_reason are optional; out_reason points at a static string
     // ("busy" for kBusy, or the FaceEmbedBlockReason() token for kBlocked).
-    // NOTE: ::FaceRecognition (global scope) — the class also has a member method
-    // named FaceRecognition(), which would otherwise shadow the class name here.
+    // NOTE: ::FaceRecognition (global scope) — kept explicit for clarity; it also
+    // guards against a member ever re-shadowing the class name here.
     ::FaceRecognition::SpeakerIdentity IdentifyOnce(bool allow_preview,
                                                     IdentifyStatus* out_status = nullptr,
                                                     const char** out_reason = nullptr);
@@ -117,7 +117,6 @@ public:
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
     virtual std::string Explain(const std::string& question);
-    virtual std::string FaceRecognition();
 
     // Configured standby mode (persisted face_recognition_en_), used by the
     // watcher status-bar mode indicator. Stable across device state.
