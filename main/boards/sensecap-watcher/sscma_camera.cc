@@ -1980,30 +1980,6 @@ void SscmaCamera::InitializeFaceMcpTools() {
             return result;
         });
 
-    // Tool: Set face recognition threshold
-    mcp_server.AddTool("self.face.threshold",
-        "设置人脸识别的置信度阈值。\n"
-        "参数：\n"
-        "  `threshold`: 置信度阈值 (0-100)，越高越严格。默认60。\n"
-        "返回：当前阈值设置",
-        PropertyList({
-            Property("threshold", kPropertyTypeInteger, 60, 0, 100)
-        }),
-        [&face_rec](const PropertyList& properties) -> ReturnValue {
-            Settings settings("face", true);
-            try {
-                const Property& threshold_prop = properties["threshold"];
-                int threshold = threshold_prop.value<int>();
-                settings.SetInt("threshold", threshold);
-                face_rec.SetMatchThreshold((float)threshold / 100.0f);
-                ESP_LOGI(TAG, "Set face recognition threshold to %d%%", threshold);
-            } catch (const std::runtime_error&) {
-                // threshold not provided -> treat as query
-            }
-            int cur_threshold = settings.GetInt("threshold", 60);
-            return std::string("{\"threshold\":" + std::to_string(cur_threshold) + "}");
-        });
-
     // Tool: query the current conversation speaker (for permission-gated commands).
     // State is owned board-locally by FaceRecognition; the camera task freezes it
     // at conversation start and clears it at conversation end.
