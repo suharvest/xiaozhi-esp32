@@ -1224,21 +1224,13 @@ void SscmaCamera::InitializeMcpTools() {
     // exclusive modes (replaces the old self.model.enable / self.face.enable /
     // self.face.familiar_mode trio).
     mcp_server.AddTool("self.vision.mode",
-        "设置或查询摄像头主动唤醒模式（统一总开关）。\n"
-        "四种互斥模式：\n"
-        "  0 = 关闭：不主动唤醒。\n"
-        "  1 = 人脸检测：检测到画面里有人就主动发起对话（只判断'有没有人'，不识别身份）。\n"
-        "  2 = 人脸识别：检测人脸并识别身份（熟人报名字、陌生人报 person detected）。\n"
-        "  3 = 熟人免打扰(DND)：仅陌生人触发唤醒，已录入的熟人不打扰。\n"
-        "使用场景：'关闭主动唤醒/别盯着我'→0；'开启人脸检测/物体检测/看到人叫我/有人来提醒我'→1；"
-        "'开启人脸识别/认人/识别是谁/看到人报名字'→2；'只在陌生人来时提醒/开启免打扰'→3。\n"
-        "【重要区分】'人脸检测'(判断有没有人)=1，'人脸识别'(认出是谁)=2，二者不同，不要混淆；"
-        "只要用户没明确要求'识别身份/认人/报名字'，'检测到人/看到人'一律用 1。\n"
-        "参数：\n"
-        "  `mode`: (可选) 整数 0-3。不带 mode 参数=查询当前模式。\n"
-        "返回：`mode`=设置的目标模式，`applied`=当前实际生效的模式，`status`=active/switching。"
-        "status=switching 表示切换已受理：对话中设置的模式会在对话结束后几秒内自动生效，属正常现象，"
-        "直接告知用户已设置即可，不需要重试。",
+        "设置或查询摄像头主动唤醒模式（四种互斥；不带 mode 参数=查询）。\n"
+        "  0=关闭  1=人脸检测（只判断有没有人，不识别身份）\n"
+        "  2=人脸识别（熟人报名字，陌生人报 person detected）  3=熟人免打扰（仅陌生人唤醒）\n"
+        "【重要区分】'检测到人/看到人'一律用 1；只有用户明确要求'识别身份/认人/报名字'才用 2。\n"
+        "常见说法：'别盯着我/关掉'→0；'物体检测/有人来提醒我'→1；'认人'→2；'免打扰'→3。\n"
+        "返回 mode=目标模式，applied=实际生效模式，status=active/switching。switching 表示"
+        "对话中的切换会在对话结束后几秒生效，属正常，告知用户已设置即可，不要重试。",
         PropertyList({
             // -1 sentinel = "mode not provided" (query). A real default here
             // would be snapshotted at registration time (before NVS state is
