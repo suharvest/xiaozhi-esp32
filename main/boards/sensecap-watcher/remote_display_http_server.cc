@@ -222,7 +222,7 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceEmbed(httpd_req_t* req) {
     }
 
     // Encode the 128 float32 LE (512 bytes) as base64 — identical wire format to
-    // self.face.capture_embedding so the server side needs zero conversion.
+    // the warehouse face library so the server side needs zero conversion.
     const size_t raw_len = sizeof(float) * FACE_EMBEDDING_DIM;  // 512
     const size_t b64_buf = ((raw_len + 2) / 3) * 4 + 16;
     uint8_t* b64 = static_cast<uint8_t*>(heap_caps_malloc(b64_buf, MALLOC_CAP_SPIRAM));
