@@ -1263,54 +1263,6 @@ void SscmaCamera::InitializeMcpTools() {
             ret += "}";
             return ret;
         });
-
-    // Raw JPEG capture for server-side face verification flow.
-    // Mirrors the public self.camera.take_photo registered in mcp_server.cc
-    // (which posts the JPEG to a vision-explain URL), but instead returns the
-    // base64-encoded JPEG bytes directly to the MCP caller. xiaozhi-server's
-    // FaceProvider uses this to inject `face_image_b64` into warehouse MCP
-    // write tools — the LLM does not call this directly.
-    mcp_server.AddTool("self.camera.capture_raw",
-        "Capture one JPEG frame and return it as base64. Used by xiaozhi-server "
-        "runtime (face verification, etc); not intended for chat replies.",
-        PropertyList(),
-        [this](const PropertyList&) -> ReturnValue {
-            // Lower priority during camera capture (matches take_photo pattern).
-            TaskPriorityReset priority_reset(1);
-
-            if (!this->Capture()) {
-                throw std::runtime_error("Failed to capture photo");
-            }
-            if (this->jpeg_data_.buf == nullptr || this->jpeg_data_.len == 0) {
-                throw std::runtime_error("Empty JPEG buffer after Capture");
-            }
-
-            // Base64-encode the JPEG from PSRAM. 4/3 inflation + headroom.
-            const size_t raw_len = this->jpeg_data_.len;
-            const size_t b64_buf_size = ((raw_len + 2) / 3) * 4 + 64;
-            uint8_t* b64 = static_cast<uint8_t*>(
-                heap_caps_malloc(b64_buf_size, MALLOC_CAP_SPIRAM));
-            if (b64 == nullptr) {
-                throw std::runtime_error("OOM allocating base64 buffer");
-            }
-            size_t b64_len = 0;
-            int rc = mbedtls_base64_encode(b64, b64_buf_size, &b64_len,
-                                           this->jpeg_data_.buf, raw_len);
-            if (rc != 0) {
-                heap_caps_free(b64);
-                throw std::runtime_error("base64 encode failed");
-            }
-
-            std::string result;
-            result.reserve(b64_len + 32);
-            result.append("{\"image_b64\":\"");
-            result.append(reinterpret_cast<const char*>(b64), b64_len);
-            result.append("\",\"len\":");
-            result.append(std::to_string(raw_len));
-            result.append("}");
-            heap_caps_free(b64);
-            return result;
-        });
 }
 
 void SscmaCamera::SetExplainUrl(const std::string& url, const std::string& token) {
