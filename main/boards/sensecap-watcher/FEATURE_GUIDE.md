@@ -351,7 +351,9 @@ if (result.matched) {
 | `self.face.list` | 列出人脸 | "有哪些人脸"、"你认识谁" |
 | `self.face.identify` | 现场识别一次 | "你能认出我吗"、"我是谁" |
 | `self.conversation.speaker` | 查当前说话人 | "你知道在跟谁说话吗" |
-| `self.face.threshold` | 查/设识别阈值 | 调试用，一般不由语音触发 |
+
+> 识别阈值不再有 MCP 工具，改为只读 NVS `face/threshold`（默认 40，见
+> `sscma_camera.cc` 启动时的 `SetMatchThreshold`）。调阈值需要改 NVS 后重启。
 
 > `self.face.identify` 与 `self.conversation.speaker` **仅供闲聊体验，不是鉴权路径**。
 > 出入库等操作的身份校验由后端直连 `GET /api/face/current-speaker?fresh=1` 完成，
