@@ -6,6 +6,7 @@
 #include "settings.h"
 
 #include <vector>
+#include <cmath>
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -487,31 +488,42 @@ esp_err_t RemoteDisplayHttpServer::HandleFaceBatchUpdate(httpd_req_t* req) {
 
 // ---------- Backend-direct identity pull (§8c/§9) ----------
 
-// Build the {valid,name,subject_id,similarity,mode,age_ms} response body, reusing
-// the same minimal JSON string escaping as the MCP face tools.
+// Build the {valid,name,subject_id,similarity,mode,age_ms} response body with
+// cJSON so names and mode values containing control characters stay valid JSON.
 static std::string BuildSpeakerJson(const FaceRecognition::SpeakerIdentity& s,
                                     const std::string& mode, int64_t age_ms) {
-    std::string name;  // minimal JSON string escaping
-    for (char c : s.name) {
-        if (c == '"' || c == '\\') name += '\\';
-        name += c;
+    static constexpr const char* kFallback =
+        "{\"valid\":false,\"name\":\"\",\"subject_id\":0,"
+        "\"similarity\":0,\"mode\":\"\",\"age_ms\":0,\"conv_seq\":0}";
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return kFallback;
     }
-    char sim[16];
-    snprintf(sim, sizeof(sim), "%.4f", s.similarity);
-    std::string r = "{\"valid\":";
-    r += (s.valid ? "true" : "false");
-    r += ",\"name\":\"" + name + "\",\"subject_id\":";
-    r += std::to_string(s.subject_id);
-    r += ",\"similarity\":";
-    r += sim;
-    r += ",\"mode\":\"" + mode + "\",\"age_ms\":";
-    r += std::to_string(age_ms);
-    // conv_seq: bumped each conversation rising edge. Backend keys 仅首次
-    // (verify-once-per-conversation) caching on it.
-    r += ",\"conv_seq\":";
-    r += std::to_string(FaceRecognition::GetInstance().GetConversationSeq());
-    r += "}";
-    return r;
+
+    // Round to the same four-decimal precision used by the previous formatter.
+    double similarity = std::round(static_cast<double>(s.similarity) * 10000.0) / 10000.0;
+    bool ok =
+        cJSON_AddBoolToObject(root, "valid", s.valid) != nullptr &&
+        cJSON_AddStringToObject(root, "name", s.name.c_str()) != nullptr &&
+        cJSON_AddNumberToObject(root, "subject_id", s.subject_id) != nullptr &&
+        cJSON_AddNumberToObject(root, "similarity", similarity) != nullptr &&
+        cJSON_AddStringToObject(root, "mode", mode.c_str()) != nullptr &&
+        cJSON_AddNumberToObject(root, "age_ms", age_ms) != nullptr &&
+        cJSON_AddNumberToObject(root, "conv_seq",
+            FaceRecognition::GetInstance().GetConversationSeq()) != nullptr;
+    if (!ok) {
+        cJSON_Delete(root);
+        return kFallback;
+    }
+
+    char* encoded = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (encoded == nullptr) {
+        return kFallback;
+    }
+    std::string result(encoded);
+    cJSON_free(encoded);
+    return result;
 }
 
 esp_err_t RemoteDisplayHttpServer::HandleFaceCurrentSpeaker(httpd_req_t* req) {

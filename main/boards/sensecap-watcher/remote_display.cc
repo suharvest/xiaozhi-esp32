@@ -9,9 +9,11 @@
 #include <cJSON.h>
 #include <mbedtls/base64.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <algorithm>
+#include <limits>
 
 #define TAG "RemoteDisplay"
 
@@ -164,12 +166,14 @@ void RemoteDisplay::RetireWebSocketLocked(bool schedule_cleanup) {
     {
         std::lock_guard<std::mutex> send_lock(send_mutex_);
         websocket_->Close();
-        retired_websockets_.push_back(std::move(websocket_));
+        retired_websockets_.push_back({std::move(websocket_), esp_timer_get_time()});
     }
 
     if (schedule_cleanup && cleanup_timer_) {
-        cleanup_due_ = false;
-        if (xTimerReset(cleanup_timer_, 0) != pdPASS) {
+        // Keep the timer anchored to the oldest retired socket. Resetting it on
+        // every reconnect can postpone cleanup forever during a reconnect storm.
+        if (!xTimerIsTimerActive(cleanup_timer_) &&
+            xTimerStart(cleanup_timer_, 0) != pdPASS) {
             ESP_LOGW(TAG, "Failed to schedule delayed WebSocket cleanup");
             // Keep the socket alive rather than risk freeing it while a callback
             // is unwinding. A later reconnect/cleanup timer can reclaim it.
@@ -194,10 +198,45 @@ void RemoteDisplay::CleanupDisconnectedSocketLocked() {
     }
 
     if (!retired_websockets_.empty()) {
+        constexpr int64_t kCleanupDelayUs = 1000 * 1000;
+        const int64_t now_us = esp_timer_get_time();
+        size_t freed_count = 0;
+        int64_t earliest_remaining_us = std::numeric_limits<int64_t>::max();
         std::lock_guard<std::mutex> send_lock(send_mutex_);
-        retired_websockets_.clear();
-        ESP_LOGI(TAG, "WebSocket resources freed by worker, free internal: %lu",
-            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        auto keep_from = std::remove_if(
+            retired_websockets_.begin(), retired_websockets_.end(),
+            [now_us, &freed_count](const RetiredWebSocket& retired) {
+                if (now_us - retired.retired_at_us >= kCleanupDelayUs) {
+                    ++freed_count;
+                    return true;
+                }
+                return false;
+            });
+        retired_websockets_.erase(keep_from, retired_websockets_.end());
+        for (const auto& retired : retired_websockets_) {
+            earliest_remaining_us = std::min(earliest_remaining_us, retired.retired_at_us);
+        }
+
+        if (freed_count > 0) {
+            ESP_LOGI(TAG, "%u WebSocket resources freed by worker, free internal: %lu",
+                (unsigned)freed_count,
+                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+
+        // Newer sockets may not yet have completed their own safety delay.
+        // Re-arm for the earliest remaining deadline rather than freeing them
+        // together with an older socket.
+        if (earliest_remaining_us != std::numeric_limits<int64_t>::max() && cleanup_timer_) {
+            int64_t remaining_us = kCleanupDelayUs - (now_us - earliest_remaining_us);
+            uint32_t remaining_ms = static_cast<uint32_t>(std::max<int64_t>(1, (remaining_us + 999) / 1000));
+            TickType_t remaining_ticks = pdMS_TO_TICKS(remaining_ms);
+            if (remaining_ticks == 0) {
+                remaining_ticks = 1;
+            }
+            if (xTimerChangePeriod(cleanup_timer_, remaining_ticks, 0) != pdPASS) {
+                ESP_LOGW(TAG, "Failed to re-arm delayed WebSocket cleanup");
+            }
+        }
     }
 }
 
@@ -298,8 +337,9 @@ bool RemoteDisplay::StartLocked(const std::string& server_url, int timeout_ms,
         }
         // Defer WebSocket cleanup to free internal RAM
         // Can't destroy from within its own callback chain (TCP receive task UAF)
-        cleanup_due_ = false;
-        if (!cleanup_timer_ || xTimerReset(cleanup_timer_, 0) != pdPASS) {
+        if (!cleanup_timer_ ||
+            (!xTimerIsTimerActive(cleanup_timer_) &&
+             xTimerStart(cleanup_timer_, 0) != pdPASS)) {
             // Keep the socket alive; the reconnect worker can retire it before
             // creating the replacement even if the cleanup timer is unavailable.
             ScheduleReconnect(lifecycle_epoch_.load());

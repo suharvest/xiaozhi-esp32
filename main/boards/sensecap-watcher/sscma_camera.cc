@@ -1267,24 +1267,39 @@ bool SscmaCamera::Capture() {
 }
 
 int SscmaCamera::CaptureJpegLocked(bool (*sink)(void*, const uint8_t*, size_t), void* ctx) {
-    // 与 IdentifyOnce/current-speaker 拉取串行化，避免并发抢帧/覆盖 jpeg_data_。
-    std::unique_lock<std::mutex> lk(identify_op_mutex_, std::try_to_lock);
-    if (!lk.owns_lock()) {
-        return 503;  // 另一路 identify/capture 正在进行
+    uint8_t* jpeg_copy = nullptr;
+    size_t jpeg_len = 0;
+    {
+        // 与 IdentifyOnce/current-speaker 拉取串行化，避免并发抢帧/覆盖 jpeg_data_。
+        std::unique_lock<std::mutex> lk(identify_op_mutex_, std::try_to_lock);
+        if (!lk.owns_lock()) {
+            return 503;  // 另一路 identify/capture 正在进行
+        }
+        // TOCTOU：拿锁后复查阻断原因（问候识别 active 等），与 IdentifyOnce 一致。
+        const char* block = FaceEmbedBlockReason();
+        if (block != nullptr) {
+            ESP_LOGW(TAG, "CaptureJpegLocked blocked: %s", block);
+            return 503;
+        }
+        TaskPriorityReset priority_reset(1);  // 抓拍期间降优先级（take_photo 同款）
+        if (!Capture() || jpeg_data_.buf == nullptr || jpeg_data_.len == 0) {
+            ESP_LOGE(TAG, "CaptureJpegLocked: Capture failed / empty JPEG");
+            return 500;
+        }
+        jpeg_len = jpeg_data_.len;
+        jpeg_copy = static_cast<uint8_t*>(
+            heap_caps_malloc(jpeg_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (jpeg_copy == nullptr) {
+            ESP_LOGE(TAG, "CaptureJpegLocked: OOM copying %zu-byte JPEG", jpeg_len);
+            return 500;
+        }
+        memcpy(jpeg_copy, jpeg_data_.buf, jpeg_len);
     }
-    // TOCTOU：拿锁后复查阻断原因（问候识别 active 等），与 IdentifyOnce 一致。
-    const char* block = FaceEmbedBlockReason();
-    if (block != nullptr) {
-        ESP_LOGW(TAG, "CaptureJpegLocked blocked: %s", block);
-        return 503;
-    }
-    TaskPriorityReset priority_reset(1);  // 抓拍期间降优先级（take_photo 同款）
-    if (!Capture() || jpeg_data_.buf == nullptr || jpeg_data_.len == 0) {
-        ESP_LOGE(TAG, "CaptureJpegLocked: Capture failed / empty JPEG");
-        return 500;
-    }
-    // 持锁期间发送，jpeg_data_ 不会被并发抓拍覆盖（零拷贝）。
-    return sink(ctx, jpeg_data_.buf, jpeg_data_.len) ? 200 : 500;
+
+    // 网络发送可能阻塞；使用独立副本，避免长时间占用 identify_op_mutex_。
+    bool sent = sink != nullptr && sink(ctx, jpeg_copy, jpeg_len);
+    heap_caps_free(jpeg_copy);
+    return sent ? 200 : 500;
 }
 
 // Single owner of the preview marshaling (§8e F4). Copies the decoded RGB565
@@ -1482,7 +1497,13 @@ std::string SscmaCamera::Explain(const std::string& question) {
     }
 
     auto network = Board::GetInstance().GetNetwork();
+    if (!network) {
+        return "{\"success\": false, \"message\": \"Network not available\"}";
+    }
     auto http = network->CreateHttp(3);
+    if (!http) {
+        return "{\"success\": false, \"message\": \"Failed to create HTTP client\"}";
+    }
     // 构造multipart/form-data请求体
     std::string boundary = "----ESP32_CAMERA_BOUNDARY";
     
@@ -1582,7 +1603,21 @@ int SscmaCamera::RemoteRecognize(const std::string& base_url, const std::string&
     }
 
     auto network = Board::GetInstance().GetNetwork();
+    if (!network) {
+        ESP_LOGE(TAG, "RemoteRecognize: network unavailable");
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        return -3;
+    }
     auto http = network->CreateHttp(3);
+    if (!http) {
+        ESP_LOGE(TAG, "RemoteRecognize: failed to create HTTP client");
+        heap_caps_free(base64_buf);
+        cJSON_Delete(json);
+        free(json_str);
+        return -3;
+    }
     http->SetHeader("Content-Type", "application/json");
     if (!token.empty()) {
         http->SetHeader("Authorization", ("Bearer " + token).c_str());

@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 #include <vector>
 #include <deque>
 
@@ -66,6 +67,11 @@ public:
     void ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration);
 
 private:
+    struct RetiredWebSocket {
+        std::unique_ptr<WebSocket> socket;
+        int64_t retired_at_us;
+    };
+
     struct AudioFrame {
         std::vector<uint8_t> payload;
         int sample_rate;
@@ -93,7 +99,7 @@ private:
     std::unique_ptr<WebSocket> websocket_;
     // WebSocket callbacks can originate inside WebSocket::OnTcpData(). Moving
     // an old socket here keeps it alive until the delayed worker cleanup runs.
-    std::vector<std::unique_ptr<WebSocket>> retired_websockets_;
+    std::vector<RetiredWebSocket> retired_websockets_;
     TimerHandle_t cleanup_timer_ = nullptr;
 
     std::atomic<bool> running_{false};

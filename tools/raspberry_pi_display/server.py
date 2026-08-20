@@ -420,11 +420,20 @@ class RemoteDisplayServer:
                 # Device hello message
                 logger.info(f"Device hello: {msg}")
                 old_ws = self.device_ws
+                if old_ws is not None and old_ws is not ws and not old_ws.closed:
+                    # Preserve the active device session. A second unauthenticated
+                    # hello must not be able to evict a healthy device.
+                    logger.warning(f"Rejecting duplicate device connection from {client_addr}")
+                    await ws.send_json({
+                        "type": "hello_ack",
+                        "status": "busy",
+                        "mode": "ui_state"
+                    })
+                    await ws.close(code=1008, message=b"Device already connected")
+                    return
                 self.device_ws = ws
                 self.device_ip = client_addr
                 self.current_ui_state = None
-                if old_ws is not None and old_ws is not ws and not old_ws.closed:
-                    await old_ws.close(code=1000, message=b"Replaced by new device")
 
                 # Send acknowledgment
                 response = {
