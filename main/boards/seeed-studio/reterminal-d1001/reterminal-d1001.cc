@@ -1,7 +1,7 @@
 #include "wifi_board.h"
 
-#include "audio/codecs/no_audio_codec.h"
 #include "config.h"
+#include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
 
 #include <esp_log.h>
@@ -11,6 +11,7 @@
 class ReTerminalD1001Board : public WifiBoard {
 private:
     ReTerminalD1001Expander expander_;
+    ReTerminalD1001AudioCodec* audio_codec_ = nullptr;
 
 public:
     ReTerminalD1001Board() {
@@ -21,17 +22,13 @@ public:
         // ready (pop-free order).
         expander_.Initialize();
         expander_.ApplyMinimalPowerSequence();
+
+        audio_codec_ = new ReTerminalD1001AudioCodec(expander_.GetI2cBus(), AUDIO_INPUT_SAMPLE_RATE,
+                                                     AUDIO_OUTPUT_SAMPLE_RATE);
+        audio_codec_->SetPowerAmpCallback([this](bool on) { expander_.SetPowerAmp(on); });
     }
 
-    virtual AudioCodec* GetAudioCodec() override {
-        // Placeholder until the dedicated ES8311/ES7210 codec lands.
-        // The D1001 uses separate TX (GPIO30-33) and RX (GPIO26-29) I2S
-        // buses, so it cannot reuse BoxAudioCodec as-is.
-        static NoAudioCodecDuplex audio_codec(
-            AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            GPIO_NUM_NC, GPIO_NUM_NC, GPIO_NUM_NC, GPIO_NUM_NC);
-        return &audio_codec;
-    }
+    virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }
 };
 
 DECLARE_BOARD(ReTerminalD1001Board);
