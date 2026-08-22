@@ -26,8 +26,15 @@
 #define AUDIO_RX_LRCK_PIN GPIO_NUM_27
 #define AUDIO_RX_DIN_PIN GPIO_NUM_26
 
-// NS4150B PA enable is PCA9535 P13 / EXP_GPO11 (bit 11), active high.
-#define PA_ENABLE_EXPANDER_BIT 11
+// PCA9535 (address 0x20) output bits, from the Seeed D1001 BSP pin table.
+// The expander drives power and panel control signals; see
+// reterminal_d1001_expander.{h,cc} for the wrappers that own these bits.
+#define EXPANDER_BIT_LCD_PWR_EN 0    // EXP_PIN_NUM_0: display power enable
+#define EXPANDER_BIT_LCD_BACKLIGHT_EN 7  // EXP_PIN_NUM_7: backlight power enable
+#define EXPANDER_BIT_PWR_HOLD 8       // EXP_PIN_NUM_8: system power hold (vdd_3v3)
+#define EXPANDER_BIT_LCD_RST 2        // EXP_PIN_NUM_2: LCD reset
+#define EXPANDER_BIT_PA_ENABLE 11     // EXP_PIN_NUM_11: NS4150B power amp enable
+#define EXPANDER_BIT_TOUCH_RST 12     // EXP_PIN_NUM_12: GSL3670 touch reset
 
 // GSL3670 touch controller bus (I2C0) and interrupt.
 #define TOUCH_I2C_PORT I2C_NUM_0

@@ -1,0 +1,55 @@
+#ifndef XIAOZHI_BOARDS_SEEED_STUDIO_RETERMINAL_D1001_EXPANDER_H_
+#define XIAOZHI_BOARDS_SEEED_STUDIO_RETERMINAL_D1001_EXPANDER_H_
+
+#include <driver/i2c_master.h>
+#include <esp_io_expander.h>
+
+/**
+ * Owns the D1001 audio-control I2C bus (I2C1) and the PCA9535 IO expander
+ * that drives the board power and panel control signals.
+ *
+ * Only the signals needed by the first XiaoZhi port are exposed here. The
+ * camera, LTE, battery and SD related expander pins are intentionally left
+ * untouched so this wrapper does not grow beyond the port scope.
+ */
+class ReTerminalD1001Expander {
+public:
+    ReTerminalD1001Expander() = default;
+    ~ReTerminalD1001Expander();
+
+    /// Create the I2C1 master bus and the PCA9535 device.
+    /// On failure, prints the reason and leaves the expander disabled.
+    void Initialize();
+
+    bool IsInitialized() const { return expander_ != nullptr; }
+
+    /// Raw access for board-level users that need the shared I2C bus
+    /// (e.g. the audio codec control interface).
+    i2c_master_bus_handle_t GetI2cBus() const { return i2c_bus_; }
+    esp_io_expander_handle_t GetHandle() const { return expander_; }
+
+    /// Set an output pin. Logs and ignores when the expander is unavailable.
+    void SetLevel(uint32_t pin_mask, bool level);
+
+    // Named power and panel controls.
+    void SetPowerHold(bool on);
+    void SetLcdPower(bool on);
+    void SetLcdReset(bool asserted);
+    void SetBacklightPower(bool on);
+    void SetTouchReset(bool asserted);
+    void SetPowerAmp(bool on);
+
+    /// Assert power-hold and release the resets without enabling the power
+    /// amplifier or backlight. This is the minimal sequence that keeps the
+    /// board alive for the first port milestone.
+    void ApplyMinimalPowerSequence();
+
+    /// Drop power-hold so the board can power off.
+    void PowerOff();
+
+private:
+    i2c_master_bus_handle_t i2c_bus_ = nullptr;
+    esp_io_expander_handle_t expander_ = nullptr;
+};
+
+#endif  // XIAOZHI_BOARDS_SEEED_STUDIO_RETERMINAL_D1001_EXPANDER_H_

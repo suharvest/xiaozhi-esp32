@@ -2,15 +2,25 @@
 
 #include "audio/codecs/no_audio_codec.h"
 #include "config.h"
+#include "reterminal_d1001_expander.h"
 
 #include <esp_log.h>
 
 #define TAG "ReTerminalD1001"
 
 class ReTerminalD1001Board : public WifiBoard {
+private:
+    ReTerminalD1001Expander expander_;
+
 public:
     ReTerminalD1001Board() {
-        ESP_LOGI(TAG, "reTerminal D1001 board skeleton");
+        ESP_LOGI(TAG, "initializing reTerminal D1001");
+
+        // Minimal power bring-up: I2C1 + PCA9535, power hold and panel
+        // rails. The power amplifier stays off until the audio path is
+        // ready (pop-free order).
+        expander_.Initialize();
+        expander_.ApplyMinimalPowerSequence();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
