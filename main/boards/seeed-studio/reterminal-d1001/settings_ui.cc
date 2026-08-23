@@ -27,6 +27,7 @@ constexpr int kIconButtonSize = 64;
 constexpr int kRowHeight = 96;
 constexpr int kButtonHeight = 72;
 constexpr int kCardRadius = 16;
+constexpr int kKeyboardHeight = 360;  // four rows of ~84 px keys
 constexpr int kGap = 16;
 
 // Accent used for primary actions and the selected state. Fixed values so they
@@ -221,6 +222,43 @@ lv_obj_t* SettingsUi::MakeScrollArea(lv_obj_t* parent) {
     lv_obj_set_scroll_dir(area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(area, LV_SCROLLBAR_MODE_AUTO);
     return area;
+}
+
+lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea) {
+    // Push the keyboard to the bottom of the flex column instead of letting it
+    // stretch over the whole remaining height (the default stretched every key
+    // to ~200 px with the 14 px default font).
+    lv_obj_t* spacer = lv_obj_create(parent);
+    lv_obj_remove_style_all(spacer);
+    lv_obj_set_width(spacer, LV_PCT(100));
+    lv_obj_set_flex_grow(spacer, 1);
+    lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* kb = lv_keyboard_create(parent);
+    lv_obj_set_width(kb, LV_PCT(100));
+    lv_obj_set_height(kb, kKeyboardHeight);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(kb, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(kb, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(kb, 8, LV_PART_MAIN);
+
+    // Key caps: theme text font (the keyboard otherwise uses the 14 px LVGL
+    // default), rounded, card colour, accent when pressed/checked.
+    const lv_font_t* font = lv_obj_get_style_text_font(lv_screen_active(), LV_PART_MAIN);
+    if (font != nullptr) {
+        lv_obj_set_style_text_font(kb, font, LV_PART_ITEMS);
+    }
+    lv_obj_set_style_radius(kb, 12, LV_PART_ITEMS);
+    lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, CardColor(), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(kAccentColor), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(kb, lv_color_hex(kAccentColor), LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_text_color(kb, lv_color_white(), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(kb, lv_color_white(), LV_PART_ITEMS | LV_STATE_CHECKED);
+
+    lv_keyboard_set_textarea(kb, textarea);
+    return kb;
 }
 
 lv_obj_t* SettingsUi::MakeCard(lv_obj_t* parent) {
@@ -511,10 +549,7 @@ void SettingsUi::ShowManualSsid() {
     MakeTextButton(body, MATERIAL_SYMBOLS_ARROW_FORWARD, "下一步", Action::WifiManualNext, 0,
                    true);
 
-    keyboard_ = lv_keyboard_create(body);
-    lv_obj_set_width(keyboard_, LV_PCT(100));
-    lv_obj_set_flex_grow(keyboard_, 1);
-    lv_keyboard_set_textarea(keyboard_, textarea_);
+    keyboard_ = MakeKeyboard(body, textarea_);
 }
 
 void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
@@ -547,10 +582,7 @@ void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
         MakeTextButton(row, MATERIAL_SYMBOLS_CHECK, "连接", Action::WifiConnectConfirm, 0, true);
     lv_obj_set_width(connect, LV_PCT(64));
 
-    keyboard_ = lv_keyboard_create(body);
-    lv_obj_set_width(keyboard_, LV_PCT(100));
-    lv_obj_set_flex_grow(keyboard_, 1);
-    lv_keyboard_set_textarea(keyboard_, textarea_);
+    keyboard_ = MakeKeyboard(body, textarea_);
 }
 
 void SettingsUi::ShowSavedList() {

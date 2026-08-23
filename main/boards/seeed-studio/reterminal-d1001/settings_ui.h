@@ -120,6 +120,7 @@ private:
     lv_obj_t* MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large);
     lv_obj_t* BuildPage(const char* title, Action back_action, bool with_refresh);
     lv_obj_t* MakeCard(lv_obj_t* parent);
+    lv_obj_t* MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea);
     lv_obj_t* MakeListItem(lv_obj_t* parent, const char* icon, const char* title,
                            const char* subtitle, Action action, int index,
                            const char* trailing_icon);
