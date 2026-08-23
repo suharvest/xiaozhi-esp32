@@ -30,11 +30,11 @@
 
 #define TAG "ReTerminalD1001"
 
-// Display subclass that keeps the stock layout and only adds the settings
-// entry button on top of it.
+// Display subclass that keeps the stock layout and only adds the settings and
+// rotation entries to the status bar.
 class ReTerminalD1001Display final : public MipiLcdDisplay {
 public:
-    using OpenSettingsCallback = std::function<void()>;
+    using OpenSettingsCallback = std::function<void(SettingsPage)>;
 
     ReTerminalD1001Display(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                            int width, int height, int offset_x, int offset_y, bool mirror_x,
@@ -65,38 +65,51 @@ public:
         MipiLcdDisplay::SetupUI();
 
         DisplayLockGuard lock(this);
-        // The status bar owns the top strip, so the entry sits just below it in
-        // the top-right corner. It is parented to the active screen (not the
-        // top layer) so the theme's text color and font reach it.
-        settings_button_ = lv_button_create(lv_screen_active());
-        lv_obj_set_size(settings_button_, kSettingsButtonSize, kSettingsButtonSize);
-        lv_obj_align(settings_button_, LV_ALIGN_TOP_RIGHT, -12, 56);
-        lv_obj_set_style_radius(settings_button_, kSettingsButtonSize / 2, 0);
-        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_40, 0);
-        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_80, LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(settings_button_, 0, 0);
-        lv_obj_set_style_pad_all(settings_button_, 0, 0);
-        lv_obj_add_event_cb(settings_button_, OnSettingsClicked, LV_EVENT_CLICKED, this);
-
-        settings_icon_ = lv_label_create(settings_button_);
-        const lv_font_t* icon_font = GetIconFont(false);
-        if (icon_font != nullptr) {
-            lv_obj_set_style_text_font(settings_icon_, icon_font, 0);
+        if (status_bar_ == nullptr) {
+            return;
         }
-        lv_label_set_text(settings_icon_, MATERIAL_SYMBOLS_SETTINGS);
-        lv_obj_center(settings_icon_);
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        const lv_font_t* icon_font = GetIconFont(false);
+        // Mirrors the stock top bar: spacing(4) of left padding before the
+        // network icon, which is a single (roughly square) symbol glyph.
+        const int gap = theme != nullptr ? theme->spacing(3) : 12;
+        const int left_pad = theme != nullptr ? theme->spacing(4) : 16;
+        const int icon_size = icon_font != nullptr ? icon_font->line_height : 24;
+
+        // The status bar is transparent, spans the full width and is stacked
+        // over the top bar, so it is the layer that actually receives taps in
+        // the top strip. Keeping the entries inside it puts them next to the
+        // network icon without reflowing the stock top bar layout. The minimum
+        // height guarantees a 48 px tall touch band: hit testing only descends
+        // into children of an object that was hit itself.
+        if (lv_obj_get_style_min_height(status_bar_, LV_PART_MAIN) < kStatusBarTouchHeight) {
+            lv_obj_set_style_min_height(status_bar_, kStatusBarTouchHeight, 0);
+        }
+
+        status_actions_ = lv_obj_create(status_bar_);
+        lv_obj_remove_style_all(status_actions_);
+        lv_obj_set_size(status_actions_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(status_actions_, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(status_actions_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(status_actions_, gap, 0);
+        lv_obj_set_scrollbar_mode(status_actions_, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(status_actions_, LV_ALIGN_LEFT_MID, left_pad + icon_size + gap, 0);
+
+        settings_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_SETTINGS, OnSettingsClicked);
+        rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
     }
 
     void SetTheme(Theme* theme) override {
         MipiLcdDisplay::SetTheme(theme);
 
         DisplayLockGuard lock(this);
-        if (settings_icon_ != nullptr) {
-            const lv_font_t* icon_font = GetIconFont(false);
-            if (icon_font != nullptr) {
-                lv_obj_set_style_text_font(settings_icon_, icon_font, 0);
-            }
-        }
+        // The theme reload frees the previous fonts, so both entries are
+        // re-pointed at the new ones before anything can draw with a dangling
+        // pointer.
+        ApplyStatusIconStyle(settings_icon_);
+        ApplyStatusIconStyle(rotation_icon_);
         if (on_theme_changed_) {
             on_theme_changed_();
         }
@@ -123,31 +136,71 @@ public:
         }
     }
 
-    void SetSettingsButtonHidden(bool hidden) {
-        if (settings_button_ == nullptr) {
+    void SetStatusBarEntriesHidden(bool hidden) {
+        if (status_actions_ == nullptr) {
             return;
         }
         if (hidden) {
-            lv_obj_add_flag(settings_button_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(status_actions_, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_remove_flag(settings_button_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
 private:
-    static constexpr int kSettingsButtonSize = 56;
+    // The glyphs are ~30 px tall; the extended click area pads them out to a
+    // comfortable target well past 48x48.
+    static constexpr int kStatusIconClickPad = 16;
+    static constexpr int kStatusBarTouchHeight = 48;
+
+    lv_obj_t* CreateStatusIcon(const char* glyph, lv_event_cb_t callback) {
+        lv_obj_t* label = lv_label_create(status_actions_);
+        lv_label_set_text(label, glyph);
+        lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(label, kStatusIconClickPad);
+        lv_obj_add_event_cb(label, callback, LV_EVENT_CLICKED, this);
+        ApplyStatusIconStyle(label);
+        return label;
+    }
+
+    void ApplyStatusIconStyle(lv_obj_t* label) {
+        if (label == nullptr) {
+            return;
+        }
+        const lv_font_t* icon_font = GetIconFont(false);
+        if (icon_font != nullptr) {
+            lv_obj_set_style_text_font(label, icon_font, 0);
+        }
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        if (theme != nullptr) {
+            lv_obj_set_style_text_color(label, theme->text_color(), 0);
+        }
+        lv_obj_set_style_text_color(label, kAccentColor(), LV_STATE_PRESSED);
+    }
+
+    // Same accent as the settings overlay's primary actions (#2F6BFF).
+    static lv_color_t kAccentColor() { return lv_color_hex(0x2F6BFF); }
 
     static void OnSettingsClicked(lv_event_t* event) {
+        Dispatch(event, SettingsPage::Home);
+    }
+
+    static void OnRotationClicked(lv_event_t* event) {
+        Dispatch(event, SettingsPage::Display);
+    }
+
+    static void Dispatch(lv_event_t* event, SettingsPage page) {
         auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
         if (self != nullptr && self->open_settings_) {
-            self->open_settings_();
+            self->open_settings_(page);
         }
     }
 
     OpenSettingsCallback open_settings_;
     std::function<void()> on_theme_changed_;
-    lv_obj_t* settings_button_ = nullptr;
+    lv_obj_t* status_actions_ = nullptr;
     lv_obj_t* settings_icon_ = nullptr;
+    lv_obj_t* rotation_icon_ = nullptr;
 };
 
 class ReTerminalD1001Board : public WifiBoard {
@@ -245,7 +298,7 @@ private:
                                               DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                                               rotation.lcd_mirror_x, rotation.lcd_mirror_y,
                                               rotation.lcd_swap_xy);
-        display_->SetOpenSettingsCallback([this]() { OpenSettings(); });
+        display_->SetOpenSettingsCallback([this](SettingsPage page) { OpenSettings(page); });
         display_->ApplyRotation(rotation.degrees);
         ESP_LOGI(TAG, "Display initialized, rotation=%d", rotation.degrees);
     }
@@ -329,14 +382,14 @@ private:
         ESP_LOGI(TAG, "Touch panel initialized");
     }
 
-    void OpenSettings() {
+    void OpenSettings(SettingsPage page) {
         if (settings_ui_ == nullptr) {
             settings_ui_.reset(new SettingsUi(
                 display_,
                 [this](const std::string& ssid, const std::string& password) {
                     ConnectFromSettings(ssid, password);
                 },
-                [this]() { display_->SetSettingsButtonHidden(false); }));
+                [this]() { display_->SetStatusBarEntriesHidden(false); }));
             settings_ui_->SetIconFontProvider(
                 [this](bool large) { return display_->GetIconFont(large); });
             display_->SetOnThemeChanged([this]() {
@@ -348,8 +401,8 @@ private:
         if (settings_ui_->IsOpen()) {
             return;
         }
-        display_->SetSettingsButtonHidden(true);
-        settings_ui_->Open();
+        display_->SetStatusBarEntriesHidden(true);
+        settings_ui_->Open(page);
     }
 
     // Runs on a worker task: swap the credentials in, restart the station and

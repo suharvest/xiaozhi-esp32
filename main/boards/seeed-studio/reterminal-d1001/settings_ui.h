@@ -64,7 +64,9 @@ public:
 
     // Must run inside the LVGL context (event callback) or while the display
     // lock is held.
-    void Open();
+    void Open() { Open(SettingsPage::Home); }
+    // Opens straight on one page; the page's back arrow still returns home.
+    void Open(SettingsPage page);
     void Close();
     bool IsOpen() const { return root_ != nullptr; }
 

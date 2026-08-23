@@ -346,11 +346,11 @@ lv_obj_t* SettingsUi::MakeTextButton(lv_obj_t* parent, const char* icon, const c
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-void SettingsUi::Open() {
+void SettingsUi::Open(SettingsPage page) {
     if (root_ != nullptr) {
         return;
     }
-    ESP_LOGI(TAG, "Opening settings overlay");
+    ESP_LOGI(TAG, "Opening settings overlay on page %d", static_cast<int>(page));
 
     lv_obj_t* screen = lv_screen_active();
     // Parented to the screen so every label inherits the theme text font. The
@@ -367,7 +367,18 @@ void SettingsUi::Open() {
 
     page_ = SettingsPage::Home;
     wifi_state_ = WifiSettingsState::Idle;
-    ShowHome();
+    switch (page) {
+        case SettingsPage::Wifi:
+            ShowWifiPage();
+            break;
+        case SettingsPage::Display:
+            ShowDisplaySettings();
+            break;
+        case SettingsPage::Home:
+        default:
+            ShowHome();
+            break;
+    }
 }
 
 void SettingsUi::Close() {
