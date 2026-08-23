@@ -26,13 +26,72 @@ Validated on hardware (P4 v1.3, 32 MB Winbond flash ef/4019, 32 MB PSRAM):
   LVGL input device (`gsl3670: load fw success`, `Touch panel initialized`).
   The driver is vendored from the Seeed BSP because no registry component
   exists; `gsl_point_id.c` keeps its original Silead GPL-2.0 header.
+- Onboard MIPI CSI-2 camera (see "Camera" below): the sensor answers at SCCB
+  `0x36` with PID `0xeb52` and `EspVideo` opens the CSI/ISP device
+  (`Camera init success, captured 150 frames in 5013ms`), so
+  `self.camera.take_photo` is registered on the MCP server.
 - Idle stability: two 30 min runs with the display on, wake word off
   (free SRAM flat at 248371) and wake word on (free SRAM flat at 250531),
   no resets.
 
 Not yet validated: device AEC, 30 min continuous conversation, touch
 coordinate orientation on the panel (the BSP values swap_xy=0, mirror_x=1,
-mirror_y=1 are used as-is).
+mirror_y=1 are used as-is), and the captured image itself (orientation,
+colour and a cloud round trip through `Explain()`).
+
+### Camera
+
+The module Seeed calls SC2356 is the same silicon as the SC202CS that
+`espressif/esp_cam_sensor` already supports: same SCCB address `0x36`, same
+PID `0xeb52`, and the Seeed BSP RAW8 1280x720 30fps register list matches the
+registry one on 126 of 139 writes (the rest are AE/AGC start values that the
+ISP overrides anyway). The registry driver is therefore enabled as-is,
+instead of vendoring the BSP copy of the 1.2.0 `esp_cam_sensor`:
+
+```
+CONFIG_CAMERA_SC202CS=y
+CONFIG_CAMERA_SC202CS_MIPI_RAW8_1280X720_30FPS=y   # MIPI CSI-2, 1 lane, 24 MHz
+```
+
+Wiring notes:
+
+- SCCB shares I2C0 (GPIO37/38) with the GSL3670 touch controller, so the
+  camera reuses `touch_i2c_bus_` with `init_sccb = false`. Creating a second
+  master on the same pins is not possible.
+- Reset, power-down and the rail enable are PCA9535 bits 9, 3 and 1, so
+  `reset_pin`/`pwdn_pin` are `GPIO_NUM_NC` and `PowerUpCamera()` replays the
+  BSP timing (EN, 50 ms, PWDN+RST released, 10 ms reset pulse, 50 ms).
+- `esp_video_init()` aborts the whole init when no sensor answers, so the
+  board probes `0x36` first and leaves `GetCamera()` null when the probe
+  fails. That keeps a missing module from looking like a driver fault.
+- Idle internal SRAM drops from ~248-250 KB to 244007 free / 231683 minimal
+  with the camera open. The frame buffers live in PSRAM.
+
+#### ISP pipeline controller is off on this board
+
+`CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=n` overrides the P4 default.
+With it enabled the firmware panics right after the sensor is detected:
+
+```
+I (2869) sc202cs: Detected Camera sensor PID=0xeb52
+Guru Meditation Error: Core 0 panic'ed (Illegal instruction).
+MEPC : 0x481991a0   MCAUSE : 0x00000002   MTVAL : 0x20fac7b3
+```
+
+`0x481991a0` is inside `esp_ipa_pipeline_create()` and `0x20fac7b3` decodes as
+`sh2add`, a RISC-V Zba instruction. The prebuilt `libesp_ipa.a` that
+`espressif/esp_ipa` 2.3.0 ships for ESP-IDF >= 6.0 is built for
+`rv32i..._zba1p0_zbb1p0_zbs1p0`, while the 5.5 and 5.4 blobs in the same
+component are not; `esp_ipa/CMakeLists.txt` picks the blob by IDF version
+only, with no ESP32-P4 revision check. This board is a P4 v1.3
+(`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`), which has no B extension, so every
+IPA call traps. Turning the pipeline controller off removes the only caller
+of `esp_ipa`.
+
+The cost is that auto exposure, auto white balance and the rest of the IPA
+loop do not run, so colour and exposure use the static ISP defaults. Re-enable
+the option once `esp_ipa` ships a P4-rev-aware blob (or an IDF 6 blob without
+Zba) and re-check the capture.
 
 ### Wake word and internal RAM
 

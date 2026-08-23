@@ -40,7 +40,7 @@
 - Bluetooth Classic A2DP 音箱。
 - BLE Audio（包括 LE Audio/BAP/CAP）。
 - RemoteDisplay。
-- 人脸识别和摄像头业务。
+- 人脸识别和视觉业务逻辑（板载 MIPI-CSI 摄像头本身已在后续增量中接入，见 6.、9.）。
 - SenseCAP Watcher 的 SSCMA、视觉推理或事件管线迁移。
 - LTE、SD 卡、RTC、IMU、电池电量和完整电源管理 UI。
 - 对服务端协议、Warehouse Service 或 MCP 层做任何配套修改。
@@ -111,7 +111,7 @@ main/boards/seeed-studio/reterminal-d1001/
 - `target`: `esp32p4`
 - 使用 32 MB v2 分区表。
 - 打开 PSRAM、ESP32-C6 slave target、ESP-Hosted SDIO 4-bit 和 P4 相关修订配置。
-- 首版关闭 camera、RemoteDisplay 和 Watcher 专属组件。
+- 关闭 RemoteDisplay 和 Watcher 专属组件；板载摄像头在后续增量中打开（`CONFIG_CAMERA_SC202CS`）。
 
 ## 6. 初始化顺序
 
@@ -125,9 +125,10 @@ main/boards/seeed-studio/reterminal-d1001/
 6. 向 TX DMA 预装静音帧，再打开 ES8311，最后拉高功放使能，避免爆音。
 7. 初始化 MIPI DSI PHY、显示供电、LCD reset 和背光。
 8. 初始化 I2C0 与 GSL3670 触摸。
-9. 初始化 GPIO3 按键并进入 XiaoZhi 正常启动流程。
+9. 走 BSP 摄像头上电时序（CAM_EN → CAM_PWDN/CAM_RST → reset 脉冲），在 I2C0 上探测 SCCB `0x36`，探到再创建 `EspVideo`；探不到就断电跳过，`GetCamera()` 返回 `nullptr`。
+10. 初始化 GPIO3 按键并进入 XiaoZhi 正常启动流程。
 
-不要直接调用 Seeed 工厂 BSP 的完整 `bsp_power_init()`：它会同时初始化摄像头、LTE、电池、RTC、SD 等首版不需要的外设，扩大失败面和功耗。只移植首版所需的最小上电序列。
+不要直接调用 Seeed 工厂 BSP 的完整 `bsp_power_init()`：它会同时初始化 LTE、电池、RTC、SD 等不需要的外设，扩大失败面和功耗。只移植首版所需的最小上电序列。
 
 ## 7. 音频设计
 

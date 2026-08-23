@@ -5,6 +5,7 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "esp_lcd_touch_gsl3670.h"
+#include "esp_video.h"
 #include "lcd_init_cmds.h"
 #include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
@@ -212,6 +213,7 @@ private:
     std::unique_ptr<SettingsUi> settings_ui_;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
+    EspVideo* camera_ = nullptr;
 
     void EnableDsiPhyPower() {
         // The MIPI DSI PHY is fed by LDO3; without it the PHY stays in the
@@ -498,6 +500,50 @@ private:
         });
     }
 
+    void InitializeCamera() {
+        if (touch_i2c_bus_ == nullptr) {
+            ESP_LOGE(TAG, "camera skipped: I2C0 is unavailable");
+            return;
+        }
+
+        expander_.PowerUpCamera();
+
+        // esp_video aborts the whole init when no sensor answers, so probe the
+        // SCCB address first: that keeps a missing or unpowered module from
+        // looking like a driver bug, and lets GetCamera() stay null.
+        esp_err_t ret = i2c_master_probe(touch_i2c_bus_, CAMERA_SCCB_ADDRESS, 100);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "no camera sensor at SCCB 0x%02x: %s", CAMERA_SCCB_ADDRESS,
+                     esp_err_to_name(ret));
+            expander_.PowerDownCamera();
+            return;
+        }
+        ESP_LOGI(TAG, "camera sensor found at SCCB 0x%02x", CAMERA_SCCB_ADDRESS);
+
+        // The sensor shares I2C0 with the GSL3670 touch controller, so hand
+        // esp_video the existing bus handle instead of creating a second
+        // master on the same pins. Reset and power-down live on the PCA9535,
+        // so there is no GPIO for esp_video to drive.
+        esp_video_init_csi_config_t csi_config = {
+            .sccb_config =
+                {
+                    .init_sccb = false,
+                    .i2c_handle = touch_i2c_bus_,
+                    .freq = CAMERA_SCCB_FREQ_HZ,
+                },
+            .reset_pin = GPIO_NUM_NC,
+            .pwdn_pin = GPIO_NUM_NC,
+        };
+        esp_video_init_config_t camera_config = {
+            .csi = &csi_config,
+        };
+
+        camera_ = new EspVideo(camera_config);
+        camera_->SetHMirror(false);
+        camera_->SetVFlip(false);
+        ESP_LOGI(TAG, "Camera initialized");
+    }
+
 public:
     ReTerminalD1001Board() : boot_button_(BOOT_BUTTON_GPIO) {
         ESP_LOGI(TAG, "initializing reTerminal D1001");
@@ -517,6 +563,7 @@ public:
 
         InitializeMipiDisplay(rotation);
         InitializeTouch(rotation);
+        InitializeCamera();
         InitializeButtons();
 
         GetBacklight()->RestoreBrightness();
@@ -525,6 +572,8 @@ public:
     virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }
 
     virtual Display* GetDisplay() override { return display_; }
+
+    virtual Camera* GetCamera() override { return camera_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
