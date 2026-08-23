@@ -9,14 +9,23 @@ panel, GSL3670 touch).
 Bring-up in progress. Validated on hardware:
 
 - PCA9535 power sequence (power hold, panel rails, PA gating).
-- ES8311 playback and ES7210 capture codecs on the separate TX/RX I2S buses.
-- ESP-Hosted SDIO link to the factory ESP32-C6 firmware (Wi-Fi scan and
-  config AP work; the co-proc runs esp-hosted 2.3.0 while this image ships
-  host 2.12.x, so upgrade the C6 slave firmware separately before
-  long-running use).
-- XiaoZhi boots into Wi-Fi config mode.
+- ES8311 playback and ES7210 capture codecs on the separate TX/RX I2S buses
+  (16 kHz capture baseline, matching the Seeed factory BSP).
+- ESP-Hosted SDIO link to the factory ESP32-C6 firmware (Wi-Fi, config AP and
+  the XiaoZhi cloud connection all work; the co-proc runs esp-hosted 2.3.0
+  while this image ships host 2.12.x, so upgrade the C6 slave firmware
+  separately before long-running use).
+- GPIO3 button: toggles the chat state, or enters Wi-Fi config mode while the
+  device is starting.
 
-Not yet implemented: display, touch, GPIO3 button, device AEC validation.
+Known limitation: the AFE wake word is disabled on this board. The prebuilt
+esp-sr ESP32-P4 libraries (esp32p4_less_v3_idf6) hang the CPU inside wakenet9
+and multinet7 inference, tripping the task watchdog (verified with
+wn9_nihaoxiaozhi_tts, wn9l_nihaoxiaozhi_tts3, wn9_hiesp and mn7_cn; VAD-only
+is stable). Use the GPIO3 button to start conversations until the upstream
+esp-sr libraries are fixed.
+
+Not yet implemented: display, touch, device AEC validation.
 
 The hardware facts come from the
 [reTerminal D10xx product documentation](https://wiki.seeedstudio.com/reterminal_d10xx_main_page/)
@@ -33,8 +42,9 @@ python3 scripts/build.py seeed-studio/reterminal-d1001 --name reterminal-d1001
 ```
 
 Verified on a unit with 32 MB Winbond flash (ID ef/4019); the board config
-assumes 32 MB and uses `partitions/v2/32m.csv`. The factory images are
-published in the Seeed BSP repository under `firmware/`.
+assumes 32 MB and uses `partitions/v2/32m.csv` with the 32-bit flash cache
+enabled. The factory images are published in the Seeed BSP repository under
+`firmware/`.
 
 The ESP32-P4 application and the ESP32-C6 ESP-Hosted slave are separate
 firmware images with separate version lifecycles. Building or updating this
