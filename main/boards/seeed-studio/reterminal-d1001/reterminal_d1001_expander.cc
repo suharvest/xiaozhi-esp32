@@ -4,6 +4,8 @@
 
 #include <esp_io_expander_tca95xx_16bit.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "D1001Expander"
 
@@ -99,11 +101,41 @@ void ReTerminalD1001Expander::ApplyMinimalPowerSequence() {
     // Keep the power amplifier off until the audio codec has muted DMA data
     // ready (pop-free power-up order).
     SetPowerAmp(false);
-    // Hold system power, enable the panel power rail and release LCD reset.
+    // Park the panel signals: rails off, both controllers held in reset. The
+    // display bring-up path turns them on in the BSP order.
+    SetLcdPower(false);
+    SetBacklightPower(false);
+    SetLcdReset(true);
+    SetTouchReset(true);
+    // Hold system power (vdd_3v3) and let it settle, as the BSP does.
     SetPowerHold(true);
-    SetLcdPower(true);
-    SetLcdReset(false);
+    vTaskDelay(pdMS_TO_TICKS(50));
     ESP_LOGI(TAG, "minimal power sequence applied");
+}
+
+void ReTerminalD1001Expander::PowerUpDisplayRails() {
+    if (!IsInitialized()) {
+        ESP_LOGE(TAG, "cannot power up the display rails: expander unavailable");
+        return;
+    }
+    SetLcdPower(true);
+    SetBacklightPower(true);
+    vTaskDelay(pdMS_TO_TICKS(50));
+}
+
+void ReTerminalD1001Expander::ResetLcdPanel() {
+    if (!IsInitialized()) {
+        ESP_LOGE(TAG, "cannot reset the LCD: expander unavailable");
+        return;
+    }
+    // Same pulse as the Seeed BSP: released 5 ms, asserted 10 ms, released
+    // 120 ms before the panel accepts initialisation commands.
+    SetLcdReset(false);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    SetLcdReset(true);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    SetLcdReset(false);
+    vTaskDelay(pdMS_TO_TICKS(120));
 }
 
 void ReTerminalD1001Expander::PowerOff() {

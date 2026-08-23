@@ -39,10 +39,18 @@ public:
     void SetTouchReset(bool asserted);
     void SetPowerAmp(bool on);
 
-    /// Assert power-hold and release the resets without enabling the power
-    /// amplifier or backlight. This is the minimal sequence that keeps the
-    /// board alive for the first port milestone.
+    /// Assert power-hold and park every other controlled signal in its safe
+    /// state: power amplifier off, panel and backlight rails off, LCD and
+    /// touch held in reset. The panel rails are turned on later by
+    /// PowerUpDisplayRails().
     void ApplyMinimalPowerSequence();
+
+    /// Turn on the panel and backlight rails and wait for them to settle.
+    /// Must run before the MIPI-DSI panel is created.
+    void PowerUpDisplayRails();
+
+    /// Drive the BSP LCD reset pulse: high 5 ms, low 10 ms, high 120 ms.
+    void ResetLcdPanel();
 
     /// Drop power-hold so the board can power off.
     void PowerOff();

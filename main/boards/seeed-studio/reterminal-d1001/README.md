@@ -18,6 +18,12 @@ Bring-up in progress. Validated on hardware:
 - GPIO3 button: toggles the chat state, or enters Wi-Fi config mode while the
   device is starting.
 
+Implemented, not yet validated on hardware:
+
+- 800x1280 JD9365DA-H3 MIPI-DSI panel (2 lanes at 1000 Mbps, LDO3 at 2.5 V,
+  60 MHz DPI clock, RGB565 with one framebuffer) using the Seeed init
+  sequence in `lcd_init_cmds.h`, plus the GPIO14 PWM backlight.
+
 Known limitation: the AFE wake word is disabled on this board. The prebuilt
 esp-sr ESP32-P4 libraries (esp32p4_less_v3_idf6) hang the CPU inside wakenet9
 and multinet7 inference, tripping the task watchdog (verified with
@@ -25,7 +31,7 @@ wn9_nihaoxiaozhi_tts, wn9l_nihaoxiaozhi_tts3, wn9_hiesp and mn7_cn; VAD-only
 is stable). Use the GPIO3 button to start conversations until the upstream
 esp-sr libraries are fixed.
 
-Not yet implemented: display, touch, device AEC validation.
+Not yet implemented: touch, device AEC validation.
 
 The hardware facts come from the
 [reTerminal D10xx product documentation](https://wiki.seeedstudio.com/reterminal_d10xx_main_page/)
