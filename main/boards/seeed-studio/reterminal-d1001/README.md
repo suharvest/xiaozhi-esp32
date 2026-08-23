@@ -112,14 +112,12 @@ the theme is reloaded (the old font is freed at that moment).
 - **屏幕方向**: four large tiles with the current one highlighted, then
   `保存并重启` with a confirmation step. 0/90/180/270, stored in NVS (namespace `reterminal`, key
   `rotation`) and applied at boot; the device reboots 2 s after the choice is
-  confirmed. 90/270 use `lv_display_set_rotation()` (the MIPI port runs with
-  `sw_rotate`), 180 uses the panel mirror flags. Touch swap/mirror flags come
-  from the same table in `SettingsUi::MakeRotationProfile()`.
+  confirmed. Every non-zero angle is applied with `lv_display_set_rotation()`
+  (the MIPI port runs with `sw_rotate`); the panel and the touch controller keep
+  their validated 0° flags because LVGL 9 rotates the pointer coordinates
+  itself (`lv_indev.c`, `lv_display_rotate_point`).
 
-Only the 0° row of that table is hardware-validated. The 90/180/270 rows are
-candidates and still need a four-corner touch calibration pass on the device;
-frame rate under software rotation at 800x1280 RGB565 has not been measured
-either. Both are edited in one place: `MakeRotationProfile()`.
+Frame rate under software rotation at 800x1280 RGB565 has not been measured.
 
 The board build appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y`,
 `CONFIG_LV_USE_TEXTAREA=y` and `CONFIG_LV_USE_SPINNER=y`, which the project

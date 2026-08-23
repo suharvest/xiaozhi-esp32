@@ -102,8 +102,8 @@ public:
         }
     }
 
-    // Software rotation for 90/270; 180 is done with the panel mirror flags so
-    // no per-frame rotation cost is paid for it.
+    // All non-zero angles are software rotation in LVGL; the panel keeps its
+    // native orientation and LVGL also rotates the touch coordinates.
     void ApplyRotation(int degrees) {
         lv_display_t* disp = lv_display_get_default();
         if (disp == nullptr) {
@@ -112,6 +112,8 @@ public:
         lv_display_rotation_t rotation = LV_DISPLAY_ROTATION_0;
         if (degrees == 90) {
             rotation = LV_DISPLAY_ROTATION_90;
+        } else if (degrees == 180) {
+            rotation = LV_DISPLAY_ROTATION_180;
         } else if (degrees == 270) {
             rotation = LV_DISPLAY_ROTATION_270;
         }
@@ -316,10 +318,14 @@ private:
             .disp = lv_display_get_default(),
             .handle = touch,
         };
-        if (lvgl_port_add_touch(&lvgl_touch_config) == nullptr) {
+        lv_indev_t* indev = lvgl_port_add_touch(&lvgl_touch_config);
+        if (indev == nullptr) {
             ESP_LOGE(TAG, "Failed to register the touch panel with LVGL");
             return;
         }
+        // The GSL3670 is polled and jitters a few pixels; a larger scroll
+        // threshold keeps taps on list rows from being turned into scrolls.
+        lv_indev_set_scroll_limit(indev, 24);
         ESP_LOGI(TAG, "Touch panel initialized");
     }
 

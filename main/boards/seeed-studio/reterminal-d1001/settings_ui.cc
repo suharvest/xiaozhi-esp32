@@ -253,6 +253,9 @@ lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const cha
 
     lv_obj_t* texts = lv_obj_create(card);
     lv_obj_remove_style_all(texts);
+    // lv_obj is clickable by default and would swallow the tap meant for the
+    // card, so the card's CLICKED callback never fired on the text area.
+    lv_obj_remove_flag(texts, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_height(texts, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(texts, 1);
     lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -667,20 +670,15 @@ void SettingsUi::OnConnectResult(bool success, const std::string& message) {
 // ---------------------------------------------------------------------------
 
 RotationProfile SettingsUi::MakeRotationProfile(int degrees) {
-    // 0 degrees is the shipping configuration validated on hardware; the other
-    // three rows are the candidates from the design note and still need a
-    // four-corner touch calibration pass on the device.
-    switch (degrees) {
-        case 90:
-            return RotationProfile{90, false, false, false, true, true, false};
-        case 180:
-            return RotationProfile{180, true, true, false, false, false, false};
-        case 270:
-            return RotationProfile{270, false, false, false, true, false, true};
-        case 0:
-        default:
-            return RotationProfile{0, false, false, false, false, true, true};
+    // The panel and the touch controller always keep the 0-degree flags that
+    // were validated on hardware; every other angle is applied with
+    // lv_display_set_rotation(), and LVGL 9 rotates the pointer coordinates
+    // itself (lv_indev.c: lv_display_rotate_point), so the touch flags must not
+    // be changed per angle or the rotation is applied twice.
+    if (degrees != 90 && degrees != 180 && degrees != 270) {
+        degrees = 0;
     }
+    return RotationProfile{degrees, false, false, false, false, true, true};
 }
 
 RotationProfile SettingsUi::LoadRotationProfile() {
