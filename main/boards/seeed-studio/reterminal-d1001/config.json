@@ -30,7 +30,8 @@
                 "CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y",
                 "CONFIG_LV_USE_KEYBOARD=y",
                 "CONFIG_LV_USE_LIST=y",
-                "CONFIG_LV_USE_TEXTAREA=y"
+                "CONFIG_LV_USE_TEXTAREA=y",
+                "CONFIG_LV_USE_SPINNER=y"
             ]
         }
     ]

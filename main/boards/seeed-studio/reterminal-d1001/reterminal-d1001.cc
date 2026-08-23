@@ -15,10 +15,13 @@
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_ldo_regulator.h>
+#include "display/lvgl_display/lvgl_theme.h"
+
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <material_symbols.h>
 #include <ssid_manager.h>
 #include <wifi_manager.h>
 
@@ -43,24 +46,60 @@ public:
         open_settings_ = std::move(callback);
     }
 
+    void SetOnThemeChanged(std::function<void()> callback) {
+        on_theme_changed_ = std::move(callback);
+    }
+
+    // The theme owns the fonts and frees them when it is reloaded, so they are
+    // always read back from the theme and never cached.
+    const lv_font_t* GetIconFont(bool large) const {
+        auto* theme = static_cast<LvglTheme*>(current_theme_);
+        if (theme == nullptr) {
+            return nullptr;
+        }
+        auto font = large ? theme->large_icon_font() : theme->icon_font();
+        return font == nullptr ? nullptr : font->font();
+    }
+
     void SetupUI() override {
         MipiLcdDisplay::SetupUI();
 
         DisplayLockGuard lock(this);
         // The status bar owns the top strip, so the entry sits just below it in
         // the top-right corner. It is parented to the active screen (not the
-        // top layer) so it inherits the theme font: SetTheme() frees the old
-        // font, and a pinned font pointer crashes the next redraw.
+        // top layer) so the theme's text color and font reach it.
         settings_button_ = lv_button_create(lv_screen_active());
         lv_obj_set_size(settings_button_, kSettingsButtonSize, kSettingsButtonSize);
-        lv_obj_align(settings_button_, LV_ALIGN_TOP_RIGHT, -8, 52);
+        lv_obj_align(settings_button_, LV_ALIGN_TOP_RIGHT, -12, 56);
         lv_obj_set_style_radius(settings_button_, kSettingsButtonSize / 2, 0);
-        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_40, 0);
+        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_80, LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(settings_button_, 0, 0);
+        lv_obj_set_style_pad_all(settings_button_, 0, 0);
         lv_obj_add_event_cb(settings_button_, OnSettingsClicked, LV_EVENT_CLICKED, this);
 
-        lv_obj_t* label = lv_label_create(settings_button_);
-        lv_label_set_text(label, "设置");
-        lv_obj_center(label);
+        settings_icon_ = lv_label_create(settings_button_);
+        const lv_font_t* icon_font = GetIconFont(false);
+        if (icon_font != nullptr) {
+            lv_obj_set_style_text_font(settings_icon_, icon_font, 0);
+        }
+        lv_label_set_text(settings_icon_, MATERIAL_SYMBOLS_SETTINGS);
+        lv_obj_center(settings_icon_);
+    }
+
+    void SetTheme(Theme* theme) override {
+        MipiLcdDisplay::SetTheme(theme);
+
+        DisplayLockGuard lock(this);
+        if (settings_icon_ != nullptr) {
+            const lv_font_t* icon_font = GetIconFont(false);
+            if (icon_font != nullptr) {
+                lv_obj_set_style_text_font(settings_icon_, icon_font, 0);
+            }
+        }
+        if (on_theme_changed_) {
+            on_theme_changed_();
+        }
     }
 
     // Software rotation for 90/270; 180 is done with the panel mirror flags so
@@ -104,7 +143,9 @@ private:
     }
 
     OpenSettingsCallback open_settings_;
+    std::function<void()> on_theme_changed_;
     lv_obj_t* settings_button_ = nullptr;
+    lv_obj_t* settings_icon_ = nullptr;
 };
 
 class ReTerminalD1001Board : public WifiBoard {
@@ -290,6 +331,13 @@ private:
                     ConnectFromSettings(ssid, password);
                 },
                 [this]() { display_->SetSettingsButtonHidden(false); }));
+            settings_ui_->SetIconFontProvider(
+                [this](bool large) { return display_->GetIconFont(large); });
+            display_->SetOnThemeChanged([this]() {
+                if (settings_ui_ != nullptr) {
+                    settings_ui_->RefreshIconFonts();
+                }
+            });
         }
         if (settings_ui_->IsOpen()) {
             return;

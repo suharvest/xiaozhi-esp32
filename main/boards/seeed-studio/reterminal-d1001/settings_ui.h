@@ -16,8 +16,10 @@ enum class SettingsPage {
 };
 
 enum class WifiSettingsState {
+    Idle,
     Scanning,
     SelectWifi,
+    InputSsid,
     InputPassword,
     SavedList,
     Connecting,
@@ -49,15 +51,25 @@ public:
     using ConnectCallback = std::function<void(const std::string& ssid,
                                                const std::string& password)>;
     using CloseCallback = std::function<void()>;
+    // Fonts are owned by the theme and are freed when the theme is reloaded, so
+    // they are always fetched through this hook and never cached.
+    using IconFontProvider = std::function<const lv_font_t*(bool large)>;
 
     SettingsUi(LcdDisplay* display, ConnectCallback connect_cb, CloseCallback close_cb);
     ~SettingsUi();
+
+    void SetIconFontProvider(IconFontProvider provider) {
+        icon_font_provider_ = std::move(provider);
+    }
 
     // Must run inside the LVGL context (event callback) or while the display
     // lock is held.
     void Open();
     void Close();
     bool IsOpen() const { return root_ != nullptr; }
+
+    // Re-applies the icon font after the theme was reloaded.
+    void RefreshIconFonts();
 
     // Called from worker tasks; both take the display lock themselves.
     void OnScanComplete(std::vector<WifiScanItem> results, esp_err_t error, uint32_t generation);
@@ -76,6 +88,8 @@ private:
         BackHome,
         WifiRescan,
         WifiSavedList,
+        WifiManualSsid,
+        WifiManualNext,
         WifiPickScanned,
         WifiConnectConfirm,
         WifiPasswordCancel,
@@ -83,7 +97,9 @@ private:
         WifiConnectSaved,
         WifiDeleteSaved,
         WifiResultBack,
-        RotationSelect,
+        RotationPick,
+        RotationSave,
+        RotationConfirm,
     };
 
     struct EventCtx {
@@ -98,41 +114,55 @@ private:
     void HandleAction(Action action, int index);
     void Bind(lv_obj_t* obj, Action action, int index = 0);
 
-    lv_obj_t* MakeBody();
-    lv_obj_t* MakeButton(lv_obj_t* parent, const char* text, Action action, int index = 0);
-    void SetTitle(const char* title);
-    void ClearBody();
+    // Styling helpers.
+    const lv_font_t* IconFont(bool large) const;
+    lv_color_t CardColor() const;
+    lv_obj_t* MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large);
+    lv_obj_t* BuildPage(const char* title, Action back_action, bool with_refresh);
+    lv_obj_t* MakeCard(lv_obj_t* parent);
+    lv_obj_t* MakeListItem(lv_obj_t* parent, const char* icon, const char* title,
+                           const char* subtitle, Action action, int index,
+                           const char* trailing_icon);
+    lv_obj_t* MakeTextButton(lv_obj_t* parent, const char* icon, const char* text, Action action,
+                             int index, bool primary);
+    lv_obj_t* MakeScrollArea(lv_obj_t* parent);
+    void ClearPage();
 
     void ShowHome();
     void ShowWifiPage();
     void StartWifiScan();
     void ShowWifiList();
+    void ShowManualSsid();
     void ShowPasswordInput(const std::string& ssid, bool encrypted);
     void ShowSavedList();
     void ShowConnecting(const std::string& ssid);
     void ShowResult(bool success, const char* message);
     void ShowDisplaySettings();
-    void SelectRotation(int degrees);
+    void ShowRotationConfirm();
+    void CommitRotation();
 
     LcdDisplay* display_;
     ConnectCallback connect_cb_;
     CloseCallback close_cb_;
+    IconFontProvider icon_font_provider_;
 
     lv_obj_t* root_ = nullptr;
-    lv_obj_t* title_label_ = nullptr;
+    lv_obj_t* header_ = nullptr;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;
     lv_obj_t* keyboard_ = nullptr;
 
     SettingsPage page_ = SettingsPage::Home;
-    WifiSettingsState wifi_state_ = WifiSettingsState::Scanning;
+    WifiSettingsState wifi_state_ = WifiSettingsState::Idle;
     std::vector<WifiScanItem> scan_results_;
     std::vector<std::string> saved_ssids_;
     std::string pending_ssid_;
     bool pending_encrypted_ = true;
+    int pending_rotation_ = 0;
     bool operation_active_ = false;
     uint32_t scan_generation_ = 0;
     std::vector<std::unique_ptr<EventCtx>> event_ctx_;
+    std::vector<std::pair<lv_obj_t*, bool>> icon_labels_;
     std::vector<std::pair<Action, int>> pending_actions_;
     bool async_scheduled_ = false;
 };

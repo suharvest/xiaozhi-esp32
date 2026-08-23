@@ -87,21 +87,32 @@ manage both versions independently.
 
 ## On-screen settings
 
-A round `设置` button sits in the top-right corner of the main screen, just
-below the status bar. Tapping it opens a full-screen overlay
-(`settings_ui.h/.cc`) on the LVGL top layer; the main UI keeps running
-underneath and is restored on `返回`. The GPIO3 button behaviour is unchanged.
+A round 56x56 gear button sits in the top-right corner of the main screen,
+just below the status bar. Tapping it opens a full-screen overlay
+(`settings_ui.h/.cc`); the main UI keeps running underneath and is restored
+when the overlay closes. The GPIO3 button behaviour is unchanged.
 
-- **Wi-Fi 网络**: scans in a background task (`esp_wifi_scan_start`, up to 20
+Every page uses the same shell: an app bar (back arrow, title, optional
+refresh) over a card list — 16 px radius, 16 px gaps, 96 px rows, 72 px
+buttons, one accent colour (#2F6BFF) for primary actions. Icons come from the
+board's existing Material Symbols font (`font_material_symbols_30_4`) through
+`lvgl_theme`'s `icon_font()` / `large_icon_font()`; no font file is added. Card
+colours are derived from the theme background, so light and dark both work, and
+both the entry icon and every overlay icon are re-pointed at the new font when
+the theme is reloaded (the old font is freed at that moment).
+
+- **Wi-Fi 网络**: signal-strength icon per row, lock icon on encrypted
+  networks, `手动输入` and `已保存` at the bottom; scans in a background task (`esp_wifi_scan_start`, up to 20
   results), lists SSID/signal/encryption, opens an on-screen keyboard for the
   password and connects. Saved networks can be reconnected or deleted. The new
   credentials are written through `SsidManager` before the attempt and rolled
   back if the connection does not come up within 20 s. Switching networks while
   the device is idle goes through `EnterWifiConfigMode()` first, so the protocol
   is torn down cleanly before the station restarts.
-- **屏幕方向**: 0/90/180/270, stored in NVS (namespace `reterminal`, key
-  `rotation`) and applied at boot; the device reboots 3 s after the choice is
-  saved. 90/270 use `lv_display_set_rotation()` (the MIPI port runs with
+- **屏幕方向**: four large tiles with the current one highlighted, then
+  `保存并重启` with a confirmation step. 0/90/180/270, stored in NVS (namespace `reterminal`, key
+  `rotation`) and applied at boot; the device reboots 2 s after the choice is
+  confirmed. 90/270 use `lv_display_set_rotation()` (the MIPI port runs with
   `sw_rotate`), 180 uses the panel mirror flags. Touch swap/mirror flags come
   from the same table in `SettingsUi::MakeRotationProfile()`.
 
@@ -110,8 +121,9 @@ candidates and still need a four-corner touch calibration pass on the device;
 frame rate under software rotation at 800x1280 RGB565 has not been measured
 either. Both are edited in one place: `MakeRotationProfile()`.
 
-The board build appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y` and
-`CONFIG_LV_USE_TEXTAREA=y`, which the project defaults leave off.
+The board build appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y`,
+`CONFIG_LV_USE_TEXTAREA=y` and `CONFIG_LV_USE_SPINNER=y`, which the project
+defaults leave off.
 
 ## Pin facts (from the Seeed BSP)
 

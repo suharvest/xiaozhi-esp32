@@ -7,7 +7,9 @@
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <material_symbols.h>
 #include <ssid_manager.h>
+#include <wifi_manager.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -18,26 +20,38 @@ namespace {
 
 constexpr int kMaxScanResults = 20;
 constexpr int kRotationChoices[] = {0, 90, 180, 270};
-constexpr int kHeaderHeight = 72;
-constexpr int kButtonHeight = 64;
 
-// Argument block handed to the detached scan task.
+// Layout constants for the 800x1280 panel.
+constexpr int kHeaderHeight = 96;
+constexpr int kIconButtonSize = 64;
+constexpr int kRowHeight = 96;
+constexpr int kButtonHeight = 72;
+constexpr int kCardRadius = 16;
+constexpr int kGap = 16;
+
+// Accent used for primary actions and the selected state. Fixed values so they
+// read the same on the light and the dark theme, both of which the device can
+// switch to at runtime.
+constexpr uint32_t kAccentColor = 0x2F6BFF;
+constexpr uint32_t kDangerColor = 0xD64545;
+constexpr uint32_t kSuccessColor = 0x2E9E5B;
+
 struct ScanTaskArgs {
     SettingsUi* ui;
     uint32_t generation;
 };
 
-const char* SignalBars(int8_t rssi) {
-    if (rssi >= -55) {
-        return "\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88";  // ████
-    }
+const char* SignalIcon(int8_t rssi) {
     if (rssi >= -65) {
-        return "\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88";
+        return MATERIAL_SYMBOLS_WIFI;
     }
     if (rssi >= -75) {
-        return "\xe2\x96\x88\xe2\x96\x88";
+        return MATERIAL_SYMBOLS_WIFI_2_BAR;
     }
-    return "\xe2\x96\x88";
+    if (rssi >= -85) {
+        return MATERIAL_SYMBOLS_WIFI_1_BAR;
+    }
+    return MATERIAL_SYMBOLS_WIFI_OFF;
 }
 
 }  // namespace
@@ -52,6 +66,10 @@ SettingsUi::~SettingsUi() {
         root_ = nullptr;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Event plumbing
+// ---------------------------------------------------------------------------
 
 void SettingsUi::EventThunk(lv_event_t* event) {
     auto* ctx = static_cast<EventCtx*>(lv_event_get_user_data(event));
@@ -89,6 +107,204 @@ void SettingsUi::Bind(lv_obj_t* obj, Action action, int index) {
     lv_obj_add_event_cb(obj, EventThunk, LV_EVENT_CLICKED, event_ctx_.back().get());
 }
 
+// ---------------------------------------------------------------------------
+// Styling helpers
+// ---------------------------------------------------------------------------
+
+const lv_font_t* SettingsUi::IconFont(bool large) const {
+    if (icon_font_provider_) {
+        return icon_font_provider_(large);
+    }
+    return nullptr;
+}
+
+lv_color_t SettingsUi::CardColor() const {
+    // Derived from the screen background so cards follow the active theme:
+    // lifted on a dark background, darkened on a light one.
+    lv_color_t bg = lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
+    if (lv_color_brightness(bg) > 128) {
+        return lv_color_darken(bg, 24);
+    }
+    return lv_color_lighten(bg, 40);
+}
+
+lv_obj_t* SettingsUi::MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large) {
+    lv_obj_t* label = lv_label_create(parent);
+    const lv_font_t* font = IconFont(large);
+    if (font != nullptr) {
+        lv_obj_set_style_text_font(label, font, 0);
+    }
+    lv_label_set_text(label, glyph);
+    icon_labels_.push_back({label, large});
+    return label;
+}
+
+void SettingsUi::RefreshIconFonts() {
+    for (const auto& entry : icon_labels_) {
+        const lv_font_t* font = IconFont(entry.second);
+        if (font != nullptr) {
+            lv_obj_set_style_text_font(entry.first, font, 0);
+        }
+    }
+}
+
+void SettingsUi::ClearPage() {
+    if (body_ != nullptr) {
+        lv_obj_delete(body_);
+        body_ = nullptr;
+    }
+    if (header_ != nullptr) {
+        lv_obj_delete(header_);
+        header_ = nullptr;
+    }
+    textarea_ = nullptr;
+    keyboard_ = nullptr;
+    icon_labels_.clear();
+    event_ctx_.clear();
+}
+
+lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with_refresh) {
+    ClearPage();
+
+    header_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(header_);
+    lv_obj_set_size(header_, LV_PCT(100), kHeaderHeight);
+    lv_obj_align(header_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_pad_hor(header_, kGap, 0);
+    lv_obj_set_style_pad_column(header_, kGap, 0);
+    lv_obj_set_flex_flow(header_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(header_, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* back = lv_button_create(header_);
+    lv_obj_set_size(back, kIconButtonSize, kIconButtonSize);
+    lv_obj_set_style_radius(back, kIconButtonSize / 2, 0);
+    lv_obj_set_style_bg_color(back, CardColor(), 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_center(MakeIconLabel(back, MATERIAL_SYMBOLS_ARROW_BACK, false));
+    Bind(back, back_action);
+
+    lv_obj_t* title_label = lv_label_create(header_);
+    lv_label_set_text(title_label, title);
+    lv_obj_set_flex_grow(title_label, 1);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+
+    if (with_refresh) {
+        lv_obj_t* refresh = lv_button_create(header_);
+        lv_obj_set_size(refresh, kIconButtonSize, kIconButtonSize);
+        lv_obj_set_style_radius(refresh, kIconButtonSize / 2, 0);
+        lv_obj_set_style_bg_color(refresh, CardColor(), 0);
+        lv_obj_set_style_shadow_width(refresh, 0, 0);
+        lv_obj_center(MakeIconLabel(refresh, MATERIAL_SYMBOLS_REFRESH, false));
+        Bind(refresh, Action::WifiRescan);
+    }
+
+    body_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(body_);
+    lv_obj_set_size(body_, LV_PCT(100), LV_VER_RES - kHeaderHeight);
+    lv_obj_align(body_, LV_ALIGN_TOP_MID, 0, kHeaderHeight);
+    lv_obj_set_style_pad_all(body_, kGap, 0);
+    lv_obj_set_style_pad_row(body_, kGap, 0);
+    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(body_, LV_SCROLLBAR_MODE_OFF);
+    return body_;
+}
+
+lv_obj_t* SettingsUi::MakeScrollArea(lv_obj_t* parent) {
+    lv_obj_t* area = lv_obj_create(parent);
+    lv_obj_remove_style_all(area);
+    lv_obj_set_width(area, LV_PCT(100));
+    lv_obj_set_flex_grow(area, 1);
+    lv_obj_set_flex_flow(area, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(area, 12, 0);
+    lv_obj_set_scroll_dir(area, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(area, LV_SCROLLBAR_MODE_AUTO);
+    return area;
+}
+
+lv_obj_t* SettingsUi::MakeCard(lv_obj_t* parent) {
+    lv_obj_t* card = lv_obj_create(parent);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, LV_PCT(100));
+    lv_obj_set_height(card, kRowHeight);
+    lv_obj_set_style_bg_color(card, CardColor(), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(card, kCardRadius, 0);
+    lv_obj_set_style_pad_hor(card, 20, 0);
+    lv_obj_set_style_pad_column(card, 20, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+    return card;
+}
+
+lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const char* title,
+                                   const char* subtitle, Action action, int index,
+                                   const char* trailing_icon) {
+    lv_obj_t* card = MakeCard(parent);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    Bind(card, action, index);
+
+    if (icon != nullptr) {
+        MakeIconLabel(card, icon, true);
+    }
+
+    lv_obj_t* texts = lv_obj_create(card);
+    lv_obj_remove_style_all(texts);
+    lv_obj_set_height(texts, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(texts, 1);
+    lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(texts, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* title_label = lv_label_create(texts);
+    lv_label_set_text(title_label, title);
+    lv_obj_set_width(title_label, LV_PCT(100));
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+
+    if (subtitle != nullptr && subtitle[0] != '\0') {
+        lv_obj_t* subtitle_label = lv_label_create(texts);
+        lv_label_set_text(subtitle_label, subtitle);
+        lv_obj_set_width(subtitle_label, LV_PCT(100));
+        lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_opa(subtitle_label, LV_OPA_60, 0);
+    }
+
+    if (trailing_icon != nullptr) {
+        MakeIconLabel(card, trailing_icon, false);
+    }
+    return card;
+}
+
+lv_obj_t* SettingsUi::MakeTextButton(lv_obj_t* parent, const char* icon, const char* text,
+                                     Action action, int index, bool primary) {
+    lv_obj_t* button = lv_button_create(parent);
+    lv_obj_set_width(button, LV_PCT(100));
+    lv_obj_set_height(button, kButtonHeight);
+    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_bg_color(button, primary ? lv_color_hex(kAccentColor) : CardColor(), 0);
+    if (primary) {
+        lv_obj_set_style_text_color(button, lv_color_hex(0xFFFFFF), 0);
+    }
+    lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(button, 12, 0);
+    if (icon != nullptr) {
+        MakeIconLabel(button, icon, false);
+    }
+    lv_obj_t* label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    Bind(button, action, index);
+    return button;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
 void SettingsUi::Open() {
     if (root_ != nullptr) {
         return;
@@ -96,41 +312,20 @@ void SettingsUi::Open() {
     ESP_LOGI(TAG, "Opening settings overlay");
 
     lv_obj_t* screen = lv_screen_active();
-    lv_color_t bg = lv_obj_get_style_bg_color(screen, LV_PART_MAIN);
-
-    // Parented to the screen so every label inherits the theme font. The theme
-    // can be reloaded at runtime, which frees the previous font, so no font
-    // pointer is ever cached here.
+    // Parented to the screen so every label inherits the theme text font. The
+    // theme can be reloaded at runtime, which frees the previous font, so no
+    // text font pointer is ever cached here.
     root_ = lv_obj_create(screen);
     lv_obj_remove_style_all(root_);
     lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(root_, bg, 0);
+    lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_move_foreground(root_);
     lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
-
-    lv_obj_t* header = lv_obj_create(root_);
-    lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, LV_PCT(100), kHeaderHeight);
-    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_pad_hor(header, 12, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_button_create(header);
-    lv_obj_set_size(back, 120, 56);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, "返回");
-    lv_obj_center(back_label);
-    Bind(back, Action::Close);
-
-    title_label_ = lv_label_create(header);
-    lv_obj_set_style_pad_left(title_label_, 16, 0);
-    lv_label_set_text(title_label_, "设置");
+    lv_obj_move_foreground(root_);
 
     page_ = SettingsPage::Home;
+    wifi_state_ = WifiSettingsState::Idle;
     ShowHome();
 }
 
@@ -143,79 +338,90 @@ void SettingsUi::Close() {
     pending_actions_.clear();
     lv_obj_delete(root_);
     root_ = nullptr;
-    title_label_ = nullptr;
+    header_ = nullptr;
     body_ = nullptr;
     textarea_ = nullptr;
     keyboard_ = nullptr;
+    icon_labels_.clear();
     event_ctx_.clear();
     if (close_cb_) {
         close_cb_();
     }
 }
 
-void SettingsUi::SetTitle(const char* title) {
-    if (title_label_ != nullptr) {
-        lv_label_set_text(title_label_, title);
-    }
-}
-
-void SettingsUi::ClearBody() {
-    if (body_ != nullptr) {
-        lv_obj_delete(body_);
-        body_ = nullptr;
-    }
-    textarea_ = nullptr;
-    keyboard_ = nullptr;
-    // The event contexts belong to the objects that were just deleted; the back
-    // button in the header keeps the first entry alive.
-    if (event_ctx_.size() > 1) {
-        event_ctx_.erase(event_ctx_.begin() + 1, event_ctx_.end());
-    }
-}
-
-lv_obj_t* SettingsUi::MakeBody() {
-    ClearBody();
-    body_ = lv_obj_create(root_);
-    lv_obj_remove_style_all(body_);
-    lv_obj_set_size(body_, LV_PCT(100), LV_VER_RES - kHeaderHeight);
-    lv_obj_align(body_, LV_ALIGN_TOP_MID, 0, kHeaderHeight);
-    lv_obj_set_style_pad_all(body_, 16, 0);
-    lv_obj_set_style_pad_row(body_, 12, 0);
-    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(body_, LV_SCROLLBAR_MODE_OFF);
-    return body_;
-}
-
-lv_obj_t* SettingsUi::MakeButton(lv_obj_t* parent, const char* text, Action action, int index) {
-    lv_obj_t* button = lv_button_create(parent);
-    lv_obj_set_size(button, LV_PCT(100), kButtonHeight);
-    lv_obj_t* label = lv_label_create(button);
-    lv_label_set_text(label, text);
-    lv_obj_center(label);
-    Bind(button, action, index);
-    return button;
-}
+// ---------------------------------------------------------------------------
+// Pages
+// ---------------------------------------------------------------------------
 
 void SettingsUi::ShowHome() {
     page_ = SettingsPage::Home;
-    lv_obj_t* body = MakeBody();
-    SetTitle("设置");
-    MakeButton(body, "Wi-Fi 网络", Action::HomeWifi);
-    MakeButton(body, "屏幕方向", Action::HomeDisplay);
-    MakeButton(body, "返回主界面", Action::Close);
+    wifi_state_ = WifiSettingsState::Idle;
+    lv_obj_t* body = BuildPage("设置", Action::Close, false);
+
+    auto& wifi = WifiManager::GetInstance();
+    std::string wifi_subtitle =
+        wifi.IsConnected() ? wifi.GetSsid() + "  ·  " + wifi.GetIpAddress() : "未连接";
+    MakeListItem(body, MATERIAL_SYMBOLS_WIFI, "Wi-Fi 网络", wifi_subtitle.c_str(),
+                 Action::HomeWifi, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+
+    char rotation_subtitle[64];
+    snprintf(rotation_subtitle, sizeof(rotation_subtitle), "当前 %d°  ·  修改后需重启",
+             LoadRotationProfile().degrees);
+    MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "屏幕方向", rotation_subtitle,
+                 Action::HomeDisplay, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
 }
 
 void SettingsUi::ShowWifiPage() {
     page_ = SettingsPage::Wifi;
     wifi_state_ = WifiSettingsState::Scanning;
-    lv_obj_t* body = MakeBody();
-    SetTitle("Wi-Fi 网络");
+    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::BackHome, true);
 
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text(label, "正在扫描附近的 Wi-Fi ...");
+    lv_obj_t* card = MakeCard(body);
+    MakeIconLabel(card, MATERIAL_SYMBOLS_WIFI, true);
+    lv_obj_t* label = lv_label_create(card);
+    lv_label_set_text(label, "正在扫描附近的网络 ...");
+    lv_obj_set_flex_grow(label, 1);
 
-    MakeButton(body, "返回", Action::BackHome);
     StartWifiScan();
+}
+
+void SettingsUi::ShowWifiList() {
+    wifi_state_ = WifiSettingsState::SelectWifi;
+    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::BackHome, true);
+
+    lv_obj_t* area = MakeScrollArea(body);
+    if (scan_results_.empty()) {
+        lv_obj_t* card = MakeCard(area);
+        MakeIconLabel(card, MATERIAL_SYMBOLS_WIFI_OFF, true);
+        lv_obj_t* label = lv_label_create(card);
+        lv_label_set_text(label, "没有扫描到网络，点击右上角重试");
+        lv_obj_set_flex_grow(label, 1);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    } else {
+        for (size_t i = 0; i < scan_results_.size(); i++) {
+            const auto& item = scan_results_[i];
+            char subtitle[32];
+            snprintf(subtitle, sizeof(subtitle), "%d dBm", item.rssi);
+            MakeListItem(area, SignalIcon(item.rssi), item.ssid.c_str(), subtitle,
+                         Action::WifiPickScanned, (int)i,
+                         item.encrypted ? MATERIAL_SYMBOLS_LOCK
+                                        : MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        }
+    }
+
+    lv_obj_t* row = lv_obj_create(body);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), kButtonHeight);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* manual = MakeTextButton(row, MATERIAL_SYMBOLS_EDIT_SQUARE, "手动输入",
+                                      Action::WifiManualSsid, 0, false);
+    lv_obj_set_width(manual, LV_PCT(48));
+    lv_obj_t* saved =
+        MakeTextButton(row, MATERIAL_SYMBOLS_KEY, "已保存", Action::WifiSavedList, 0, false);
+    lv_obj_set_width(saved, LV_PCT(48));
 }
 
 void SettingsUi::StartWifiScan() {
@@ -281,43 +487,31 @@ void SettingsUi::OnScanComplete(std::vector<WifiScanItem> results, esp_err_t err
     }
     scan_results_ = std::move(results);
     if (error != ESP_OK) {
-        lv_obj_t* body = MakeBody();
-        lv_obj_t* label = lv_label_create(body);
-        lv_label_set_text_fmt(label, "扫描失败: %s", esp_err_to_name(error));
-        MakeButton(body, "重新扫描", Action::WifiRescan);
-        MakeButton(body, "已保存的网络", Action::WifiSavedList);
-        MakeButton(body, "返回", Action::BackHome);
+        ShowResult(false, esp_err_to_name(error));
         return;
     }
     ShowWifiList();
 }
 
-void SettingsUi::ShowWifiList() {
-    wifi_state_ = WifiSettingsState::SelectWifi;
-    lv_obj_t* body = MakeBody();
-    SetTitle("选择 Wi-Fi");
+void SettingsUi::ShowManualSsid() {
+    wifi_state_ = WifiSettingsState::InputSsid;
+    lv_obj_t* body = BuildPage("手动输入 SSID", Action::WifiRescan, false);
 
-    if (scan_results_.empty()) {
-        lv_obj_t* label = lv_label_create(body);
-        lv_label_set_text(label, "没有扫描到 Wi-Fi 网络");
-    } else {
-        lv_obj_t* list = lv_list_create(body);
-        lv_obj_set_width(list, LV_PCT(100));
-        lv_obj_set_flex_grow(list, 1);
-        for (size_t i = 0; i < scan_results_.size(); i++) {
-            const auto& item = scan_results_[i];
-            char text[96];
-            snprintf(text, sizeof(text), "%s  %s %s", item.ssid.c_str(), SignalBars(item.rssi),
-                     item.encrypted ? "\xe2\x97\x8f" : "");
-            lv_obj_t* button = lv_list_add_button(list, nullptr, text);
-            lv_obj_set_style_min_height(button, kButtonHeight, 0);
-            Bind(button, Action::WifiPickScanned, (int)i);
-        }
-    }
+    textarea_ = lv_textarea_create(body);
+    lv_obj_set_width(textarea_, LV_PCT(100));
+    lv_obj_set_height(textarea_, kButtonHeight);
+    lv_obj_set_style_radius(textarea_, 12, 0);
+    lv_textarea_set_one_line(textarea_, true);
+    lv_textarea_set_max_length(textarea_, 32);
+    lv_textarea_set_placeholder_text(textarea_, "network name");
 
-    MakeButton(body, "重新扫描", Action::WifiRescan);
-    MakeButton(body, "已保存的网络", Action::WifiSavedList);
-    MakeButton(body, "返回", Action::BackHome);
+    MakeTextButton(body, MATERIAL_SYMBOLS_ARROW_FORWARD, "下一步", Action::WifiManualNext, 0,
+                   true);
+
+    keyboard_ = lv_keyboard_create(body);
+    lv_obj_set_width(keyboard_, LV_PCT(100));
+    lv_obj_set_flex_grow(keyboard_, 1);
+    lv_keyboard_set_textarea(keyboard_, textarea_);
 }
 
 void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
@@ -325,48 +519,30 @@ void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
     pending_ssid_ = ssid;
     pending_encrypted_ = encrypted;
 
-    lv_obj_t* body = MakeBody();
-    SetTitle("输入密码");
-
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text_fmt(label, "连接到: %s", ssid.c_str());
+    lv_obj_t* body = BuildPage(ssid.c_str(), Action::WifiPasswordCancel, false);
 
     textarea_ = lv_textarea_create(body);
     lv_obj_set_width(textarea_, LV_PCT(100));
+    lv_obj_set_height(textarea_, kButtonHeight);
+    lv_obj_set_style_radius(textarea_, 12, 0);
     lv_textarea_set_one_line(textarea_, true);
     lv_textarea_set_password_mode(textarea_, true);
     lv_textarea_set_max_length(textarea_, 64);
-    lv_textarea_set_placeholder_text(textarea_, encrypted ? "Wi-Fi password" : "(open network)");
+    lv_textarea_set_placeholder_text(textarea_, encrypted ? "password" : "(open network)");
 
     lv_obj_t* row = lv_obj_create(body);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, LV_PCT(100), kButtonHeight);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
 
-    lv_obj_t* show = lv_button_create(row);
-    lv_obj_set_flex_grow(show, 1);
-    lv_obj_set_height(show, kButtonHeight);
-    lv_obj_t* show_label = lv_label_create(show);
-    lv_label_set_text(show_label, "显示密码");
-    lv_obj_center(show_label);
-    Bind(show, Action::WifiTogglePassword);
-
-    lv_obj_t* connect = lv_button_create(row);
-    lv_obj_set_flex_grow(connect, 1);
-    lv_obj_set_height(connect, kButtonHeight);
-    lv_obj_t* connect_label = lv_label_create(connect);
-    lv_label_set_text(connect_label, "连接");
-    lv_obj_center(connect_label);
-    Bind(connect, Action::WifiConnectConfirm);
-
-    lv_obj_t* cancel = lv_button_create(row);
-    lv_obj_set_flex_grow(cancel, 1);
-    lv_obj_set_height(cancel, kButtonHeight);
-    lv_obj_t* cancel_label = lv_label_create(cancel);
-    lv_label_set_text(cancel_label, "取消");
-    lv_obj_center(cancel_label);
-    Bind(cancel, Action::WifiPasswordCancel);
+    lv_obj_t* toggle = MakeTextButton(row, MATERIAL_SYMBOLS_EYEGLASSES, "显示",
+                                      Action::WifiTogglePassword, 0, false);
+    lv_obj_set_width(toggle, LV_PCT(32));
+    lv_obj_t* connect =
+        MakeTextButton(row, MATERIAL_SYMBOLS_CHECK, "连接", Action::WifiConnectConfirm, 0, true);
+    lv_obj_set_width(connect, LV_PCT(64));
 
     keyboard_ = lv_keyboard_create(body);
     lv_obj_set_width(keyboard_, LV_PCT(100));
@@ -381,64 +557,99 @@ void SettingsUi::ShowSavedList() {
         saved_ssids_.push_back(item.ssid);
     }
 
-    lv_obj_t* body = MakeBody();
-    SetTitle("已保存的网络");
+    lv_obj_t* body = BuildPage("已保存的网络", Action::WifiRescan, false);
+    lv_obj_t* area = MakeScrollArea(body);
 
     if (saved_ssids_.empty()) {
-        lv_obj_t* label = lv_label_create(body);
-        lv_label_set_text(label, "还没有保存任何 Wi-Fi");
-    } else {
-        lv_obj_t* list = lv_list_create(body);
-        lv_obj_set_width(list, LV_PCT(100));
-        lv_obj_set_flex_grow(list, 1);
-        for (size_t i = 0; i < saved_ssids_.size(); i++) {
-            lv_obj_t* row = lv_obj_create(list);
-            lv_obj_remove_style_all(row);
-            lv_obj_set_size(row, LV_PCT(100), kButtonHeight);
-            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-            lv_obj_set_style_pad_column(row, 8, 0);
-
-            lv_obj_t* connect = lv_button_create(row);
-            lv_obj_set_flex_grow(connect, 3);
-            lv_obj_set_height(connect, kButtonHeight - 8);
-            lv_obj_t* connect_label = lv_label_create(connect);
-            lv_label_set_text(connect_label, saved_ssids_[i].c_str());
-            lv_obj_center(connect_label);
-            Bind(connect, Action::WifiConnectSaved, (int)i);
-
-            lv_obj_t* remove = lv_button_create(row);
-            lv_obj_set_flex_grow(remove, 1);
-            lv_obj_set_height(remove, kButtonHeight - 8);
-            lv_obj_t* remove_label = lv_label_create(remove);
-            lv_label_set_text(remove_label, "删除");
-            lv_obj_center(remove_label);
-            Bind(remove, Action::WifiDeleteSaved, (int)i);
-        }
+        lv_obj_t* card = MakeCard(area);
+        MakeIconLabel(card, MATERIAL_SYMBOLS_INFO, true);
+        lv_obj_t* label = lv_label_create(card);
+        lv_label_set_text(label, "还没有保存任何网络");
+        lv_obj_set_flex_grow(label, 1);
+        return;
     }
 
-    MakeButton(body, "返回", Action::WifiRescan);
+    for (size_t i = 0; i < saved_ssids_.size(); i++) {
+        lv_obj_t* card = MakeCard(area);
+        MakeIconLabel(card, MATERIAL_SYMBOLS_KEY, true);
+
+        lv_obj_t* name = lv_label_create(card);
+        lv_label_set_text(name, saved_ssids_[i].c_str());
+        lv_obj_set_flex_grow(name, 1);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+
+        lv_obj_t* connect = lv_button_create(card);
+        lv_obj_set_size(connect, kIconButtonSize, kIconButtonSize);
+        lv_obj_set_style_radius(connect, 12, 0);
+        lv_obj_set_style_shadow_width(connect, 0, 0);
+        lv_obj_set_style_bg_color(connect, lv_color_hex(kAccentColor), 0);
+        lv_obj_set_style_text_color(connect, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(MakeIconLabel(connect, MATERIAL_SYMBOLS_LINK, false));
+        Bind(connect, Action::WifiConnectSaved, (int)i);
+
+        lv_obj_t* remove = lv_button_create(card);
+        lv_obj_set_size(remove, kIconButtonSize, kIconButtonSize);
+        lv_obj_set_style_radius(remove, 12, 0);
+        lv_obj_set_style_shadow_width(remove, 0, 0);
+        lv_obj_set_style_bg_color(remove, lv_color_hex(kDangerColor), 0);
+        lv_obj_set_style_text_color(remove, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(MakeIconLabel(remove, MATERIAL_SYMBOLS_DELETE, false));
+        Bind(remove, Action::WifiDeleteSaved, (int)i);
+    }
 }
 
 void SettingsUi::ShowConnecting(const std::string& ssid) {
     wifi_state_ = WifiSettingsState::Connecting;
-    lv_obj_t* body = MakeBody();
-    SetTitle("连接中");
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text_fmt(label, "正在连接 %s ...", ssid.c_str());
-    lv_obj_t* hint = lv_label_create(body);
-    lv_label_set_text(hint, "请稍候，最长约 20 秒");
+    lv_obj_t* body = BuildPage("连接中", Action::WifiResultBack, false);
+
+    lv_obj_t* box = lv_obj_create(body);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_width(box, LV_PCT(100));
+    lv_obj_set_flex_grow(box, 1);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 24, 0);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* spinner = lv_spinner_create(box);
+    lv_obj_set_size(spinner, 96, 96);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+
+    lv_obj_t* label = lv_label_create(box);
+    lv_label_set_text_fmt(label, "正在连接 %s", ssid.c_str());
+
+    lv_obj_t* hint = lv_label_create(box);
+    lv_label_set_text(hint, "最长约 20 秒");
+    lv_obj_set_style_opa(hint, LV_OPA_60, 0);
 }
 
 void SettingsUi::ShowResult(bool success, const char* message) {
     wifi_state_ = success ? WifiSettingsState::Success : WifiSettingsState::Failed;
-    lv_obj_t* body = MakeBody();
-    SetTitle(success ? "连接成功" : "连接失败");
-    lv_obj_t* label = lv_label_create(body);
+    lv_obj_t* body = BuildPage(success ? "连接成功" : "连接失败", Action::WifiResultBack, false);
+
+    lv_obj_t* box = lv_obj_create(body);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_width(box, LV_PCT(100));
+    lv_obj_set_flex_grow(box, 1);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 24, 0);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* icon =
+        MakeIconLabel(box, success ? MATERIAL_SYMBOLS_CHECK_CIRCLE : MATERIAL_SYMBOLS_CANCEL,
+                      true);
+    lv_obj_set_style_text_color(icon, lv_color_hex(success ? kSuccessColor : kDangerColor), 0);
+
+    lv_obj_t* label = lv_label_create(box);
     lv_label_set_text(label, message);
-    lv_obj_set_width(label, LV_PCT(100));
+    lv_obj_set_width(label, LV_PCT(90));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-    MakeButton(body, success ? "完成" : "返回列表", Action::WifiResultBack);
-    MakeButton(body, "关闭设置", Action::Close);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+
+    MakeTextButton(body, success ? MATERIAL_SYMBOLS_CHECK : MATERIAL_SYMBOLS_REFRESH,
+                   success ? "完成" : "返回列表", Action::WifiResultBack, 0, true);
+    MakeTextButton(body, MATERIAL_SYMBOLS_CLOSE, "关闭设置", Action::Close, 0, false);
 }
 
 void SettingsUi::OnConnectResult(bool success, const std::string& message) {
@@ -450,6 +661,10 @@ void SettingsUi::OnConnectResult(bool success, const std::string& message) {
     ESP_LOGI(TAG, "%s: %s", success ? "Success" : "Failed", message.c_str());
     ShowResult(success, message.c_str());
 }
+
+// ---------------------------------------------------------------------------
+// Rotation
+// ---------------------------------------------------------------------------
 
 RotationProfile SettingsUi::MakeRotationProfile(int degrees) {
     // 0 degrees is the shipping configuration validated on hardware; the other
@@ -485,50 +700,113 @@ bool SettingsUi::SaveRotation(int degrees) {
 
 void SettingsUi::ShowDisplaySettings() {
     page_ = SettingsPage::Display;
-    lv_obj_t* body = MakeBody();
-    SetTitle("屏幕方向");
+    int current = LoadRotationProfile().degrees;
+    if (pending_rotation_ != 0 && pending_rotation_ != 90 && pending_rotation_ != 180 &&
+        pending_rotation_ != 270) {
+        pending_rotation_ = current;
+    }
 
-    int current = SettingsUi::LoadRotationProfile().degrees;
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text_fmt(label, "当前方向: %d°  (修改后需要重启生效)", current);
-    lv_obj_set_width(label, LV_PCT(100));
-    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_t* body = BuildPage("屏幕方向", Action::BackHome, false);
+
+    lv_obj_t* grid = lv_obj_create(body);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_width(grid, LV_PCT(100));
+    lv_obj_set_flex_grow(grid, 1);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(grid, kGap, 0);
+    lv_obj_set_style_pad_column(grid, kGap, 0);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
 
     for (int i = 0; i < 4; i++) {
-        char text[32];
-        snprintf(text, sizeof(text), "%d°%s", kRotationChoices[i],
-                 kRotationChoices[i] == current ? "  (当前)" : "");
-        MakeButton(body, text, Action::RotationSelect, i);
+        int degrees = kRotationChoices[i];
+        bool selected = degrees == pending_rotation_;
+
+        lv_obj_t* tile = lv_button_create(grid);
+        lv_obj_set_size(tile, LV_PCT(47), 160);
+        lv_obj_set_style_radius(tile, kCardRadius, 0);
+        lv_obj_set_style_shadow_width(tile, 0, 0);
+        lv_obj_set_style_bg_color(tile, selected ? lv_color_hex(kAccentColor) : CardColor(), 0);
+        if (selected) {
+            lv_obj_set_style_text_color(tile, lv_color_hex(0xFFFFFF), 0);
+        }
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(tile, 8, 0);
+
+        MakeIconLabel(tile, MATERIAL_SYMBOLS_REPEAT, true);
+        lv_obj_t* label = lv_label_create(tile);
+        char text[24];
+        snprintf(text, sizeof(text), "%d°%s", degrees, degrees == current ? "  (当前)" : "");
+        lv_label_set_text(label, text);
+        Bind(tile, Action::RotationPick, i);
     }
-    MakeButton(body, "返回", Action::BackHome);
+
+    MakeTextButton(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave,
+                   0, true);
 }
 
-void SettingsUi::SelectRotation(int index) {
-    if (index < 0 || index >= 4 || operation_active_) {
+void SettingsUi::ShowRotationConfirm() {
+    lv_obj_t* body = BuildPage("确认", Action::HomeDisplay, false);
+
+    lv_obj_t* box = lv_obj_create(body);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_width(box, LV_PCT(100));
+    lv_obj_set_flex_grow(box, 1);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 24, 0);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* icon = MakeIconLabel(box, MATERIAL_SYMBOLS_WARNING, true);
+    lv_obj_set_style_text_color(icon, lv_color_hex(kDangerColor), 0);
+
+    lv_obj_t* label = lv_label_create(box);
+    lv_label_set_text_fmt(label, "将屏幕方向设为 %d°，设备会立即重启。", pending_rotation_);
+    lv_obj_set_width(label, LV_PCT(90));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+
+    MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "确认并重启", Action::RotationConfirm, 0, true);
+    MakeTextButton(body, MATERIAL_SYMBOLS_CLOSE, "取消", Action::HomeDisplay, 0, false);
+}
+
+void SettingsUi::CommitRotation() {
+    if (!SaveRotation(pending_rotation_)) {
         return;
     }
-    int degrees = kRotationChoices[index];
-    if (!SaveRotation(degrees)) {
-        return;
-    }
-    ESP_LOGI(TAG, "Saved rotation=%d, rebooting", degrees);
+    ESP_LOGI(TAG, "Saved rotation=%d, rebooting", pending_rotation_);
     operation_active_ = true;
 
-    lv_obj_t* body = MakeBody();
-    SetTitle("屏幕方向");
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text_fmt(label, "已保存 %d°，设备将在 3 秒后重启生效。", degrees);
-    lv_obj_set_width(label, LV_PCT(100));
-    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_t* body = BuildPage("屏幕方向", Action::HomeDisplay, false);
+    lv_obj_t* box = lv_obj_create(body);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_width(box, LV_PCT(100));
+    lv_obj_set_flex_grow(box, 1);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 24, 0);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* spinner = lv_spinner_create(box);
+    lv_obj_set_size(spinner, 96, 96);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+
+    lv_obj_t* label = lv_label_create(box);
+    lv_label_set_text_fmt(label, "已保存 %d°，正在重启 ...", pending_rotation_);
 
     xTaskCreate(
         [](void*) {
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            vTaskDelay(pdMS_TO_TICKS(2000));
             Application::GetInstance().Reboot();
             vTaskDelete(nullptr);
         },
         "d1001_reboot", 4096, nullptr, 3, nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
 
 void SettingsUi::HandleAction(Action action, int index) {
     switch (action) {
@@ -544,9 +822,6 @@ void SettingsUi::HandleAction(Action action, int index) {
         case Action::HomeDisplay:
             ShowDisplaySettings();
             return;
-        case Action::RotationSelect:
-            SelectRotation(index);
-            return;
         case Action::BackHome:
             scan_generation_++;
             ShowHome();
@@ -557,6 +832,20 @@ void SettingsUi::HandleAction(Action action, int index) {
         case Action::WifiSavedList:
             ShowSavedList();
             return;
+        case Action::WifiManualSsid:
+            ShowManualSsid();
+            return;
+        case Action::WifiManualNext: {
+            if (textarea_ == nullptr) {
+                return;
+            }
+            std::string ssid = lv_textarea_get_text(textarea_);
+            if (ssid.empty()) {
+                return;
+            }
+            ShowPasswordInput(ssid, true);
+            return;
+        }
         case Action::WifiPickScanned:
             if (index >= 0 && index < (int)scan_results_.size()) {
                 ShowPasswordInput(scan_results_[index].ssid, scan_results_[index].encrypted);
@@ -564,8 +853,8 @@ void SettingsUi::HandleAction(Action action, int index) {
             return;
         case Action::WifiTogglePassword:
             if (textarea_ != nullptr) {
-                bool on = lv_textarea_get_password_mode(textarea_);
-                lv_textarea_set_password_mode(textarea_, !on);
+                lv_textarea_set_password_mode(textarea_,
+                                              !lv_textarea_get_password_mode(textarea_));
             }
             return;
         case Action::WifiPasswordCancel:
@@ -614,7 +903,28 @@ void SettingsUi::HandleAction(Action action, int index) {
             ShowSavedList();
             return;
         case Action::WifiResultBack:
+            if (operation_active_) {
+                return;
+            }
             ShowWifiPage();
+            return;
+        case Action::RotationPick:
+            if (index >= 0 && index < 4) {
+                pending_rotation_ = kRotationChoices[index];
+                ShowDisplaySettings();
+            }
+            return;
+        case Action::RotationSave:
+            if (operation_active_) {
+                return;
+            }
+            ShowRotationConfirm();
+            return;
+        case Action::RotationConfirm:
+            if (operation_active_) {
+                return;
+            }
+            CommitRotation();
             return;
     }
 }
