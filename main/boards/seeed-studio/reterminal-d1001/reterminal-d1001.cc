@@ -91,12 +91,13 @@ private:
                     .lane_num = DISPLAY_MIPI_DSI_LANE_NUM,
                 },
         };
-        const esp_lcd_panel_dev_config_t panel_config = {
-            .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-            .bits_per_pixel = 16,
-            .reset_gpio_num = GPIO_NUM_NC,  // reset is behind the PCA9535
-            .vendor_config = &vendor_config,
-        };
+        // Field order differs between IDF 5.5 and 6.0, so assign instead of
+        // using designated initializers (-Wpedantic rejects out-of-order ones).
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.reset_gpio_num = GPIO_NUM_NC;  // reset is behind the PCA9535
+        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+        panel_config.bits_per_pixel = 16;
+        panel_config.vendor_config = &vendor_config;
 
         esp_lcd_panel_handle_t panel = nullptr;
         ESP_ERROR_CHECK(esp_lcd_new_panel_jd9365(panel_io, &panel_config, &panel));
