@@ -63,6 +63,25 @@ public:
         lv_obj_center(label);
     }
 
+    // Software rotation for 90/270; 180 is done with the panel mirror flags so
+    // no per-frame rotation cost is paid for it.
+    void ApplyRotation(int degrees) {
+        lv_display_t* disp = lv_display_get_default();
+        if (disp == nullptr) {
+            return;
+        }
+        lv_display_rotation_t rotation = LV_DISPLAY_ROTATION_0;
+        if (degrees == 90) {
+            rotation = LV_DISPLAY_ROTATION_90;
+        } else if (degrees == 270) {
+            rotation = LV_DISPLAY_ROTATION_270;
+        }
+        if (rotation != LV_DISPLAY_ROTATION_0) {
+            DisplayLockGuard lock(this);
+            lv_display_set_rotation(disp, rotation);
+        }
+    }
+
     void SetSettingsButtonHidden(bool hidden) {
         if (settings_button_ == nullptr) {
             return;
@@ -110,7 +129,7 @@ private:
         ESP_LOGI(TAG, "MIPI DSI PHY powered on");
     }
 
-    void InitializeMipiDisplay() {
+    void InitializeMipiDisplay(const RotationProfile& rotation) {
         EnableDsiPhyPower();
         expander_.PowerUpDisplayRails();
 
@@ -181,13 +200,14 @@ private:
 
         display_ = new ReTerminalD1001Display(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                               DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                              DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
-                                              DISPLAY_SWAP_XY);
+                                              rotation.lcd_mirror_x, rotation.lcd_mirror_y,
+                                              rotation.lcd_swap_xy);
         display_->SetOpenSettingsCallback([this]() { OpenSettings(); });
-        ESP_LOGI(TAG, "Display initialized");
+        display_->ApplyRotation(rotation.degrees);
+        ESP_LOGI(TAG, "Display initialized, rotation=%d", rotation.degrees);
     }
 
-    void InitializeTouch() {
+    void InitializeTouch(const RotationProfile& rotation) {
         i2c_master_bus_config_t bus_config = {
             .i2c_port = TOUCH_I2C_PORT,
             .sda_io_num = TOUCH_I2C_SDA_PIN,
@@ -235,9 +255,11 @@ private:
                 },
             .flags =
                 {
-                    .swap_xy = TOUCH_SWAP_XY,
-                    .mirror_x = TOUCH_MIRROR_X,
-                    .mirror_y = TOUCH_MIRROR_Y,
+                    // x_max/y_max stay at the native panel size: the driver
+                    // mirrors raw coordinates before the optional swap.
+                    .swap_xy = rotation.touch_swap_xy,
+                    .mirror_x = rotation.touch_mirror_x,
+                    .mirror_y = rotation.touch_mirror_y,
                 },
             .driver_data = &touch_driver_config_,
         };
@@ -383,8 +405,11 @@ public:
                                                      AUDIO_OUTPUT_SAMPLE_RATE);
         audio_codec_->SetPowerAmpCallback([this](bool on) { expander_.SetPowerAmp(on); });
 
-        InitializeMipiDisplay();
-        InitializeTouch();
+        RotationProfile rotation = SettingsUi::LoadRotationProfile();
+        ESP_LOGI(TAG, "Screen rotation=%d", rotation.degrees);
+
+        InitializeMipiDisplay(rotation);
+        InitializeTouch(rotation);
         InitializeButtons();
 
         GetBacklight()->RestoreBrightness();

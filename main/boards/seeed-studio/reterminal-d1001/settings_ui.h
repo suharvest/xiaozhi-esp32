@@ -12,6 +12,7 @@
 enum class SettingsPage {
     Home,
     Wifi,
+    Display,
 };
 
 enum class WifiSettingsState {
@@ -22,6 +23,19 @@ enum class WifiSettingsState {
     Connecting,
     Success,
     Failed,
+};
+
+// One entry per supported orientation. The LCD flags go to the panel / LVGL
+// port, the touch flags to esp_lcd_touch. The table is kept in a single place
+// so per-angle calibration only ever edits one function.
+struct RotationProfile {
+    int degrees;
+    bool lcd_mirror_x;
+    bool lcd_mirror_y;
+    bool lcd_swap_xy;
+    bool touch_swap_xy;
+    bool touch_mirror_x;
+    bool touch_mirror_y;
 };
 
 struct WifiScanItem {
@@ -49,10 +63,16 @@ public:
     void OnScanComplete(std::vector<WifiScanItem> results, esp_err_t error, uint32_t generation);
     void OnConnectResult(bool success, const std::string& message);
 
+    // Screen rotation persisted in NVS (namespace "reterminal", key "rotation").
+    static RotationProfile LoadRotationProfile();
+    static RotationProfile MakeRotationProfile(int degrees);
+    static bool SaveRotation(int degrees);
+
 private:
     enum class Action {
         Close,
         HomeWifi,
+        HomeDisplay,
         BackHome,
         WifiRescan,
         WifiSavedList,
@@ -63,6 +83,7 @@ private:
         WifiConnectSaved,
         WifiDeleteSaved,
         WifiResultBack,
+        RotationSelect,
     };
 
     struct EventCtx {
@@ -90,6 +111,8 @@ private:
     void ShowSavedList();
     void ShowConnecting(const std::string& ssid);
     void ShowResult(bool success, const char* message);
+    void ShowDisplaySettings();
+    void SelectRotation(int degrees);
 
     LcdDisplay* display_;
     ConnectCallback connect_cb_;

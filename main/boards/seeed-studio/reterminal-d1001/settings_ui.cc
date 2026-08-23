@@ -1,5 +1,8 @@
 #include "settings_ui.h"
 
+#include "application.h"
+#include "settings.h"
+
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
@@ -14,6 +17,7 @@
 namespace {
 
 constexpr int kMaxScanResults = 20;
+constexpr int kRotationChoices[] = {0, 90, 180, 270};
 constexpr int kHeaderHeight = 72;
 constexpr int kButtonHeight = 64;
 
@@ -197,6 +201,7 @@ void SettingsUi::ShowHome() {
     lv_obj_t* body = MakeBody();
     SetTitle("设置");
     MakeButton(body, "Wi-Fi 网络", Action::HomeWifi);
+    MakeButton(body, "屏幕方向", Action::HomeDisplay);
     MakeButton(body, "返回主界面", Action::Close);
 }
 
@@ -446,6 +451,85 @@ void SettingsUi::OnConnectResult(bool success, const std::string& message) {
     ShowResult(success, message.c_str());
 }
 
+RotationProfile SettingsUi::MakeRotationProfile(int degrees) {
+    // 0 degrees is the shipping configuration validated on hardware; the other
+    // three rows are the candidates from the design note and still need a
+    // four-corner touch calibration pass on the device.
+    switch (degrees) {
+        case 90:
+            return RotationProfile{90, false, false, false, true, true, false};
+        case 180:
+            return RotationProfile{180, true, true, false, false, false, false};
+        case 270:
+            return RotationProfile{270, false, false, false, true, false, true};
+        case 0:
+        default:
+            return RotationProfile{0, false, false, false, false, true, true};
+    }
+}
+
+RotationProfile SettingsUi::LoadRotationProfile() {
+    Settings settings("reterminal", false);
+    int degrees = settings.GetInt("rotation", 0);
+    return MakeRotationProfile(degrees);
+}
+
+bool SettingsUi::SaveRotation(int degrees) {
+    if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != 270) {
+        return false;
+    }
+    Settings settings("reterminal", true);
+    settings.SetInt("rotation", degrees);
+    return true;  // committed by the Settings destructor
+}
+
+void SettingsUi::ShowDisplaySettings() {
+    page_ = SettingsPage::Display;
+    lv_obj_t* body = MakeBody();
+    SetTitle("屏幕方向");
+
+    int current = SettingsUi::LoadRotationProfile().degrees;
+    lv_obj_t* label = lv_label_create(body);
+    lv_label_set_text_fmt(label, "当前方向: %d°  (修改后需要重启生效)", current);
+    lv_obj_set_width(label, LV_PCT(100));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+
+    for (int i = 0; i < 4; i++) {
+        char text[32];
+        snprintf(text, sizeof(text), "%d°%s", kRotationChoices[i],
+                 kRotationChoices[i] == current ? "  (当前)" : "");
+        MakeButton(body, text, Action::RotationSelect, i);
+    }
+    MakeButton(body, "返回", Action::BackHome);
+}
+
+void SettingsUi::SelectRotation(int index) {
+    if (index < 0 || index >= 4 || operation_active_) {
+        return;
+    }
+    int degrees = kRotationChoices[index];
+    if (!SaveRotation(degrees)) {
+        return;
+    }
+    ESP_LOGI(TAG, "Saved rotation=%d, rebooting", degrees);
+    operation_active_ = true;
+
+    lv_obj_t* body = MakeBody();
+    SetTitle("屏幕方向");
+    lv_obj_t* label = lv_label_create(body);
+    lv_label_set_text_fmt(label, "已保存 %d°，设备将在 3 秒后重启生效。", degrees);
+    lv_obj_set_width(label, LV_PCT(100));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+
+    xTaskCreate(
+        [](void*) {
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            Application::GetInstance().Reboot();
+            vTaskDelete(nullptr);
+        },
+        "d1001_reboot", 4096, nullptr, 3, nullptr);
+}
+
 void SettingsUi::HandleAction(Action action, int index) {
     switch (action) {
         case Action::Close:
@@ -456,6 +540,12 @@ void SettingsUi::HandleAction(Action action, int index) {
             return;
         case Action::HomeWifi:
             ShowWifiPage();
+            return;
+        case Action::HomeDisplay:
+            ShowDisplaySettings();
+            return;
+        case Action::RotationSelect:
+            SelectRotation(index);
             return;
         case Action::BackHome:
             scan_generation_++;

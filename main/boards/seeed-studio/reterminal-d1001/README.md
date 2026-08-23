@@ -85,6 +85,34 @@ firmware images with separate version lifecycles. Building or updating this
 P4 image does not build or silently update the C6 firmware; record and
 manage both versions independently.
 
+## On-screen settings
+
+A round `设置` button sits in the top-right corner of the main screen, just
+below the status bar. Tapping it opens a full-screen overlay
+(`settings_ui.h/.cc`) on the LVGL top layer; the main UI keeps running
+underneath and is restored on `返回`. The GPIO3 button behaviour is unchanged.
+
+- **Wi-Fi 网络**: scans in a background task (`esp_wifi_scan_start`, up to 20
+  results), lists SSID/signal/encryption, opens an on-screen keyboard for the
+  password and connects. Saved networks can be reconnected or deleted. The new
+  credentials are written through `SsidManager` before the attempt and rolled
+  back if the connection does not come up within 20 s. Switching networks while
+  the device is idle goes through `EnterWifiConfigMode()` first, so the protocol
+  is torn down cleanly before the station restarts.
+- **屏幕方向**: 0/90/180/270, stored in NVS (namespace `reterminal`, key
+  `rotation`) and applied at boot; the device reboots 3 s after the choice is
+  saved. 90/270 use `lv_display_set_rotation()` (the MIPI port runs with
+  `sw_rotate`), 180 uses the panel mirror flags. Touch swap/mirror flags come
+  from the same table in `SettingsUi::MakeRotationProfile()`.
+
+Only the 0° row of that table is hardware-validated. The 90/180/270 rows are
+candidates and still need a four-corner touch calibration pass on the device;
+frame rate under software rotation at 800x1280 RGB565 has not been measured
+either. Both are edited in one place: `MakeRotationProfile()`.
+
+The board build appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y` and
+`CONFIG_LV_USE_TEXTAREA=y`, which the project defaults leave off.
+
 ## Pin facts (from the Seeed BSP)
 
 | Function        | Pins / address                              |
