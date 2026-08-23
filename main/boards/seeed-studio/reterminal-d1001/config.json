@@ -23,7 +23,9 @@
                 "CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/32m.csv\"",
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y",
-                "CONFIG_ESP32P4_REV_MIN_100=y"
+                "CONFIG_ESP32P4_REV_MIN_100=y",
+                "CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH=y",
+                "CONFIG_ESPTOOLPY_FLASH_MODE_AUTO_DETECT=n"
             ]
         }
     ]
