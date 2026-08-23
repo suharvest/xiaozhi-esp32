@@ -52,7 +52,9 @@ void ReTerminalD1001Expander::Initialize() {
     const uint32_t all_pins =
         static_cast<uint32_t>(EXPANDER_BIT_LCD_PWR_EN | EXPANDER_BIT_LCD_BACKLIGHT_EN |
                               EXPANDER_BIT_PWR_HOLD | EXPANDER_BIT_LCD_RST |
-                              EXPANDER_BIT_PA_ENABLE | EXPANDER_BIT_TOUCH_RST);
+                              EXPANDER_BIT_PA_ENABLE | EXPANDER_BIT_TOUCH_RST |
+                              EXPANDER_BIT_CAM_EN | EXPANDER_BIT_CAM_PWDN |
+                              EXPANDER_BIT_CAM_RST);
     ret = esp_io_expander_set_dir(expander_, all_pins, IO_EXPANDER_OUTPUT);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure expander outputs: %s", esp_err_to_name(ret));
@@ -93,6 +95,46 @@ void ReTerminalD1001Expander::SetTouchReset(bool asserted) {
 
 void ReTerminalD1001Expander::SetPowerAmp(bool on) { SetLevel(EXPANDER_BIT_PA_ENABLE, on); }
 
+void ReTerminalD1001Expander::SetCameraPower(bool on) { SetLevel(EXPANDER_BIT_CAM_EN, on); }
+
+void ReTerminalD1001Expander::SetCameraPowerDown(bool asserted) {
+    // The BSP drives this line high for normal operation, so asserting
+    // power-down pulls it low.
+    SetLevel(EXPANDER_BIT_CAM_PWDN, !asserted);
+}
+
+void ReTerminalD1001Expander::SetCameraReset(bool asserted) {
+    // Reset is active low: the BSP releases it by driving the line high.
+    SetLevel(EXPANDER_BIT_CAM_RST, !asserted);
+}
+
+void ReTerminalD1001Expander::PowerUpCamera() {
+    if (!IsInitialized()) {
+        ESP_LOGE(TAG, "cannot power up the camera: expander unavailable");
+        return;
+    }
+    // Same sequence and delays as bsp_io_expander_init() in the Seeed BSP.
+    SetCameraPower(true);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    SetCameraPowerDown(false);
+    SetCameraReset(false);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    SetCameraReset(true);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    SetCameraReset(false);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "camera powered up");
+}
+
+void ReTerminalD1001Expander::PowerDownCamera() {
+    if (!IsInitialized()) {
+        return;
+    }
+    SetCameraReset(true);
+    SetCameraPowerDown(true);
+    SetCameraPower(false);
+}
+
 void ReTerminalD1001Expander::ApplyMinimalPowerSequence() {
     if (!IsInitialized()) {
         ESP_LOGE(TAG, "cannot apply power sequence: expander unavailable");
@@ -107,6 +149,11 @@ void ReTerminalD1001Expander::ApplyMinimalPowerSequence() {
     SetBacklightPower(false);
     SetLcdReset(true);
     SetTouchReset(true);
+    // Park the camera too: rail off and the sensor held in reset until
+    // PowerUpCamera() runs the BSP sequence.
+    SetCameraPower(false);
+    SetCameraPowerDown(true);
+    SetCameraReset(true);
     // Hold system power (vdd_3v3) and let it settle, as the BSP does.
     SetPowerHold(true);
     vTaskDelay(pdMS_TO_TICKS(50));

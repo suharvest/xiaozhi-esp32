@@ -8,9 +8,10 @@
  * Owns the D1001 audio-control I2C bus (I2C1) and the PCA9535 IO expander
  * that drives the board power and panel control signals.
  *
- * Only the signals needed by the first XiaoZhi port are exposed here. The
- * camera, LTE, battery and SD related expander pins are intentionally left
- * untouched so this wrapper does not grow beyond the port scope.
+ * Only the signals needed by the current XiaoZhi port are exposed here: the
+ * power hold, the panel rails, the audio power amplifier and the camera
+ * module. The LTE, battery and SD related expander pins are intentionally
+ * left untouched so this wrapper does not grow beyond the port scope.
  */
 class ReTerminalD1001Expander {
 public:
@@ -38,11 +39,24 @@ public:
     void SetBacklightPower(bool on);
     void SetTouchReset(bool asserted);
     void SetPowerAmp(bool on);
+    void SetCameraPower(bool on);
+    void SetCameraPowerDown(bool asserted);
+    void SetCameraReset(bool asserted);
+
+    /// Run the Seeed BSP camera power-up sequence: rail on, 50 ms settle,
+    /// release power-down and reset, then a 10 ms reset pulse followed by a
+    /// 50 ms wait. Must run before esp_video probes the sensor over SCCB.
+    void PowerUpCamera();
+
+    /// Hold the sensor in reset and cut its rail. Only safe once the video
+    /// device that owns the sensor has been destroyed.
+    void PowerDownCamera();
 
     /// Assert power-hold and park every other controlled signal in its safe
     /// state: power amplifier off, panel and backlight rails off, LCD and
-    /// touch held in reset. The panel rails are turned on later by
-    /// PowerUpDisplayRails().
+    /// touch held in reset, camera rail off and held in reset. The panel
+    /// rails are turned on later by PowerUpDisplayRails(), the camera by
+    /// PowerUpCamera().
     void ApplyMinimalPowerSequence();
 
     /// Turn on the panel and backlight rails and wait for them to settle.

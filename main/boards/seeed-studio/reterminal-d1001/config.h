@@ -37,6 +37,9 @@
 #define EXPANDER_BIT_PWR_HOLD (1ULL << 8)          // EXP_PIN_NUM_8: system power hold (vdd_3v3)
 #define EXPANDER_BIT_PA_ENABLE (1ULL << 11)        // EXP_PIN_NUM_11: NS4150B power amp enable
 #define EXPANDER_BIT_TOUCH_RST (1ULL << 12)        // EXP_PIN_NUM_12: GSL3670 touch reset
+#define EXPANDER_BIT_CAM_EN (1ULL << 1)            // EXP_PIN_NUM_1: camera rail enable
+#define EXPANDER_BIT_CAM_PWDN (1ULL << 3)          // EXP_PIN_NUM_3: camera power down
+#define EXPANDER_BIT_CAM_RST (1ULL << 9)           // EXP_PIN_NUM_9: camera reset
 
 // GSL3670 touch controller bus (I2C0) and interrupt.
 #define TOUCH_I2C_PORT I2C_NUM_0
@@ -45,6 +48,12 @@
 #define TOUCH_INTERRUPT_PIN GPIO_NUM_16
 #define TOUCH_I2C_ADDRESS 0x40
 #define TOUCH_I2C_FREQ_HZ 400000
+
+// Onboard MIPI CSI-2 camera module. The SC2356 sensor answers on the same
+// I2C0 bus as the touch controller, so the camera reuses that bus handle
+// instead of letting esp_video create a second master on the same pins.
+#define CAMERA_SCCB_ADDRESS 0x36
+#define CAMERA_SCCB_FREQ_HZ TOUCH_I2C_FREQ_HZ
 // The Seeed BSP polls the controller and leaves GPIO16 unused.
 #define TOUCH_SWAP_XY 0
 #define TOUCH_MIRROR_X 1
