@@ -8,6 +8,7 @@
 #include "lcd_init_cmds.h"
 #include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
+#include "settings_ui.h"
 
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
@@ -16,15 +17,84 @@
 #include <esp_ldo_regulator.h>
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <ssid_manager.h>
+#include <wifi_manager.h>
+
+#include <memory>
+#include <string>
 
 #define TAG "ReTerminalD1001"
+
+// Display subclass that keeps the stock layout and only adds the settings
+// entry button on top of it.
+class ReTerminalD1001Display final : public MipiLcdDisplay {
+public:
+    using OpenSettingsCallback = std::function<void()>;
+
+    ReTerminalD1001Display(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                           int width, int height, int offset_x, int offset_y, bool mirror_x,
+                           bool mirror_y, bool swap_xy)
+        : MipiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y,
+                         swap_xy) {}
+
+    void SetOpenSettingsCallback(OpenSettingsCallback callback) {
+        open_settings_ = std::move(callback);
+    }
+
+    void SetupUI() override {
+        MipiLcdDisplay::SetupUI();
+
+        DisplayLockGuard lock(this);
+        // The status bar owns the top strip, so the entry sits just below it in
+        // the top-right corner. It is parented to the active screen (not the
+        // top layer) so it inherits the theme font: SetTheme() frees the old
+        // font, and a pinned font pointer crashes the next redraw.
+        settings_button_ = lv_button_create(lv_screen_active());
+        lv_obj_set_size(settings_button_, kSettingsButtonSize, kSettingsButtonSize);
+        lv_obj_align(settings_button_, LV_ALIGN_TOP_RIGHT, -8, 52);
+        lv_obj_set_style_radius(settings_button_, kSettingsButtonSize / 2, 0);
+        lv_obj_set_style_bg_opa(settings_button_, LV_OPA_70, 0);
+        lv_obj_add_event_cb(settings_button_, OnSettingsClicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* label = lv_label_create(settings_button_);
+        lv_label_set_text(label, "设置");
+        lv_obj_center(label);
+    }
+
+    void SetSettingsButtonHidden(bool hidden) {
+        if (settings_button_ == nullptr) {
+            return;
+        }
+        if (hidden) {
+            lv_obj_add_flag(settings_button_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(settings_button_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+private:
+    static constexpr int kSettingsButtonSize = 56;
+
+    static void OnSettingsClicked(lv_event_t* event) {
+        auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
+        if (self != nullptr && self->open_settings_) {
+            self->open_settings_();
+        }
+    }
+
+    OpenSettingsCallback open_settings_;
+    lv_obj_t* settings_button_ = nullptr;
+};
 
 class ReTerminalD1001Board : public WifiBoard {
 private:
     ReTerminalD1001Expander expander_;
     ReTerminalD1001AudioCodec* audio_codec_ = nullptr;
     Button boot_button_;
-    LcdDisplay* display_ = nullptr;
+    ReTerminalD1001Display* display_ = nullptr;
+    std::unique_ptr<SettingsUi> settings_ui_;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
 
@@ -109,9 +179,11 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-        display_ = new MipiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                      DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
-                                      DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new ReTerminalD1001Display(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                              DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                              DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
+                                              DISPLAY_SWAP_XY);
+        display_->SetOpenSettingsCallback([this]() { OpenSettings(); });
         ESP_LOGI(TAG, "Display initialized");
     }
 
@@ -186,6 +258,104 @@ private:
             return;
         }
         ESP_LOGI(TAG, "Touch panel initialized");
+    }
+
+    void OpenSettings() {
+        if (settings_ui_ == nullptr) {
+            settings_ui_.reset(new SettingsUi(
+                display_,
+                [this](const std::string& ssid, const std::string& password) {
+                    ConnectFromSettings(ssid, password);
+                },
+                [this]() { display_->SetSettingsButtonHidden(false); }));
+        }
+        if (settings_ui_->IsOpen()) {
+            return;
+        }
+        display_->SetSettingsButtonHidden(true);
+        settings_ui_->Open();
+    }
+
+    // Runs on a worker task: swap the credentials in, restart the station and
+    // wait for the link. On failure the previous credentials are restored.
+    void ConnectFromSettings(const std::string& ssid, const std::string& password) {
+        auto* request = new ConnectRequest{this, ssid, password};
+        BaseType_t ok = xTaskCreate(
+            [](void* arg) {
+                std::unique_ptr<ConnectRequest> request(static_cast<ConnectRequest*>(arg));
+                request->board->RunConnect(*request);
+                vTaskDelete(nullptr);
+            },
+            "d1001_wifi_set", 4096, request, 3, nullptr);
+        if (ok != pdPASS) {
+            delete request;
+            settings_ui_->OnConnectResult(false, "无法启动连接任务");
+        }
+    }
+
+    struct ConnectRequest {
+        ReTerminalD1001Board* board;
+        std::string ssid;
+        std::string password;
+    };
+
+    void RunConnect(const ConnectRequest& request) {
+        auto& ssid_manager = SsidManager::GetInstance();
+
+        // Snapshot the previous entry so a failed attempt can be rolled back.
+        bool existed = false;
+        std::string old_password;
+        for (const auto& item : ssid_manager.GetSsidList()) {
+            if (item.ssid == request.ssid) {
+                existed = true;
+                old_password = item.password;
+                break;
+            }
+        }
+        ssid_manager.AddSsid(request.ssid, request.password);
+
+        auto& wifi_manager = WifiManager::GetInstance();
+        auto& app = Application::GetInstance();
+        auto state = app.GetDeviceState();
+        if (state == kDeviceStateIdle || state == kDeviceStateListening ||
+            state == kDeviceStateSpeaking) {
+            // Tear the protocol down before the link is taken away.
+            EnterWifiConfigMode();
+            for (int i = 0; i < 60 && !IsInWifiConfigMode(); i++) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
+
+        ESP_LOGI(TAG, "Connecting to %s from the settings UI", request.ssid.c_str());
+        wifi_manager.StartStation();
+
+        bool success = false;
+        for (int i = 0; i < 200; i++) {
+            if (wifi_manager.IsConnected() && wifi_manager.GetSsid() == request.ssid) {
+                success = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        std::string message;
+        if (success) {
+            message = "已连接到 " + request.ssid + "\nIP: " + wifi_manager.GetIpAddress();
+        } else {
+            message = "无法连接到 " + request.ssid + "，请检查密码后重试";
+            // Roll the credentials back so a wrong password is not kept.
+            const auto& list = ssid_manager.GetSsidList();
+            for (size_t i = 0; i < list.size(); i++) {
+                if (list[i].ssid == request.ssid) {
+                    ssid_manager.RemoveSsid((int)i);
+                    break;
+                }
+            }
+            if (existed) {
+                ssid_manager.AddSsid(request.ssid, old_password);
+            }
+        }
+        settings_ui_->OnConnectResult(success, message);
     }
 
     void InitializeButtons() {
