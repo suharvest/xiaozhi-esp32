@@ -26,40 +26,36 @@ Validated on hardware (P4 v1.3, 32 MB Winbond flash ef/4019, 32 MB PSRAM):
   LVGL input device (`gsl3670: load fw success`, `Touch panel initialized`).
   The driver is vendored from the Seeed BSP because no registry component
   exists; `gsl_point_id.c` keeps its original Silead GPL-2.0 header.
-- Idle stability: 30 min with the display on, free SRAM flat at ~248 KB.
+- Idle stability: two 30 min runs with the display on, wake word off
+  (free SRAM flat at 248371) and wake word on (free SRAM flat at 250531),
+  no resets.
 
 Not yet validated: device AEC, 30 min continuous conversation, touch
 coordinate orientation on the panel (the BSP values swap_xy=0, mirror_x=1,
 mirror_y=1 are used as-is).
 
-### Wake word and the ESP-IDF version
+### Wake word and internal RAM
 
-The wake word is **disabled on the ESP-IDF 6.0 build** of this board. With
-esp-sr 2.4.7 on IDF 6.0.2 (prebuilt library set `esp32p4_less_v3_idf6`) the
-CPU hangs inside wakenet9/multinet7 inference right after the AFE pipeline is
-created, and the HP watchdog resets the chip in a loop. This is not a board
-problem: the same source tree and sdkconfig built with ESP-IDF 5.5.4
-(library set `esp32p4_less_v3`) runs the WakeNet pipeline stably. Ruled out
-on hardware: reference channel/AEC, 16/24 kHz, every wn9 model, 16 MB vs
-32 MB flash layout and 32-bit flash cache, esp-sr 2.5.1 (fails earlier for an
-unrelated reason). See `d1001-dev/HANDOFF.md` (ignored dir) for the logs and
-the esp-sr issue draft.
+The AFE wake word (`wn9_nihaoxiaozhi_tts`) runs on the ESP-IDF 6.0 build, but
+only with `CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y`. Without it the
+esp_hosted SDIO mempools (40 + 47 KB, allocated from an ESP_SYSTEM_INIT_FN)
+sit in RETENT_RAM, the only internal heap available before the scheduler
+starts, and two things go wrong on this board:
 
-Two build entries therefore exist under the same name:
+- once `.data/.bss` grow (e.g. the touch driver) the main task stack can no
+  longer be allocated: `Mem alloc fail. size 0x2a00 caps 0x804` /
+  `assert failed: esp_startup_start_app app_startup.c:83 (res == pdTRUE)`;
+- with less static data the firmware boots, but the esp-sr prebuilt
+  libraries (`esp32p4_less_v3_idf6`) hang the CPU right after the WakeNet
+  pipeline is created (HP watchdog reset loop, `rst:0x7`), apparently
+  because an internal-RAM allocation inside the closed library fails and the
+  library busy-waits instead of reporting it.
 
-| ESP-IDF | Flash layout | Wake word | Notes |
-|---------|--------------|-----------|-------|
-| >= 6.0 (upstream CI) | `partitions/v2/32m.csv`, 32-bit flash cache | off (VAD + button) | default path |
-| < 6.0 (5.5.4 tested) | `partitions/v2/16m.csv` | on | IDF 5.5 cannot address this flash chip above 16 MB, so the assets partition must stay below 16 MB |
-
-Both entries set `CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y`: before the
-scheduler starts the only internal heap is RETENT_RAM (~99 KB) and the
-esp_hosted SDIO mempools (88 KB) otherwise leave no room for the main task
-stack once `.data/.bss` grow (symptom: `Mem alloc fail. size 0x2a00 caps
-0x804` / `esp_startup_start_app app_startup.c:83`).
-
-Do not mix the two layouts on one device without re-flashing the partition
-table; the preset-Wi-Fi NVS lives at 0x3b000 (32m) or 0x9000 (16m).
+Both symptoms disappear when the mempools live in PSRAM (GDMA reaches PSRAM
+on the P4). The same sources built with ESP-IDF 5.5.4 need the same option
+(there the mempool allocation itself asserts at boot) and, because 5.5
+cannot address this flash chip above 16 MB, would also need
+`partitions/v2/16m.csv`; only the IDF >= 6.0 entry is kept in `config.json`.
 
 ### C6 firmware
 
@@ -81,8 +77,7 @@ See `docs/reterminal-d1001-port-design.md` for the port design and milestones.
 python3 scripts/build.py seeed-studio/reterminal-d1001 --name reterminal-d1001
 ```
 
-The build entry is selected by the ESP-IDF version in the environment (see
-the table above). The factory images are published in the Seeed BSP repository
+Verified with ESP-IDF 6.0.2 (`espressif/idf:v6.0.2`). The factory images are published in the Seeed BSP repository
 under `firmware/`.
 
 The ESP32-P4 application and the ESP32-C6 ESP-Hosted slave are separate
