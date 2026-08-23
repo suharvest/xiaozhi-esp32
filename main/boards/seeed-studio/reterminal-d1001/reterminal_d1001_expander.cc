@@ -45,10 +45,12 @@ void ReTerminalD1001Expander::Initialize() {
         return;
     }
 
-    // All pins used by the port are outputs on this board.
-    const uint32_t all_pins = EXPANDER_BIT_LCD_PWR_EN | EXPANDER_BIT_LCD_BACKLIGHT_EN |
+    // All pins used by the port are outputs on this board. The EXPANDER_BIT_*
+    // macros are already bit masks, so they can be OR-ed directly.
+    const uint32_t all_pins =
+        static_cast<uint32_t>(EXPANDER_BIT_LCD_PWR_EN | EXPANDER_BIT_LCD_BACKLIGHT_EN |
                               EXPANDER_BIT_PWR_HOLD | EXPANDER_BIT_LCD_RST |
-                              EXPANDER_BIT_PA_ENABLE | EXPANDER_BIT_TOUCH_RST;
+                              EXPANDER_BIT_PA_ENABLE | EXPANDER_BIT_TOUCH_RST);
     ret = esp_io_expander_set_dir(expander_, all_pins, IO_EXPANDER_OUTPUT);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure expander outputs: %s", esp_err_to_name(ret));
