@@ -21,6 +21,9 @@ mmap_generate_*.h
 # local opencode install (see .opencode-install/README.md)
 .opencode-install/
 
+# dsh harness agent dir
+.agents/
+
 # D1001 port bring-up scratch (reference BSP, build logs, helper scripts)
 references/
 d1001-dev/
