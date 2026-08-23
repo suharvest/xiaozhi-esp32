@@ -4,15 +4,18 @@
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
+#include "esp_lcd_touch_gsl3670.h"
 #include "lcd_init_cmds.h"
 #include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
 
+#include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_ldo_regulator.h>
 #include <esp_log.h>
+#include <esp_lvgl_port.h>
 
 #define TAG "ReTerminalD1001"
 
@@ -22,6 +25,8 @@ private:
     ReTerminalD1001AudioCodec* audio_codec_ = nullptr;
     Button boot_button_;
     LcdDisplay* display_ = nullptr;
+    i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
+    gsl3670_driver_config_t touch_driver_config_ = {};
 
     void EnableDsiPhyPower() {
         // The MIPI DSI PHY is fed by LDO3; without it the PHY stays in the
@@ -109,6 +114,79 @@ private:
         ESP_LOGI(TAG, "Display initialized");
     }
 
+    void InitializeTouch() {
+        i2c_master_bus_config_t bus_config = {
+            .i2c_port = TOUCH_I2C_PORT,
+            .sda_io_num = TOUCH_I2C_SDA_PIN,
+            .scl_io_num = TOUCH_I2C_SCL_PIN,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
+        };
+        esp_err_t ret = i2c_new_master_bus(&bus_config, &touch_i2c_bus_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create the touch I2C bus: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        esp_lcd_panel_io_handle_t touch_io = nullptr;
+        esp_lcd_panel_io_i2c_config_t touch_io_config = ESP_LCD_TOUCH_IO_I2C_GSL3670_CONFIG();
+        touch_io_config.scl_speed_hz = TOUCH_I2C_FREQ_HZ;
+        ret = esp_lcd_new_panel_io_i2c(touch_i2c_bus_, &touch_io_config, &touch_io);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create the GSL3670 panel IO: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        // The touch reset line is on the PCA9535, so hand the driver a hook
+        // instead of a GPIO number.
+        touch_driver_config_.ctx = &expander_;
+        touch_driver_config_.set_reset = [](void* ctx, bool asserted) {
+            static_cast<ReTerminalD1001Expander*>(ctx)->SetTouchReset(asserted);
+        };
+
+        esp_lcd_touch_config_t touch_config = {
+            .x_max = DISPLAY_WIDTH,
+            .y_max = DISPLAY_HEIGHT,
+            .rst_gpio_num = GPIO_NUM_NC,
+            .int_gpio_num = GPIO_NUM_NC,  // the BSP polls the controller
+            .levels =
+                {
+                    .reset = 0,
+                    .interrupt = 0,
+                },
+            .flags =
+                {
+                    .swap_xy = TOUCH_SWAP_XY,
+                    .mirror_x = TOUCH_MIRROR_X,
+                    .mirror_y = TOUCH_MIRROR_Y,
+                },
+            .driver_data = &touch_driver_config_,
+        };
+
+        esp_lcd_touch_handle_t touch = nullptr;
+        ret = esp_lcd_touch_new_i2c_gsl3670(touch_io, &touch_config, &touch);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize the GSL3670: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        const lvgl_port_touch_cfg_t lvgl_touch_config = {
+            .disp = lv_display_get_default(),
+            .handle = touch,
+        };
+        if (lvgl_port_add_touch(&lvgl_touch_config) == nullptr) {
+            ESP_LOGE(TAG, "Failed to register the touch panel with LVGL");
+            return;
+        }
+        ESP_LOGI(TAG, "Touch panel initialized");
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
@@ -135,6 +213,7 @@ public:
         audio_codec_->SetPowerAmpCallback([this](bool on) { expander_.SetPowerAmp(on); });
 
         InitializeMipiDisplay();
+        InitializeTouch();
         InitializeButtons();
 
         GetBacklight()->RestoreBrightness();

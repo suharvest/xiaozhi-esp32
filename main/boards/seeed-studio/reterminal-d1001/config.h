@@ -43,6 +43,12 @@
 #define TOUCH_I2C_SDA_PIN GPIO_NUM_37
 #define TOUCH_I2C_SCL_PIN GPIO_NUM_38
 #define TOUCH_INTERRUPT_PIN GPIO_NUM_16
+#define TOUCH_I2C_ADDRESS 0x40
+#define TOUCH_I2C_FREQ_HZ 400000
+// The Seeed BSP polls the controller and leaves GPIO16 unused.
+#define TOUCH_SWAP_XY 0
+#define TOUCH_MIRROR_X 1
+#define TOUCH_MIRROR_Y 1
 
 #define BOOT_BUTTON_GPIO GPIO_NUM_3
 
