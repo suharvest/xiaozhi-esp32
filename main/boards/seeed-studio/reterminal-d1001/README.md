@@ -117,9 +117,14 @@ the theme is reloaded (the old font is freed at that moment).
   their validated 0° flags because LVGL 9 rotates the pointer coordinates
   itself (`lv_indev.c`, `lv_display_rotate_point`).
 
-Frame rate under software rotation at 800x1280 RGB565 has not been measured.
+The rotation itself runs on the ESP32-P4 PPA, not on the CPU. The board build
+appends `CONFIG_LVGL_PORT_ENABLE_PPA=y`; with that symbol set and the MIPI port
+configured with `flags.sw_rotate = true`, `esp_lvgl_port` creates a PPA SRM
+context instead of the extra CPU rotation buffer and every flush of a rotated
+frame goes through `lvgl_port_ppa_rotate()`
+(`esp_lvgl_port_disp.c:420-444`, `:644-699`).
 
-The board build appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y`,
+The board build also appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y`,
 `CONFIG_LV_USE_TEXTAREA=y` and `CONFIG_LV_USE_SPINNER=y`, which the project
 defaults leave off.
 

@@ -31,7 +31,8 @@
                 "CONFIG_LV_USE_KEYBOARD=y",
                 "CONFIG_LV_USE_LIST=y",
                 "CONFIG_LV_USE_TEXTAREA=y",
-                "CONFIG_LV_USE_SPINNER=y"
+                "CONFIG_LV_USE_SPINNER=y",
+                "CONFIG_LVGL_PORT_ENABLE_PPA=y"
             ]
         }
     ]
