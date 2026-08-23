@@ -496,7 +496,7 @@ static esp_err_t esp_lcd_touch_gsl3670_read_ram_fw(esp_lcd_touch_handle_t tp)
     ESP_LOGI(TAG,"enter read_ram_fw");
     vTaskDelay(pdMS_TO_TICKS(30));
     ESP_RETURN_ON_ERROR(touch_gsl3670_i2c_read(tp, addr, (uint8_t *)&read_buf, 4), TAG, "gsl3670 read error!");
-    ESP_LOGI(TAG,"gsl3670 startup_chip failed read 0xb0 = %x,%x,%x,%x ",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
+    ESP_LOGI(TAG,"gsl3670 startup_chip read 0xb0 = %x,%x,%x,%x (expect 5a,5a,5a,5a)",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
     if(read_buf[3] != 0x5a || read_buf[2] != 0x5a || read_buf[1] != 0x5a || read_buf[0] != 0x5a)
     {
         return ESP_FAIL;
