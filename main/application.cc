@@ -618,7 +618,12 @@ void Application::InitializeProtocol() {
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
-            listen_had_stt_ = true;
+            // Only trust an stt message as uplink proof if voiced audio was
+            // actually sent this segment: the wake word text is echoed back
+            // by the server as an stt message without any audio involved.
+            if (listen_voice_packets_ >= 10) {
+                listen_had_stt_ = true;
+            }
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 std::vector<TextGlyph> glyphs;
