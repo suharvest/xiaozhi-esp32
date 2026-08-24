@@ -56,12 +56,8 @@ ReTerminalD1001AudioCodec::ReTerminalD1001AudioCodec(i2c_master_bus_handle_t i2c
     es8311_cfg.ctrl_if = out_ctrl_if_;
     es8311_cfg.gpio_if = gpio_if_;
     es8311_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC;
-    // The NS4150B enable is P4 GPIO53, driven by the codec driver on
-    // open/close (bsp_audio_codec_speaker_init: .pa_pin = GPIO_NUM_53).
-    // PCA9535 bit 11 only feeds the amp rail. With pa_pin left NC the DAC
-    // output reached the reference loopback but the speaker stayed silent.
-    es8311_cfg.pa_pin = GPIO_NUM_53;
-    es8311_cfg.pa_reverted = false;
+    // The PA is an NS4150B gated by PCA9535 bit 11, not a GPIO on the P4.
+    es8311_cfg.pa_pin = GPIO_NUM_NC;
     es8311_cfg.use_mclk = true;
     es8311_cfg.hw_gain.pa_voltage = 5.0;
     es8311_cfg.hw_gain.codec_dac_voltage = 3.3;
