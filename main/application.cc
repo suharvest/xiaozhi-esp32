@@ -225,6 +225,10 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                if (udp_probe_active_ && GetDeviceState() == kDeviceStateListening &&
+                    audio_service_.IsVoiceDetected()) {
+                    listen_voice_packets_++;
+                }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                     // Drop the remaining packets. Leaving them in the queue would
                     // stall the Opus codec task (it waits for queue space), which in
@@ -510,19 +514,29 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
+    bool prefer_websocket = false;
 #ifdef CONFIG_PREFER_WEBSOCKET_PROTOCOL
-    if (ota_->HasWebsocketConfig()) {
+    prefer_websocket = true;
+#endif
+    {
+        Settings settings("protocol");
+        if (settings.GetInt("force_ws", 0) != 0) {
+            ESP_LOGW(TAG, "UDP uplink was unhealthy before; forcing WebSocket (erase NVS "
+                          "protocol/force_ws to retry MQTT)");
+            prefer_websocket = true;
+        }
+    }
+
+    udp_probe_active_ = false;
+    if (prefer_websocket && ota_->HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
-    } else {
-#else
-    if (ota_->HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
+        // Only probe the UDP uplink if a WebSocket fallback is available
+        udp_probe_active_ = ota_->HasWebsocketConfig();
     } else if (ota_->HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
-#endif
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
@@ -556,6 +570,7 @@ void Application::InitializeProtocol() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
+            EvaluateUplinkProbe();
         });
     });
 
@@ -603,6 +618,7 @@ void Application::InitializeProtocol() {
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
+            listen_had_stt_ = true;
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 std::vector<TextGlyph> glyphs;
@@ -669,6 +685,50 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->Start();
+}
+
+bool Application::EvaluateUplinkProbe() {
+    // Runs in the main task. Judges the listening segment that just ended.
+    if (!udp_probe_active_) {
+        return false;
+    }
+    constexpr int kMinVoicedPackets = 30;  // ~1.8s of voiced audio
+    constexpr int kMaxStrikes = 2;
+
+    if (listen_had_stt_) {
+        // The server transcribed something: the UDP uplink works. Stop probing.
+        ESP_LOGI(TAG, "UDP uplink verified healthy, probe finished");
+        udp_probe_active_ = false;
+    } else if (listen_voice_packets_ >= kMinVoicedPackets) {
+        udp_uplink_strikes_++;
+        ESP_LOGW(TAG, "Voiced audio sent (%d packets) but no STT came back (strike %d/%d)",
+                 listen_voice_packets_, udp_uplink_strikes_, kMaxStrikes);
+        if (udp_uplink_strikes_ >= kMaxStrikes) {
+            FallbackToWebsocket();
+            listen_voice_packets_ = 0;
+            listen_had_stt_ = false;
+            return true;
+        }
+    }
+    listen_voice_packets_ = 0;
+    listen_had_stt_ = false;
+    return false;
+}
+
+void Application::FallbackToWebsocket() {
+    // The network is silently dropping the MQTT protocol's UDP audio (common
+    // behind transparent proxies). Switch to WebSocket and remember it.
+    ESP_LOGE(TAG, "UDP uplink appears blackholed, falling back to WebSocket");
+    {
+        Settings settings("protocol", true);
+        settings.SetInt("force_ws", 1);
+    }
+    udp_probe_active_ = false;
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+    }
+    InitializeProtocol();
+    SetDeviceState(kDeviceStateIdle);
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
@@ -991,6 +1051,12 @@ void Application::StartListeningAudio() {
     // Runs in the main loop, either directly from HandleStateChangedEvent or
     // deferred via MAIN_EVENT_PLAYBACK_DRAINED once the playback queue drains.
     if (GetDeviceState() != kDeviceStateListening) {
+        return;
+    }
+
+    // A new listening segment begins: judge the previous one first. If this
+    // triggers the WebSocket fallback, the device returns to idle.
+    if (EvaluateUplinkProbe()) {
         return;
     }
 

@@ -41,8 +41,7 @@
                 "CONFIG_CAMERA_SC202CS_DEFAULT_IPA_JSON_CONFIGURATION_FILE=y",
                 "CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y",
                 "CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n",
-                "CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=n",
-                "CONFIG_PREFER_WEBSOCKET_PROTOCOL=y"
+                "CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=n"
             ],
             "build_options": {
                 "camera_hmirror": false,

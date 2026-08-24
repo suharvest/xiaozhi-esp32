@@ -149,6 +149,17 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
+    // MQTT/UDP uplink health probe: MQTT carries audio over raw UDP, which
+    // some networks silently drop. If voiced audio is repeatedly sent during
+    // listening but no STT ever comes back, fall back to WebSocket (TCP).
+    bool udp_probe_active_ = false;      // probing current MQTT protocol
+    bool listen_had_stt_ = false;        // an "stt" message arrived this segment
+    int listen_voice_packets_ = 0;       // packets sent while VAD detects voice
+    int udp_uplink_strikes_ = 0;         // consecutive voiced segments without STT
+
+
+    bool EvaluateUplinkProbe();
+    void FallbackToWebsocket();
 
     // Event handlers
     void HandleStateChangedEvent();
