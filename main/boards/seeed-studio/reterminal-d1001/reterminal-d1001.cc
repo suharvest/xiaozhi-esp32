@@ -249,6 +249,7 @@ private:
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
     bool powering_off_ = false;
+    bool power_off_armed_ = false;
 
     void EnableDsiPhyPower() {
         // The MIPI DSI PHY is fed by LDO3; without it the PHY stays in the
@@ -533,7 +534,18 @@ private:
             }
             app.ToggleChatState();
         });
-        boot_button_.OnLongPress([this]() { StartPowerOff(); });
+        // The GPIO can read as "pressed" from the moment the button task
+        // starts (seen on hardware: a phantom LONG_PRESS fired 3.6 s after
+        // boot and powered the board off), so the power-off long press is
+        // armed only after one real press/release cycle has been observed.
+        boot_button_.OnPressUp([this]() { power_off_armed_ = true; });
+        boot_button_.OnLongPress([this]() {
+            if (!power_off_armed_) {
+                ESP_LOGW(TAG, "Ignoring long press before the first release (boot-time phantom)");
+                return;
+            }
+            StartPowerOff();
+        });
     }
 
     // Runs in the button task, so the shutdown itself is handed to a short
@@ -554,9 +566,18 @@ private:
                 board->expander_.SetPowerAmp(false);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 board->expander_.PowerOff();
+                vTaskDelay(pdMS_TO_TICKS(500));
                 // Reached only when the board is kept alive from USB: the
                 // PCA9535 power-hold bit does not cut an externally fed rail.
-                ESP_LOGW(TAG, "Still running after PowerOff(); external power?");
+                // Restore the rails so the device is not left half dead and
+                // silent (the PA and power hold were just dropped).
+                ESP_LOGW(TAG, "Still running after PowerOff(); external power - restoring rails");
+                board->expander_.SetPowerHold(true);
+                board->expander_.SetPowerAmp(true);
+                if (board->display_ != nullptr) {
+                    board->display_->ShowNotification("外部供电，无法关机", 3000);
+                }
+                board->powering_off_ = false;
                 vTaskDelete(nullptr);
             },
             "d1001_poweroff", 3072, this, 5, nullptr);
