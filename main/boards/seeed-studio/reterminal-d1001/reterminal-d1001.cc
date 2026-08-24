@@ -635,7 +635,11 @@ public:
     // (Wi-Fi config while starting, chat toggle afterwards).
     static constexpr uint16_t kPowerOffLongPressMs = 3000;
 
-    ReTerminalD1001Board() : boot_button_(BOOT_BUTTON_GPIO, false, kPowerOffLongPressMs) {
+    // The Seeed BSP drives this button ACTIVE HIGH with the pull disabled
+    // (esp32_p4_re_terminal_d1001.c: active_level = 1, disable_pull = true);
+    // with the polarity inverted the idle line reads as "held" (the boot-time
+    // phantom long press) and real presses read as releases.
+    ReTerminalD1001Board() : boot_button_(BOOT_BUTTON_GPIO, true, kPowerOffLongPressMs, 100) {
         ESP_LOGI(TAG, "initializing reTerminal D1001");
 
         // Minimal power bring-up: I2C1 + PCA9535 and the system power hold.
