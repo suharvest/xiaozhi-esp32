@@ -114,12 +114,14 @@ public:
         lv_obj_set_flex_flow(status_actions_, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(status_actions_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(status_actions_, gap, 0);
+        // The entries are full-height buttons; no extra column gap needed on
+        // top of the padding each 48 px button already carries around its glyph.
+        lv_obj_set_style_pad_column(status_actions_, 0, 0);
         lv_obj_set_scrollbar_mode(status_actions_, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_SCROLLABLE);
-        // status_actions_ is exactly one icon-font line high, the same as the
-        // network label in the top bar, so a top alignment lands the glyphs on
-        // the same horizontal line.
+        // The buttons inside are the full 48 px touch band tall with their
+        // glyphs top-aligned, so a top alignment lands the glyphs on the same
+        // horizontal line as the network label in the top bar.
         lv_obj_align(status_actions_, LV_ALIGN_TOP_LEFT, hotspot_width, 0);
 
         rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
@@ -167,10 +169,12 @@ public:
     }
 
 private:
-    // The glyphs are ~30 px tall; the extended click area pads them out to a
-    // comfortable target well past 48x48.
-    static constexpr int kStatusIconClickPad = 16;
     static constexpr int kStatusBarTouchHeight = 48;
+    // Each status entry is a real 48x48 button. Extended click areas are
+    // useless here (hit testing never leaves the parent's own bounds) and
+    // neighboring pads overlapped, which made the rotation entry lose most
+    // taps to the volume entry or the Wi-Fi hotspot.
+    static constexpr int kStatusIconTouchWidth = 48;
 
     static void SetHidden(lv_obj_t* obj, bool hidden) {
         if (obj == nullptr) {
@@ -184,11 +188,21 @@ private:
     }
 
     lv_obj_t* CreateStatusIcon(const char* glyph, lv_event_cb_t callback) {
-        lv_obj_t* label = lv_label_create(status_actions_);
+        lv_obj_t* button = lv_obj_create(status_actions_);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, kStatusIconTouchWidth, kStatusBarTouchHeight);
+        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+        lv_obj_set_scrollbar_mode(button, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* label = lv_label_create(button);
         lv_label_set_text(label, glyph);
-        lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(label, kStatusIconClickPad);
-        lv_obj_add_event_cb(label, callback, LV_EVENT_CLICKED, this);
+        lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
+        // Top-center: the glyph sits on the network label's baseline while the
+        // button fills the whole touch band below it.
+        lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 0);
         ApplyStatusIconStyle(label);
         return label;
     }
