@@ -740,9 +740,11 @@ void Application::FallbackToWebsocket() {
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         protocol_->CloseAudioChannel();
     }
-    protocol_ = std::make_unique<WebsocketProtocol>();
-    SetupProtocolCallbacks();
-    SetDeviceState(kDeviceStateIdle);
+    // Swapping protocols in place leaves the audio pipeline in an
+    // inconsistent state (wake word detection stopped working after an
+    // in-place swap). This happens at most once per network, so take the
+    // deterministic path: reboot and come up on WebSocket.
+    Schedule([this]() { Reboot(); });
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
