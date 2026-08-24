@@ -40,6 +40,55 @@ constexpr uint32_t kAccentColor = 0x2F6BFF;
 constexpr uint32_t kDangerColor = 0xD64545;
 constexpr uint32_t kSuccessColor = 0x2E9E5B;
 
+
+// --- Phone-style keyboard -------------------------------------------------
+//
+// LVGL's built-in keyboard handler dispatches on the exact button texts "abc",
+// "ABC" and "1#" (lv_keyboard.c, lv_keyboard_def_event_cb), so the mode keys
+// have to carry those labels; a "?123" or a shift arrow would be typed into
+// the text area instead of switching the layout. The maps are static because
+// lv_keyboard_set_map() stores the pointers.
+//
+// Widths are relative per row: letters 2, so a row of ten letters is 20. The
+// second row is nine letters between two hidden half-width spacers, which is
+// what gives it the phone-like indent on both ends.
+#define KB_W2 (lv_buttonmatrix_ctrl_t)2
+#define KB_FN(w) (lv_buttonmatrix_ctrl_t)((w) | LV_BUTTONMATRIX_CTRL_CHECKED)
+#define KB_GAP \
+    (lv_buttonmatrix_ctrl_t)(1 | LV_BUTTONMATRIX_CTRL_HIDDEN | LV_BUTTONMATRIX_CTRL_DISABLED)
+
+const char* const kKeyboardLowerMap[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    " ", "a", "s", "d", "f", "g", "h", "j", "k", "l", " ", "\n",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", ",", " ", ".", LV_SYMBOL_OK, ""};
+
+const lv_buttonmatrix_ctrl_t kKeyboardLowerCtrl[] = {
+    KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2,
+    KB_GAP, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_GAP,
+    KB_FN(3), KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_FN(3),
+    KB_FN(3), KB_W2, (lv_buttonmatrix_ctrl_t)10, KB_W2, KB_FN(3)};
+
+const char* const kKeyboardUpperMap[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    " ", "A", "S", "D", "F", "G", "H", "J", "K", "L", " ", "\n",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", ",", " ", ".", LV_SYMBOL_OK, ""};
+
+const char* const kKeyboardSpecialMap[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "\n",
+    "abc", "-", "_", "+", "=", "/", "\\", ":", ";", LV_SYMBOL_BACKSPACE, "\n",
+    "~", "<", ">", "[", "]", "{", "}", "\"", "'", "?", "\n",
+    ",", " ", ".", LV_SYMBOL_OK, ""};
+
+const lv_buttonmatrix_ctrl_t kKeyboardSpecialCtrl[] = {
+    KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2,
+    KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2,
+    KB_FN(3), KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_FN(3),
+    KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2, KB_W2,
+    KB_W2, (lv_buttonmatrix_ctrl_t)10, KB_W2, KB_FN(3)};
+
 struct ScanTaskArgs {
     SettingsUi* ui;
     uint32_t generation;
@@ -275,19 +324,35 @@ lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action 
     lv_obj_set_style_pad_gap(kb, 8, LV_PART_MAIN);
 
     // Key caps: theme text font (the keyboard otherwise uses the 14 px LVGL
-    // default), rounded, card colour, accent when pressed/checked.
+    // default), rounded, card colour. Function keys are marked CHECKED in the
+    // ctrl maps and get one shade more contrast instead of the accent, which
+    // used to paint a block of blue over the whole left column and the bottom
+    // row. Pressing any key tints it towards the accent.
     const lv_font_t* font = lv_obj_get_style_text_font(lv_screen_active(), LV_PART_MAIN);
     if (font != nullptr) {
         lv_obj_set_style_text_font(kb, font, LV_PART_ITEMS);
     }
+    const lv_color_t card = CardColor();
+    const lv_color_t function_key = lv_color_brightness(card) > 128
+                                        ? lv_color_darken(card, 32)
+                                        : lv_color_lighten(card, 48);
+    const lv_color_t pressed = lv_color_mix(lv_color_hex(kAccentColor), card, 90);
     lv_obj_set_style_radius(kb, 12, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(kb, CardColor(), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, card, LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(kb, lv_color_hex(kAccentColor), (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(kb, lv_color_hex(kAccentColor), (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
-    lv_obj_set_style_text_color(kb, lv_color_white(), (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(kb, lv_color_white(), (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(kb, function_key,
+                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(kb, pressed,
+                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(kb, pressed,
+                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED |
+                                  (lv_style_selector_t)LV_STATE_CHECKED);
+
+    lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_LOWER, kKeyboardLowerMap, kKeyboardLowerCtrl);
+    lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_UPPER, kKeyboardUpperMap, kKeyboardLowerCtrl);
+    lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_SPECIAL, kKeyboardSpecialMap, kKeyboardSpecialCtrl);
+    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
 
     lv_keyboard_set_textarea(kb, textarea);
     // The OK key runs the page's primary action instead of only dismissing the

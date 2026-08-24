@@ -200,6 +200,27 @@ the theme is reloaded (the old font is freed at that moment).
   back if the connection does not come up within 20 s. Switching networks while
   the device is idle goes through `EnterWifiConfigMode()` first, so the protocol
   is torn down cleanly before the station restarts.
+The password / SSID keyboard uses a phone-style layout set with
+`lv_keyboard_set_map()`: `qwertyuiop` / `asdfghjkl` (between two hidden
+half-width spacers, which is what indents the row) / shift `z…m` backspace /
+`1#` `,` space `.` OK. LVGL's built-in keyboard handler dispatches on the exact
+button texts `abc`, `ABC` and `1#` (`lv_keyboard.c`,
+`lv_keyboard_def_event_cb`), so the mode keys carry those labels — a `⇧` or
+`?123` label would be typed into the text area instead of switching the layout.
+The special layout holds the digits and `!@#$%^&*()_-+=~/\:;"'<>?[]{}`.
+
+Only two per-key looks exist in an `lv_buttonmatrix` (default and
+`LV_BUTTONMATRIX_CTRL_CHECKED`), so the function keys (`abc`/`ABC`, `1#`,
+backspace, OK) are the checked ones and get one shade more contrast than the
+letters; the accent is no longer used as the checked colour, which is what
+painted a block of blue over the left column and the bottom row. Pressing any
+key tints it towards the accent. The OK key therefore looks like the other
+function keys rather than like a blue primary button; the blue primary action
+stays the separate `连接` button. OK itself runs the page's primary action
+(`LV_EVENT_READY` is bound to `WifiConnectConfirm` on the password page and to
+`WifiManualNext` on the manual-SSID page), so a password can be submitted from
+the keyboard.
+
 - **音量**: one card with the current level, a 56 px tall `lv_slider` (0-100)
   and a mute button. Dragging only updates the label; the codec is written once
   on `LV_EVENT_RELEASED` / `LV_EVENT_PRESS_LOST`, because
