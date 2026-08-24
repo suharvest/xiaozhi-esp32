@@ -365,18 +365,14 @@ void SettingsUi::Open(SettingsPage page) {
     lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_move_foreground(root_);
 
-    page_ = SettingsPage::Home;
     wifi_state_ = WifiSettingsState::Idle;
     switch (page) {
-        case SettingsPage::Wifi:
-            ShowWifiPage();
-            break;
         case SettingsPage::Display:
             ShowDisplaySettings();
             break;
-        case SettingsPage::Home:
+        case SettingsPage::Wifi:
         default:
-            ShowHome();
+            ShowWifiPage();
             break;
     }
 }
@@ -405,28 +401,10 @@ void SettingsUi::Close() {
 // Pages
 // ---------------------------------------------------------------------------
 
-void SettingsUi::ShowHome() {
-    page_ = SettingsPage::Home;
-    wifi_state_ = WifiSettingsState::Idle;
-    lv_obj_t* body = BuildPage("设置", Action::Close, false);
-
-    auto& wifi = WifiManager::GetInstance();
-    std::string wifi_subtitle =
-        wifi.IsConnected() ? wifi.GetSsid() + "  ·  " + wifi.GetIpAddress() : "未连接";
-    MakeListItem(body, MATERIAL_SYMBOLS_WIFI, "Wi-Fi 网络", wifi_subtitle.c_str(),
-                 Action::HomeWifi, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-
-    char rotation_subtitle[64];
-    snprintf(rotation_subtitle, sizeof(rotation_subtitle), "当前 %d°  ·  修改后需重启",
-             LoadRotationProfile().degrees);
-    MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "屏幕方向", rotation_subtitle,
-                 Action::HomeDisplay, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-}
-
 void SettingsUi::ShowWifiPage() {
     page_ = SettingsPage::Wifi;
     wifi_state_ = WifiSettingsState::Scanning;
-    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::BackHome, true);
+    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::Close, true);
 
     lv_obj_t* card = MakeCard(body);
     MakeIconLabel(card, MATERIAL_SYMBOLS_WIFI, true);
@@ -439,7 +417,7 @@ void SettingsUi::ShowWifiPage() {
 
 void SettingsUi::ShowWifiList() {
     wifi_state_ = WifiSettingsState::SelectWifi;
-    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::BackHome, true);
+    lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::Close, true);
 
     lv_obj_t* area = MakeScrollArea(body);
     if (scan_results_.empty()) {
@@ -747,7 +725,7 @@ void SettingsUi::ShowDisplaySettings() {
         pending_rotation_ = current;
     }
 
-    lv_obj_t* body = BuildPage("屏幕方向", Action::BackHome, false);
+    lv_obj_t* body = BuildPage("屏幕方向", Action::Close, false);
 
     lv_obj_t* grid = lv_obj_create(body);
     lv_obj_remove_style_all(grid);
@@ -788,7 +766,7 @@ void SettingsUi::ShowDisplaySettings() {
 }
 
 void SettingsUi::ShowRotationConfirm() {
-    lv_obj_t* body = BuildPage("确认", Action::HomeDisplay, false);
+    lv_obj_t* body = BuildPage("确认", Action::ShowDisplay, false);
 
     lv_obj_t* box = lv_obj_create(body);
     lv_obj_remove_style_all(box);
@@ -809,7 +787,7 @@ void SettingsUi::ShowRotationConfirm() {
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
 
     MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "确认并重启", Action::RotationConfirm, 0, true);
-    MakeTextButton(body, MATERIAL_SYMBOLS_CLOSE, "取消", Action::HomeDisplay, 0, false);
+    MakeTextButton(body, MATERIAL_SYMBOLS_CLOSE, "取消", Action::ShowDisplay, 0, false);
 }
 
 void SettingsUi::CommitRotation() {
@@ -819,7 +797,7 @@ void SettingsUi::CommitRotation() {
     ESP_LOGI(TAG, "Saved rotation=%d, rebooting", pending_rotation_);
     operation_active_ = true;
 
-    lv_obj_t* body = BuildPage("屏幕方向", Action::HomeDisplay, false);
+    lv_obj_t* body = BuildPage("屏幕方向", Action::ShowDisplay, false);
     lv_obj_t* box = lv_obj_create(body);
     lv_obj_remove_style_all(box);
     lv_obj_set_width(box, LV_PCT(100));
@@ -857,15 +835,8 @@ void SettingsUi::HandleAction(Action action, int index) {
             }
             Close();
             return;
-        case Action::HomeWifi:
-            ShowWifiPage();
-            return;
-        case Action::HomeDisplay:
+        case Action::ShowDisplay:
             ShowDisplaySettings();
-            return;
-        case Action::BackHome:
-            scan_generation_++;
-            ShowHome();
             return;
         case Action::WifiRescan:
             ShowWifiPage();

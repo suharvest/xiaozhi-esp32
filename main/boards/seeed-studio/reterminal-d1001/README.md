@@ -146,16 +146,19 @@ manage both versions independently.
 
 ## On-screen settings
 
-Two icons sit in the status bar next to the Wi-Fi icon, in the same font,
-size and colour as the rest of the strip: a gear that opens the settings home
-page and a rotation symbol that opens the screen-orientation page directly.
-Both are labels inside `status_bar_` (the transparent full-width layer stacked
-over the top bar, so it is what actually receives taps up there) with a 16 px
-extended click area, which makes each target larger than 48x48; `status_bar_`
-gets a 48 px minimum height so the whole band is hit-tested. Tapping either
-opens a full-screen overlay (`settings_ui.h/.cc`) that covers the status bar;
-the main UI keeps running underneath and is restored when the overlay closes.
-The GPIO3 button behaviour is unchanged.
+The status bar carries two targets and there is no separate settings home
+page. Tapping the network icon opens the Wi-Fi page directly (the scan starts
+with the page); the rotation symbol next to it opens the screen-orientation
+page. The network icon itself belongs to the stock top bar underneath and never
+receives taps, so a transparent 48 px tall hit area covering its footprint is
+placed over it inside `status_bar_` (the transparent full-width layer stacked
+over the top bar, which is what actually receives taps up there). The rotation
+symbol is a label in the same font, size and colour as the rest of the strip,
+with a 16 px extended click area; `status_bar_` gets a 48 px minimum height so
+the whole band is hit-tested. Either target opens a full-screen overlay
+(`settings_ui.h/.cc`) that covers the status bar; the main UI keeps running
+underneath and is restored when the overlay closes. The back arrow on both
+top-level pages closes the overlay. The GPIO3 button behaviour is unchanged.
 
 Every page uses the same shell: an app bar (back arrow, title, optional
 refresh) over a card list — 16 px radius, 16 px gaps, 96 px rows, 72 px
@@ -163,7 +166,7 @@ buttons, one accent colour (#2F6BFF) for primary actions. Icons come from the
 board's existing Material Symbols font (`font_material_symbols_30_4`) through
 `lvgl_theme`'s `icon_font()` / `large_icon_font()`; no font file is added. Card
 colours are derived from the theme background, so light and dark both work, and
-both status-bar entries and every overlay icon are re-pointed at the new font when
+the status-bar rotation icon and every overlay icon are re-pointed at the new font when
 the theme is reloaded (the old font is freed at that moment).
 
 - **Wi-Fi 网络**: signal-strength icon per row, lock icon on encrypted

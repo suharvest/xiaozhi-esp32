@@ -10,7 +10,6 @@
 #include <vector>
 
 enum class SettingsPage {
-    Home,
     Wifi,
     Display,
 };
@@ -64,8 +63,7 @@ public:
 
     // Must run inside the LVGL context (event callback) or while the display
     // lock is held.
-    void Open() { Open(SettingsPage::Home); }
-    // Opens straight on one page; the page's back arrow still returns home.
+    // Opens straight on one page; the page's back arrow closes the overlay.
     void Open(SettingsPage page);
     void Close();
     bool IsOpen() const { return root_ != nullptr; }
@@ -85,9 +83,7 @@ public:
 private:
     enum class Action {
         Close,
-        HomeWifi,
-        HomeDisplay,
-        BackHome,
+        ShowDisplay,
         WifiRescan,
         WifiSavedList,
         WifiManualSsid,
@@ -131,7 +127,6 @@ private:
     lv_obj_t* MakeScrollArea(lv_obj_t* parent);
     void ClearPage();
 
-    void ShowHome();
     void ShowWifiPage();
     void StartWifiScan();
     void ShowWifiList();
@@ -155,7 +150,7 @@ private:
     lv_obj_t* textarea_ = nullptr;
     lv_obj_t* keyboard_ = nullptr;
 
-    SettingsPage page_ = SettingsPage::Home;
+    SettingsPage page_ = SettingsPage::Wifi;
     WifiSettingsState wifi_state_ = WifiSettingsState::Idle;
     std::vector<WifiScanItem> scan_results_;
     std::vector<std::string> saved_ssids_;

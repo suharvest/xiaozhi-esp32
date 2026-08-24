@@ -87,6 +87,24 @@ public:
             lv_obj_set_style_min_height(status_bar_, kStatusBarTouchHeight, 0);
         }
 
+        // The network icon itself lives in the stock top bar underneath, so it
+        // never sees a tap. A transparent hit area of the same footprint is
+        // placed over it inside the status bar and routes taps to the Wi-Fi
+        // setup page.
+        const int hotspot_width = left_pad + icon_size + gap;
+        network_hotspot_ = lv_obj_create(status_bar_);
+        lv_obj_remove_style_all(network_hotspot_);
+        lv_obj_set_size(network_hotspot_, hotspot_width < kStatusBarTouchHeight
+                                              ? kStatusBarTouchHeight
+                                              : hotspot_width,
+                        kStatusBarTouchHeight);
+        lv_obj_align(network_hotspot_, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_bg_opa(network_hotspot_, LV_OPA_TRANSP, 0);
+        lv_obj_set_scrollbar_mode(network_hotspot_, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(network_hotspot_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(network_hotspot_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(network_hotspot_, OnNetworkClicked, LV_EVENT_CLICKED, this);
+
         status_actions_ = lv_obj_create(status_bar_);
         lv_obj_remove_style_all(status_actions_);
         lv_obj_set_size(status_actions_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -96,9 +114,8 @@ public:
         lv_obj_set_style_pad_column(status_actions_, gap, 0);
         lv_obj_set_scrollbar_mode(status_actions_, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(status_actions_, LV_ALIGN_LEFT_MID, left_pad + icon_size + gap, 0);
+        lv_obj_align(status_actions_, LV_ALIGN_LEFT_MID, hotspot_width, 0);
 
-        settings_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_SETTINGS, OnSettingsClicked);
         rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
     }
 
@@ -109,7 +126,6 @@ public:
         // The theme reload frees the previous fonts, so both entries are
         // re-pointed at the new ones before anything can draw with a dangling
         // pointer.
-        ApplyStatusIconStyle(settings_icon_);
         ApplyStatusIconStyle(rotation_icon_);
         if (on_theme_changed_) {
             on_theme_changed_();
@@ -138,14 +154,8 @@ public:
     }
 
     void SetStatusBarEntriesHidden(bool hidden) {
-        if (status_actions_ == nullptr) {
-            return;
-        }
-        if (hidden) {
-            lv_obj_add_flag(status_actions_, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_HIDDEN);
-        }
+        SetHidden(network_hotspot_, hidden);
+        SetHidden(status_actions_, hidden);
     }
 
 private:
@@ -153,6 +163,17 @@ private:
     // comfortable target well past 48x48.
     static constexpr int kStatusIconClickPad = 16;
     static constexpr int kStatusBarTouchHeight = 48;
+
+    static void SetHidden(lv_obj_t* obj, bool hidden) {
+        if (obj == nullptr) {
+            return;
+        }
+        if (hidden) {
+            lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
     lv_obj_t* CreateStatusIcon(const char* glyph, lv_event_cb_t callback) {
         lv_obj_t* label = lv_label_create(status_actions_);
@@ -182,8 +203,8 @@ private:
     // Same accent as the settings overlay's primary actions (#2F6BFF).
     static lv_color_t kAccentColor() { return lv_color_hex(0x2F6BFF); }
 
-    static void OnSettingsClicked(lv_event_t* event) {
-        Dispatch(event, SettingsPage::Home);
+    static void OnNetworkClicked(lv_event_t* event) {
+        Dispatch(event, SettingsPage::Wifi);
     }
 
     static void OnRotationClicked(lv_event_t* event) {
@@ -199,8 +220,8 @@ private:
 
     OpenSettingsCallback open_settings_;
     std::function<void()> on_theme_changed_;
+    lv_obj_t* network_hotspot_ = nullptr;
     lv_obj_t* status_actions_ = nullptr;
-    lv_obj_t* settings_icon_ = nullptr;
     lv_obj_t* rotation_icon_ = nullptr;
 };
 
