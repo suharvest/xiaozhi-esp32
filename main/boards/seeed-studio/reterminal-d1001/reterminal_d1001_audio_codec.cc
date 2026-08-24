@@ -72,6 +72,16 @@ ReTerminalD1001AudioCodec::ReTerminalD1001AudioCodec(i2c_master_bus_handle_t i2c
     output_dev_ = esp_codec_dev_new(&dev_cfg);
     assert(output_dev_ != nullptr);
 
+    // The stock volume curve tops out at 0 dB, which is tuned for full-scale
+    // content (the factory UI sounds). Cloud TTS masters 10-15 dB lower, so
+    // at the same percentage the replies are barely audible on this speaker.
+    // Shift the whole curve up; the ES8311 digital volume reaches +32 dB, so
+    // +6 dB at 100% leaves headroom and normal speech cannot clip.
+    esp_codec_dev_vol_map_t vol_map[] = {{.vol = 0, .db_value = -45.0},
+                                         {.vol = 100, .db_value = 6.0}};
+    esp_codec_dev_vol_curve_t vol_curve = {.count = 2, .vol_map = vol_map};
+    esp_codec_dev_set_vol_curve(output_dev_, &vol_curve);
+
     // ES7210 capture codec (same 8-bit address convention).
     i2c_cfg.addr = (uint16_t)(ES7210_I2C_ADDRESS << 1);
     in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
