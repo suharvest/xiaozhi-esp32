@@ -1,0 +1,489 @@
+#include "push_panel.h"
+
+#include <cJSON.h>
+#include <esp_log.h>
+
+#include <algorithm>
+#include <cstring>
+
+static const char* TAG = "PushPanel";
+
+namespace {
+
+constexpr size_t kMaxBodyBytes = 32 * 1024;
+constexpr int kDefaultChoiceTimeoutS = 60;
+constexpr int kHeaderHeight = 48;
+
+// Same accent as the settings overlay's primary actions.
+lv_color_t AccentColor() {
+    return lv_color_hex(0x2F6BFF);
+}
+
+// Strips markdown emphasis markers in place ("**bold**", "`code`").
+std::string StripInline(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        char c = in[i];
+        if (c == '*' || c == '`') {
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Splits one markdown table row into trimmed cells.
+std::vector<std::string> SplitTableRow(const std::string& line) {
+    std::vector<std::string> cells;
+    size_t start = line.find('|');
+    if (start == std::string::npos) {
+        return cells;
+    }
+    ++start;
+    while (start <= line.size()) {
+        size_t end = line.find('|', start);
+        if (end == std::string::npos) {
+            end = line.size();
+        }
+        std::string cell = line.substr(start, end - start);
+        // Trim.
+        size_t b = cell.find_first_not_of(" \t");
+        size_t e = cell.find_last_not_of(" \t");
+        cells.push_back(b == std::string::npos ? "" : cell.substr(b, e - b + 1));
+        start = end + 1;
+    }
+    // A trailing '|' leaves one empty phantom cell.
+    if (!cells.empty() && cells.back().empty()) {
+        cells.pop_back();
+    }
+    return cells;
+}
+
+bool IsSeparatorRow(const std::vector<std::string>& cells) {
+    if (cells.empty()) {
+        return false;
+    }
+    for (const auto& cell : cells) {
+        if (cell.find_first_not_of("-: \t") != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+PushPanel::PushPanel(LcdDisplay* display) : display_(display) {
+    choice_sem_ = xSemaphoreCreateBinary();
+}
+
+PushPanel::~PushPanel() {
+    if (server_ != nullptr) {
+        httpd_stop(server_);
+    }
+    if (choice_sem_ != nullptr) {
+        vSemaphoreDelete(choice_sem_);
+    }
+}
+
+void PushPanel::Start() {
+    if (server_ != nullptr) {
+        return;
+    }
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.stack_size = 10240;
+    config.max_uri_handlers = 8;
+    config.lru_purge_enable = true;
+    esp_err_t err = httpd_start(&server_, &config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
+        server_ = nullptr;
+        return;
+    }
+    const httpd_uri_t handlers[] = {
+        {.uri = "/panel/markdown", .method = HTTP_POST, .handler = MarkdownThunk, .user_ctx = this},
+        {.uri = "/panel/choice", .method = HTTP_POST, .handler = ChoiceThunk, .user_ctx = this},
+        {.uri = "/panel/close", .method = HTTP_POST, .handler = CloseThunk, .user_ctx = this},
+        {.uri = "/", .method = HTTP_GET, .handler = UsageThunk, .user_ctx = this},
+    };
+    for (const auto& h : handlers) {
+        httpd_register_uri_handler(server_, &h);
+    }
+    ESP_LOGI(TAG, "push panel listening on port %d", config.server_port);
+}
+
+esp_err_t PushPanel::MarkdownThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleMarkdown(req);
+}
+
+esp_err_t PushPanel::ChoiceThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleChoice(req);
+}
+
+esp_err_t PushPanel::CloseThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleClose(req);
+}
+
+esp_err_t PushPanel::UsageThunk(httpd_req_t* req) {
+    static const char kUsage[] =
+        "reTerminal D1001 push panel\n"
+        "  POST /panel/markdown   render markdown on the screen\n"
+        "  POST /panel/choice     {\"title\":\"...\",\"options\":[...],\"timeout_s\":60}\n"
+        "                         blocks until the user picks an option\n"
+        "  POST /panel/close      close the panel\n";
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, kUsage, HTTPD_RESP_USE_STRLEN);
+}
+
+bool PushPanel::ReadBody(httpd_req_t* req, std::string* body) {
+    if (req->content_len == 0 || req->content_len > kMaxBodyBytes) {
+        return false;
+    }
+    body->resize(req->content_len);
+    size_t received = 0;
+    while (received < body->size()) {
+        int ret = httpd_req_recv(req, body->data() + received, body->size() - received);
+        if (ret <= 0) {
+            return false;
+        }
+        received += ret;
+    }
+    return true;
+}
+
+esp_err_t PushPanel::HandleMarkdown(httpd_req_t* req) {
+    std::string body;
+    if (!ReadBody(req, &body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized body");
+        return ESP_FAIL;
+    }
+    {
+        DisplayLockGuard lock(display_);
+        // A pending choice keeps the screen; markdown replaces everything else.
+        if (choice_pending_) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "a choice is pending");
+            return ESP_FAIL;
+        }
+        OpenRoot("推送内容");
+        RenderMarkdown(body);
+    }
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, "OK\n", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t PushPanel::HandleChoice(httpd_req_t* req) {
+    std::string body;
+    if (!ReadBody(req, &body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized body");
+        return ESP_FAIL;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_FAIL;
+    }
+    std::string title = "请选择";
+    cJSON* title_item = cJSON_GetObjectItem(root, "title");
+    if (cJSON_IsString(title_item)) {
+        title = title_item->valuestring;
+    }
+    int timeout_s = kDefaultChoiceTimeoutS;
+    cJSON* timeout_item = cJSON_GetObjectItem(root, "timeout_s");
+    if (cJSON_IsNumber(timeout_item) && timeout_item->valueint > 0) {
+        timeout_s = std::min(timeout_item->valueint, 600);
+    }
+    std::vector<std::string> options;
+    cJSON* options_item = cJSON_GetObjectItem(root, "options");
+    if (cJSON_IsArray(options_item)) {
+        cJSON* option = nullptr;
+        cJSON_ArrayForEach(option, options_item) {
+            if (cJSON_IsString(option)) {
+                options.push_back(option->valuestring);
+            }
+        }
+    }
+    cJSON_Delete(root);
+    if (options.empty() || options.size() > 16) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "need 1..16 string options");
+        return ESP_FAIL;
+    }
+
+    {
+        DisplayLockGuard lock(display_);
+        if (choice_pending_) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "a choice is already pending");
+            return ESP_FAIL;
+        }
+        choice_options_ = options;
+        choice_selected_ = -2;  // -2 = still waiting, -1 = dismissed
+        choice_pending_ = true;
+        xSemaphoreTake(choice_sem_, 0);  // drain a stale give, if any
+
+        OpenRoot(title.c_str());
+        for (const auto& option : choice_options_) {
+            lv_obj_t* button = lv_button_create(body_);
+            lv_obj_set_width(button, LV_PCT(100));
+            lv_obj_set_height(button, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_ver(button, 14, 0);
+            lv_obj_set_style_bg_color(button, AccentColor(), 0);
+            lv_obj_add_event_cb(button, OnChoiceClicked, LV_EVENT_CLICKED, this);
+            lv_obj_t* label = lv_label_create(button);
+            lv_label_set_text(label, option.c_str());
+            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(label, LV_PCT(100));
+            lv_obj_center(label);
+        }
+    }
+
+    bool got = xSemaphoreTake(choice_sem_, pdMS_TO_TICKS(timeout_s * 1000)) == pdTRUE;
+    int selected;
+    {
+        DisplayLockGuard lock(display_);
+        selected = choice_selected_;
+        choice_pending_ = false;
+        CloseRoot();
+    }
+
+    if (!got || selected < 0) {
+        httpd_resp_set_status(req, !got ? "408 Request Timeout" : "410 Gone");
+        httpd_resp_set_type(req, "application/json");
+        const char* reason = !got ? "{\"error\":\"timeout\"}\n" : "{\"error\":\"dismissed\"}\n";
+        return httpd_resp_send(req, reason, HTTPD_RESP_USE_STRLEN);
+    }
+
+    cJSON* answer = cJSON_CreateObject();
+    cJSON_AddNumberToObject(answer, "selected", selected);
+    cJSON_AddStringToObject(answer, "option", choice_options_[selected].c_str());
+    char* answer_str = cJSON_PrintUnformatted(answer);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, answer_str, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(answer_str);
+    cJSON_Delete(answer);
+    return err;
+}
+
+esp_err_t PushPanel::HandleClose(httpd_req_t* req) {
+    {
+        DisplayLockGuard lock(display_);
+        if (choice_pending_) {
+            choice_selected_ = -1;
+            xSemaphoreGive(choice_sem_);
+        } else {
+            CloseRoot();
+        }
+    }
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, "OK\n", HTTPD_RESP_USE_STRLEN);
+}
+
+void PushPanel::OnChoiceClicked(lv_event_t* event) {
+    auto* self = static_cast<PushPanel*>(lv_event_get_user_data(event));
+    if (self == nullptr || !self->choice_pending_) {
+        return;
+    }
+    lv_obj_t* button = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+    self->choice_selected_ = static_cast<int>(lv_obj_get_index(button));
+    xSemaphoreGive(self->choice_sem_);
+}
+
+void PushPanel::OnCloseClicked(lv_event_t* event) {
+    auto* self = static_cast<PushPanel*>(lv_event_get_user_data(event));
+    if (self == nullptr) {
+        return;
+    }
+    if (self->choice_pending_) {
+        self->choice_selected_ = -1;
+        xSemaphoreGive(self->choice_sem_);
+        // The waiting HTTP worker closes the panel.
+        return;
+    }
+    self->CloseRoot();
+}
+
+void PushPanel::OpenRoot(const char* title) {
+    lv_obj_t* screen = lv_screen_active();
+    if (root_ != nullptr) {
+        // Reuse the overlay, replace the content.
+        lv_obj_clean(body_);
+        lv_obj_t* header = lv_obj_get_child(root_, 0);
+        lv_obj_t* title_label = lv_obj_get_child(header, 0);
+        lv_label_set_text(title_label, title);
+        lv_obj_move_foreground(root_);
+        return;
+    }
+
+    // Full-screen overlay parented to the screen so labels inherit the theme
+    // text font (which can be reloaded at runtime and must never be cached).
+    root_ = lv_obj_create(screen);
+    lv_obj_remove_style_all(root_);
+    lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
+    lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_move_foreground(root_);
+
+    lv_obj_t* header = lv_obj_create(root_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, LV_PCT(100), kHeaderHeight);
+    lv_obj_set_style_pad_hor(header, 16, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* title_label = lv_label_create(header);
+    lv_label_set_text(title_label, title);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_flex_grow(title_label, 1);
+    lv_obj_set_style_text_color(title_label, AccentColor(), 0);
+
+    lv_obj_t* close_button = lv_label_create(header);
+    lv_label_set_text(close_button, LV_SYMBOL_CLOSE);
+    lv_obj_add_flag(close_button, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(close_button, 16);
+    lv_obj_add_event_cb(close_button, OnCloseClicked, LV_EVENT_CLICKED, this);
+
+    body_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(body_);
+    lv_obj_set_width(body_, LV_PCT(100));
+    lv_obj_set_flex_grow(body_, 1);
+    lv_obj_set_style_pad_hor(body_, 16, 0);
+    lv_obj_set_style_pad_bottom(body_, 16, 0);
+    lv_obj_set_style_pad_row(body_, 10, 0);
+    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(body_, LV_DIR_VER);
+}
+
+void PushPanel::CloseRoot() {
+    if (root_ == nullptr) {
+        return;
+    }
+    lv_obj_delete(root_);
+    root_ = nullptr;
+    body_ = nullptr;
+}
+
+void PushPanel::AddTextBlock(const std::string& text, int heading_level) {
+    if (text.empty()) {
+        return;
+    }
+    lv_obj_t* label = lv_label_create(body_);
+    lv_label_set_text(label, text.c_str());
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(label, LV_PCT(100));
+    if (heading_level > 0) {
+        lv_obj_set_style_text_color(label, AccentColor(), 0);
+        lv_obj_set_style_pad_top(label, heading_level == 1 ? 8 : 4, 0);
+    }
+}
+
+void PushPanel::RenderTable(const std::vector<std::string>& lines) {
+    std::vector<std::vector<std::string>> rows;
+    size_t columns = 0;
+    for (const auto& line : lines) {
+        std::vector<std::string> cells = SplitTableRow(line);
+        if (cells.empty() || IsSeparatorRow(cells)) {
+            continue;
+        }
+        columns = std::max(columns, cells.size());
+        rows.push_back(std::move(cells));
+    }
+    if (rows.empty() || columns == 0) {
+        return;
+    }
+
+    lv_obj_t* table = lv_table_create(body_);
+    lv_table_set_column_count(table, columns);
+    lv_table_set_row_count(table, rows.size());
+    // Fit the columns to the current (rotation-aware) screen width.
+    int32_t width = lv_display_get_horizontal_resolution(lv_display_get_default());
+    int32_t column_width = std::max<int32_t>(80, (width - 40) / static_cast<int32_t>(columns));
+    for (size_t c = 0; c < columns; ++c) {
+        lv_table_set_column_width(table, c, column_width);
+    }
+    for (size_t r = 0; r < rows.size(); ++r) {
+        for (size_t c = 0; c < rows[r].size(); ++c) {
+            lv_table_set_cell_value(table, r, c, StripInline(rows[r][c]).c_str());
+        }
+    }
+    lv_obj_set_style_text_color(table, AccentColor(), LV_PART_ITEMS | LV_STATE_DEFAULT);
+    lv_obj_set_width(table, LV_PCT(100));
+    lv_obj_set_height(table, LV_SIZE_CONTENT);
+}
+
+void PushPanel::RenderMarkdown(const std::string& text) {
+    std::vector<std::string> table_lines;
+    std::string paragraph;
+
+    auto flush_paragraph = [&]() {
+        if (!paragraph.empty()) {
+            AddTextBlock(StripInline(paragraph), 0);
+            paragraph.clear();
+        }
+    };
+    auto flush_table = [&]() {
+        if (!table_lines.empty()) {
+            RenderTable(table_lines);
+            table_lines.clear();
+        }
+    };
+
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t end = text.find('\n', pos);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        std::string line = text.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        // Tables are runs of consecutive '|' lines.
+        std::string trimmed = line;
+        size_t b = trimmed.find_first_not_of(" \t");
+        trimmed = b == std::string::npos ? "" : trimmed.substr(b);
+        if (!trimmed.empty() && trimmed[0] == '|') {
+            flush_paragraph();
+            table_lines.push_back(trimmed);
+            if (pos > text.size()) {
+                break;
+            }
+            continue;
+        }
+        flush_table();
+
+        if (trimmed.empty()) {
+            flush_paragraph();
+        } else if (trimmed[0] == '#') {
+            flush_paragraph();
+            int level = 0;
+            while (level < static_cast<int>(trimmed.size()) && trimmed[level] == '#') {
+                ++level;
+            }
+            std::string heading = trimmed.substr(level);
+            size_t hb = heading.find_first_not_of(" \t");
+            heading = hb == std::string::npos ? "" : heading.substr(hb);
+            AddTextBlock(StripInline(heading), level);
+        } else if (trimmed.size() >= 2 && (trimmed[0] == '-' || trimmed[0] == '*') &&
+                   trimmed[1] == ' ') {
+            flush_paragraph();
+            AddTextBlock("• " + StripInline(trimmed.substr(2)), 0);
+        } else {
+            if (!paragraph.empty()) {
+                paragraph += " ";
+            }
+            paragraph += trimmed;
+        }
+
+        if (pos > text.size()) {
+            break;
+        }
+    }
+    flush_paragraph();
+    flush_table();
+}

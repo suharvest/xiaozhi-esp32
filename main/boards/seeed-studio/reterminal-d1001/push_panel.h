@@ -1,0 +1,69 @@
+#ifndef RETERMINAL_D1001_PUSH_PANEL_H
+#define RETERMINAL_D1001_PUSH_PANEL_H
+
+#include "display/lcd_display.h"
+
+#include <esp_http_server.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+#include <string>
+#include <vector>
+
+// Small HTTP server that lets LAN clients push content onto the screen.
+//
+//   POST /panel/markdown   body: markdown text, rendered full-screen.
+//   POST /panel/choice     body: {"title": "...", "options": ["A", ...],
+//                                 "timeout_s": 60}
+//                          Shows the options as buttons and blocks until the
+//                          user taps one; answers
+//                          {"selected": <index>, "option": "<text>"}.
+//   POST /panel/close      closes the panel.
+//   GET  /                 plain-text usage.
+//
+// The markdown renderer supports a small subset: #/##/### headings, - and *
+// bullets, | tables | (drawn with lv_table) and plain paragraphs; **bold**
+// markers are stripped. All UI work runs under the display lock, so the panel
+// is safe alongside the normal chat UI.
+class PushPanel {
+public:
+    explicit PushPanel(LcdDisplay* display);
+    ~PushPanel();
+
+    // Requires lwip/esp_netif to be initialized; call after network start.
+    void Start();
+
+private:
+    static esp_err_t MarkdownThunk(httpd_req_t* req);
+    static esp_err_t ChoiceThunk(httpd_req_t* req);
+    static esp_err_t CloseThunk(httpd_req_t* req);
+    static esp_err_t UsageThunk(httpd_req_t* req);
+    static void OnChoiceClicked(lv_event_t* event);
+    static void OnCloseClicked(lv_event_t* event);
+
+    esp_err_t HandleMarkdown(httpd_req_t* req);
+    esp_err_t HandleChoice(httpd_req_t* req);
+    esp_err_t HandleClose(httpd_req_t* req);
+    bool ReadBody(httpd_req_t* req, std::string* body);
+
+    // All UI helpers must run with the display lock held.
+    void OpenRoot(const char* title);
+    void CloseRoot();
+    void RenderMarkdown(const std::string& text);
+    void RenderTable(const std::vector<std::string>& lines);
+    void AddTextBlock(const std::string& text, int heading_level);
+
+    LcdDisplay* display_;
+    httpd_handle_t server_ = nullptr;
+    lv_obj_t* root_ = nullptr;
+    lv_obj_t* body_ = nullptr;
+
+    // Pending /panel/choice state. The HTTP worker blocks on the semaphore;
+    // the LVGL task gives it when an option (or the close button) is tapped.
+    SemaphoreHandle_t choice_sem_ = nullptr;
+    std::vector<std::string> choice_options_;
+    volatile int choice_selected_ = -1;
+    volatile bool choice_pending_ = false;
+};
+
+#endif  // RETERMINAL_D1001_PUSH_PANEL_H

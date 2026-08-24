@@ -10,6 +10,7 @@
 #include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
 #include "settings_ui.h"
+#include "push_panel.h"
 
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
@@ -259,6 +260,7 @@ private:
     Button boot_button_;
     ReTerminalD1001Display* display_ = nullptr;
     std::unique_ptr<SettingsUi> settings_ui_;
+    std::unique_ptr<PushPanel> push_panel_;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
@@ -675,6 +677,16 @@ public:
         InitializeButtons();
 
         GetBacklight()->RestoreBrightness();
+    }
+
+    // The push panel's HTTP server needs lwip up, which only holds once the
+    // network stack has been started.
+    virtual void StartNetwork() override {
+        WifiBoard::StartNetwork();
+        if (push_panel_ == nullptr && display_ != nullptr) {
+            push_panel_.reset(new PushPanel(display_));
+            push_panel_->Start();
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }
