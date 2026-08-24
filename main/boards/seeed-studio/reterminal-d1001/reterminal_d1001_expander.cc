@@ -55,7 +55,11 @@ void ReTerminalD1001Expander::Initialize() {
                               EXPANDER_BIT_PA_ENABLE | EXPANDER_BIT_TOUCH_RST |
                               EXPANDER_BIT_CAM_EN | EXPANDER_BIT_CAM_PWDN |
                               EXPANDER_BIT_CAM_RST);
-    ret = esp_io_expander_set_dir(expander_, all_pins, IO_EXPANDER_OUTPUT);
+    // The BSP drives every expander pin as an output (bsp_power_init:
+    // set_dir 0xffff); follow it so the power-hold write cannot be lost to a
+    // pin that was left as an input.
+    ret = esp_io_expander_set_dir(expander_, 0xffff, IO_EXPANDER_OUTPUT);
+    (void)all_pins;
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure expander outputs: %s", esp_err_to_name(ret));
     }
@@ -187,5 +191,18 @@ void ReTerminalD1001Expander::ResetLcdPanel() {
 
 void ReTerminalD1001Expander::PowerOff() {
     ESP_LOGI(TAG, "powering off the board");
+    // Same order as bsp_power_off(): LTE rail first, then the power hold.
+    SetLevel(EXPANDER_BIT_LTE_PWR_EN, false);
+    vTaskDelay(pdMS_TO_TICKS(500));
     SetPowerHold(false);
+    // Evidence for the bench: read the expander back so the log shows whether
+    // bit 8 really dropped (output register) and what the pins read (input).
+    if (expander_ != nullptr) {
+        uint32_t out_reg = 0xffffffff, in_reg = 0xffffffff;
+        esp_io_expander_get_level(expander_, 0xffff, &in_reg);
+        esp_io_expander_print_state(expander_);
+        ESP_LOGW(TAG, "after PowerOff: input levels=0x%04x (bit8=%d)", (unsigned)in_reg,
+                 (int)((in_reg >> 8) & 1));
+        (void)out_reg;
+    }
 }
