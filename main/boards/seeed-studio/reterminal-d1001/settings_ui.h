@@ -12,6 +12,7 @@
 enum class SettingsPage {
     Wifi,
     Display,
+    Volume,
 };
 
 enum class WifiSettingsState {
@@ -98,6 +99,7 @@ private:
         RotationPick,
         RotationSave,
         RotationConfirm,
+        VolumeMute,
     };
 
     struct EventCtx {
@@ -107,10 +109,12 @@ private:
     };
 
     static void EventThunk(lv_event_t* event);
+    static void VolumeSliderThunk(lv_event_t* event);
     static void AsyncThunk(void* arg);
     void DrainPendingActions();
     void HandleAction(Action action, int index);
-    void Bind(lv_obj_t* obj, Action action, int index = 0);
+    void Bind(lv_obj_t* obj, Action action, int index = 0,
+              lv_event_code_t code = LV_EVENT_CLICKED);
 
     // Styling helpers.
     const lv_font_t* IconFont(bool large) const;
@@ -118,7 +122,8 @@ private:
     lv_obj_t* MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large);
     lv_obj_t* BuildPage(const char* title, Action back_action, bool with_refresh);
     lv_obj_t* MakeCard(lv_obj_t* parent);
-    lv_obj_t* MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea);
+    // ready_action is dispatched when the keyboard's OK key is pressed.
+    lv_obj_t* MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action);
     lv_obj_t* MakeListItem(lv_obj_t* parent, const char* icon, const char* title,
                            const char* subtitle, Action action, int index,
                            const char* trailing_icon);
@@ -136,6 +141,7 @@ private:
     void ShowConnecting(const std::string& ssid);
     void ShowResult(bool success, const char* message);
     void ShowDisplaySettings();
+    void ShowVolumeSettings();
     void ShowRotationConfirm();
     void CommitRotation();
 
@@ -149,6 +155,8 @@ private:
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;
     lv_obj_t* keyboard_ = nullptr;
+    lv_obj_t* volume_slider_ = nullptr;
+    lv_obj_t* volume_value_ = nullptr;
 
     SettingsPage page_ = SettingsPage::Wifi;
     WifiSettingsState wifi_state_ = WifiSettingsState::Idle;
@@ -157,6 +165,8 @@ private:
     std::string pending_ssid_;
     bool pending_encrypted_ = true;
     int pending_rotation_ = 0;
+    // Level restored by the mute button; only ever holds a non-zero volume.
+    int volume_restore_ = 60;
     bool operation_active_ = false;
     uint32_t scan_generation_ = 0;
     std::vector<std::unique_ptr<EventCtx>> event_ctx_;

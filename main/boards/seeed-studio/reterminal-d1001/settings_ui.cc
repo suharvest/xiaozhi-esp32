@@ -1,6 +1,8 @@
 #include "settings_ui.h"
 
 #include "application.h"
+#include "audio/audio_codec.h"
+#include "board.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -27,6 +29,7 @@ constexpr int kIconButtonSize = 64;
 constexpr int kRowHeight = 96;
 constexpr int kButtonHeight = 72;
 constexpr int kCardRadius = 16;
+constexpr int kSliderHeight = 56;  // fat enough to drag with a finger
 constexpr int kKeyboardHeight = 360;  // four rows of ~84 px keys
 constexpr int kGap = 16;
 
@@ -103,9 +106,36 @@ void SettingsUi::DrainPendingActions() {
     }
 }
 
-void SettingsUi::Bind(lv_obj_t* obj, Action action, int index) {
+void SettingsUi::Bind(lv_obj_t* obj, Action action, int index, lv_event_code_t code) {
     event_ctx_.push_back(std::unique_ptr<EventCtx>(new EventCtx{this, action, index}));
-    lv_obj_add_event_cb(obj, EventThunk, LV_EVENT_CLICKED, event_ctx_.back().get());
+    lv_obj_add_event_cb(obj, EventThunk, code, event_ctx_.back().get());
+}
+
+// The slider writes NVS through AudioCodec::SetOutputVolume(), which persists on
+// every call, so dragging only previews the value and the codec is written once
+// when the finger leaves the knob.
+void SettingsUi::VolumeSliderThunk(lv_event_t* event) {
+    auto* ui = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+    auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(event));
+    if (ui == nullptr || slider == nullptr) {
+        return;
+    }
+    int value = (int)lv_slider_get_value(slider);
+    if (ui->volume_value_ != nullptr) {
+        lv_label_set_text_fmt(ui->volume_value_, "%d%%", value);
+    }
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) {
+        return;
+    }
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    if (codec == nullptr) {
+        return;
+    }
+    if (value > 0) {
+        ui->volume_restore_ = value;
+    }
+    codec->SetOutputVolume(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +190,8 @@ void SettingsUi::ClearPage() {
     }
     textarea_ = nullptr;
     keyboard_ = nullptr;
+    volume_slider_ = nullptr;
+    volume_value_ = nullptr;
     icon_labels_.clear();
     event_ctx_.clear();
 }
@@ -224,7 +256,7 @@ lv_obj_t* SettingsUi::MakeScrollArea(lv_obj_t* parent) {
     return area;
 }
 
-lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea) {
+lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action) {
     // Push the keyboard to the bottom of the flex column instead of letting it
     // stretch over the whole remaining height (the default stretched every key
     // to ~200 px with the 14 px default font).
@@ -258,6 +290,9 @@ lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea) {
     lv_obj_set_style_text_color(kb, lv_color_white(), (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
 
     lv_keyboard_set_textarea(kb, textarea);
+    // The OK key runs the page's primary action instead of only dismissing the
+    // keyboard, so a password can be submitted without reaching for 连接.
+    Bind(kb, ready_action, 0, LV_EVENT_READY);
     return kb;
 }
 
@@ -370,6 +405,9 @@ void SettingsUi::Open(SettingsPage page) {
         case SettingsPage::Display:
             ShowDisplaySettings();
             break;
+        case SettingsPage::Volume:
+            ShowVolumeSettings();
+            break;
         case SettingsPage::Wifi:
         default:
             ShowWifiPage();
@@ -390,6 +428,8 @@ void SettingsUi::Close() {
     body_ = nullptr;
     textarea_ = nullptr;
     keyboard_ = nullptr;
+    volume_slider_ = nullptr;
+    volume_value_ = nullptr;
     icon_labels_.clear();
     event_ctx_.clear();
     if (close_cb_) {
@@ -538,7 +578,7 @@ void SettingsUi::ShowManualSsid() {
     MakeTextButton(body, MATERIAL_SYMBOLS_ARROW_FORWARD, "下一步", Action::WifiManualNext, 0,
                    true);
 
-    keyboard_ = MakeKeyboard(body, textarea_);
+    keyboard_ = MakeKeyboard(body, textarea_, Action::WifiManualNext);
 }
 
 void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
@@ -571,7 +611,7 @@ void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
         MakeTextButton(row, MATERIAL_SYMBOLS_CHECK, "连接", Action::WifiConnectConfirm, 0, true);
     lv_obj_set_width(connect, LV_PCT(64));
 
-    keyboard_ = MakeKeyboard(body, textarea_);
+    keyboard_ = MakeKeyboard(body, textarea_, Action::WifiConnectConfirm);
 }
 
 void SettingsUi::ShowSavedList() {
@@ -765,6 +805,55 @@ void SettingsUi::ShowDisplaySettings() {
                    0, true);
 }
 
+// ---------------------------------------------------------------------------
+// Volume
+// ---------------------------------------------------------------------------
+
+void SettingsUi::ShowVolumeSettings() {
+    page_ = SettingsPage::Volume;
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    int volume = codec != nullptr ? codec->output_volume() : 0;
+    if (volume > 0) {
+        volume_restore_ = volume;
+    }
+
+    lv_obj_t* body = BuildPage("音量", Action::Close, false);
+
+    lv_obj_t* card = MakeCard(body);
+    lv_obj_set_height(card, 120);
+    MakeIconLabel(card, volume == 0 ? MATERIAL_SYMBOLS_VOLUME_OFF : MATERIAL_SYMBOLS_VOLUME_UP,
+                  true);
+    volume_value_ = lv_label_create(card);
+    lv_label_set_text_fmt(volume_value_, "%d%%", volume);
+    lv_obj_set_flex_grow(volume_value_, 1);
+    lv_obj_set_style_text_align(volume_value_, LV_TEXT_ALIGN_RIGHT, 0);
+
+    volume_slider_ = lv_slider_create(body);
+    lv_obj_set_width(volume_slider_, LV_PCT(100));
+    lv_obj_set_height(volume_slider_, kSliderHeight);
+    lv_slider_set_range(volume_slider_, 0, 100);
+    lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(volume_slider_, CardColor(), LV_PART_MAIN);
+    lv_obj_set_style_radius(volume_slider_, kSliderHeight / 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(volume_slider_, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(volume_slider_, kSliderHeight / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(volume_slider_, lv_color_hex(kAccentColor), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(volume_slider_, 10, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(volume_slider_, 16);
+    lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_PRESS_LOST, this);
+
+    MakeTextButton(body, volume == 0 ? MATERIAL_SYMBOLS_VOLUME_UP : MATERIAL_SYMBOLS_VOLUME_OFF,
+                   volume == 0 ? "取消静音" : "静音", Action::VolumeMute, 0, false);
+
+    lv_obj_t* hint = lv_label_create(body);
+    lv_label_set_text(hint, "松手时才写入设置，拖动过程只做预览。");
+    lv_obj_set_width(hint, LV_PCT(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_opa(hint, LV_OPA_60, 0);
+}
+
 void SettingsUi::ShowRotationConfirm() {
     lv_obj_t* body = BuildPage("确认", Action::ShowDisplay, false);
 
@@ -938,5 +1027,20 @@ void SettingsUi::HandleAction(Action action, int index) {
             }
             CommitRotation();
             return;
+        case Action::VolumeMute: {
+            auto* codec = Board::GetInstance().GetAudioCodec();
+            if (codec == nullptr) {
+                return;
+            }
+            int current = codec->output_volume();
+            if (current > 0) {
+                volume_restore_ = current;
+                codec->SetOutputVolume(0);
+            } else {
+                codec->SetOutputVolume(volume_restore_ > 0 ? volume_restore_ : 60);
+            }
+            ShowVolumeSettings();
+            return;
+        }
     }
 }

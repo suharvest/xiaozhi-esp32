@@ -146,16 +146,22 @@ manage both versions independently.
 
 ## On-screen settings
 
-The status bar carries two targets and there is no separate settings home
+The status bar carries three targets and there is no separate settings home
 page. Tapping the network icon opens the Wi-Fi page directly (the scan starts
 with the page); the rotation symbol next to it opens the screen-orientation
-page. The network icon itself belongs to the stock top bar underneath and never
+page and the volume symbol after it opens the volume page. The network icon
+itself belongs to the stock top bar underneath and never
 receives taps, so a transparent 48 px tall hit area covering its footprint is
 placed over it inside `status_bar_` (the transparent full-width layer stacked
 over the top bar, which is what actually receives taps up there). The rotation
-symbol is a label in the same font, size and colour as the rest of the strip,
-with a 16 px extended click area; `status_bar_` gets a 48 px minimum height so
-the whole band is hit-tested. Either target opens a full-screen overlay
+and volume symbols are labels in the same font, size and colour as the rest of
+the strip, with a 16 px extended click area; `status_bar_` gets a 48 px minimum
+height so the whole band is hit-tested. `status_bar_` is therefore taller than
+`top_bar_`, so the hit area and the icon row are aligned to the *top* of
+`status_bar_`, not to its middle: both bars are screen children at y=0 with the
+same `spacing(2)` top padding and the icon row is exactly one icon-font line
+high, so a top alignment puts all three glyphs on the network icon's line.
+Any target opens a full-screen overlay
 (`settings_ui.h/.cc`) that covers the status bar; the main UI keeps running
 underneath and is restored when the overlay closes. The back arrow on both
 top-level pages closes the overlay. The GPIO3 button behaviour is unchanged.
@@ -177,6 +183,12 @@ the theme is reloaded (the old font is freed at that moment).
   back if the connection does not come up within 20 s. Switching networks while
   the device is idle goes through `EnterWifiConfigMode()` first, so the protocol
   is torn down cleanly before the station restarts.
+- **音量**: one card with the current level, a 56 px tall `lv_slider` (0-100)
+  and a mute button. Dragging only updates the label; the codec is written once
+  on `LV_EVENT_RELEASED` / `LV_EVENT_PRESS_LOST`, because
+  `AudioCodec::SetOutputVolume()` commits to NVS on every call
+  (`main/audio/audio_codec.cc`). Mute stores the current level and sets 0; the
+  same button restores the stored level. No second copy of the volume is kept.
 - **屏幕方向**: four large tiles with the current one highlighted, then
   `保存并重启` with a confirmation step. 0/90/180/270, stored in NVS (namespace `reterminal`, key
   `rotation`) and applied at boot; the device reboots 2 s after the choice is
@@ -193,8 +205,9 @@ frame goes through `lvgl_port_ppa_rotate()`
 (`esp_lvgl_port_disp.c:420-444`, `:644-699`).
 
 The board build also appends `CONFIG_LV_USE_KEYBOARD=y`, `CONFIG_LV_USE_LIST=y`,
-`CONFIG_LV_USE_TEXTAREA=y` and `CONFIG_LV_USE_SPINNER=y`, which the project
-defaults leave off.
+`CONFIG_LV_USE_TEXTAREA=y`, `CONFIG_LV_USE_SPINNER=y` and
+`CONFIG_LV_USE_SLIDER=y`, which the project defaults either leave off or do not
+pin.
 
 ## Pin facts (from the Seeed BSP)
 

@@ -32,6 +32,7 @@
                 "CONFIG_LV_USE_LIST=y",
                 "CONFIG_LV_USE_TEXTAREA=y",
                 "CONFIG_LV_USE_SPINNER=y",
+                "CONFIG_LV_USE_SLIDER=y",
                 "CONFIG_LVGL_PORT_ENABLE_PPA=y",
                 "CONFIG_CAMERA_SC202CS=y",
                 "CONFIG_CAMERA_SC202CS_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y",

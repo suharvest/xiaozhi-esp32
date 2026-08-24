@@ -98,7 +98,10 @@ public:
                                               ? kStatusBarTouchHeight
                                               : hotspot_width,
                         kStatusBarTouchHeight);
-        lv_obj_align(network_hotspot_, LV_ALIGN_LEFT_MID, 0, 0);
+        // Both bars sit at the top of the screen with the same top padding, so
+        // aligning to the top (instead of the middle of the taller status bar)
+        // puts our entries on the network icon's own baseline.
+        lv_obj_align(network_hotspot_, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_set_style_bg_opa(network_hotspot_, LV_OPA_TRANSP, 0);
         lv_obj_set_scrollbar_mode(network_hotspot_, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(network_hotspot_, LV_OBJ_FLAG_SCROLLABLE);
@@ -114,9 +117,13 @@ public:
         lv_obj_set_style_pad_column(status_actions_, gap, 0);
         lv_obj_set_scrollbar_mode(status_actions_, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(status_actions_, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(status_actions_, LV_ALIGN_LEFT_MID, hotspot_width, 0);
+        // status_actions_ is exactly one icon-font line high, the same as the
+        // network label in the top bar, so a top alignment lands the glyphs on
+        // the same horizontal line.
+        lv_obj_align(status_actions_, LV_ALIGN_TOP_LEFT, hotspot_width, 0);
 
         rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
+        volume_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_VOLUME_UP, OnVolumeClicked);
     }
 
     void SetTheme(Theme* theme) override {
@@ -127,6 +134,7 @@ public:
         // re-pointed at the new ones before anything can draw with a dangling
         // pointer.
         ApplyStatusIconStyle(rotation_icon_);
+        ApplyStatusIconStyle(volume_icon_);
         if (on_theme_changed_) {
             on_theme_changed_();
         }
@@ -211,6 +219,10 @@ private:
         Dispatch(event, SettingsPage::Display);
     }
 
+    static void OnVolumeClicked(lv_event_t* event) {
+        Dispatch(event, SettingsPage::Volume);
+    }
+
     static void Dispatch(lv_event_t* event, SettingsPage page) {
         auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
         if (self != nullptr && self->open_settings_) {
@@ -223,6 +235,7 @@ private:
     lv_obj_t* network_hotspot_ = nullptr;
     lv_obj_t* status_actions_ = nullptr;
     lv_obj_t* rotation_icon_ = nullptr;
+    lv_obj_t* volume_icon_ = nullptr;
 };
 
 class ReTerminalD1001Board : public WifiBoard {
