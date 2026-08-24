@@ -77,9 +77,14 @@ ReTerminalD1001AudioCodec::ReTerminalD1001AudioCodec(i2c_master_bus_handle_t i2c
     // at the same percentage the replies are barely audible on this speaker.
     // Shift the whole curve up; the ES8311 digital volume reaches +32 dB, so
     // +6 dB at 100% leaves headroom and normal speech cannot clip.
-    esp_codec_dev_vol_map_t vol_map[] = {{.vol = 0, .db_value = -45.0},
-                                         {.vol = 100, .db_value = 6.0}};
-    esp_codec_dev_vol_curve_t vol_curve = {.count = 2, .vol_map = vol_map};
+    esp_codec_dev_vol_map_t vol_map[2];
+    vol_map[0].vol = 0;
+    vol_map[0].db_value = -45.0;
+    vol_map[1].vol = 100;
+    vol_map[1].db_value = 6.0;
+    esp_codec_dev_vol_curve_t vol_curve;
+    vol_curve.count = 2;
+    vol_curve.vol_map = vol_map;
     esp_codec_dev_set_vol_curve(output_dev_, &vol_curve);
 
     // ES7210 capture codec (same 8-bit address convention).
