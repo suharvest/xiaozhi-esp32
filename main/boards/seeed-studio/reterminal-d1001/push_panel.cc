@@ -409,7 +409,7 @@ void PushPanel::RenderTable(const std::vector<std::string>& lines) {
             lv_table_set_cell_value(table, r, c, StripInline(rows[r][c]).c_str());
         }
     }
-    lv_obj_set_style_text_color(table, AccentColor(), LV_PART_ITEMS | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(table, AccentColor(), LV_PART_ITEMS);
     lv_obj_set_width(table, LV_PCT(100));
     lv_obj_set_height(table, LV_SIZE_CONTENT);
 }
