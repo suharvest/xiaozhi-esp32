@@ -248,6 +248,7 @@ private:
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
+    bool powering_off_ = false;
 
     void EnableDsiPhyPower() {
         // The MIPI DSI PHY is fed by LDO3; without it the PHY stays in the
@@ -532,6 +533,36 @@ private:
             }
             app.ToggleChatState();
         });
+        boot_button_.OnLongPress([this]() { StartPowerOff(); });
+    }
+
+    // Runs in the button task, so the shutdown itself is handed to a short
+    // worker: the power amplifier has to be muted before the rail drops or the
+    // speaker pops, and that needs a delay the button task must not sit in.
+    void StartPowerOff() {
+        if (powering_off_) {
+            return;
+        }
+        powering_off_ = true;
+        ESP_LOGW(TAG, "Long press on GPIO3: powering off");
+        if (display_ != nullptr) {
+            display_->ShowNotification("正在关机 ...", 10000);
+        }
+        BaseType_t ok = xTaskCreate(
+            [](void* arg) {
+                auto* board = static_cast<ReTerminalD1001Board*>(arg);
+                board->expander_.SetPowerAmp(false);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                board->expander_.PowerOff();
+                // Reached only when the board is kept alive from USB: the
+                // PCA9535 power-hold bit does not cut an externally fed rail.
+                ESP_LOGW(TAG, "Still running after PowerOff(); external power?");
+                vTaskDelete(nullptr);
+            },
+            "d1001_poweroff", 3072, this, 5, nullptr);
+        if (ok != pdPASS) {
+            powering_off_ = false;
+        }
     }
 
     void InitializeCamera() {
@@ -579,7 +610,11 @@ private:
     }
 
 public:
-    ReTerminalD1001Board() : boot_button_(BOOT_BUTTON_GPIO) {
+    // A 3 s hold powers the board down; a short press keeps its old meaning
+    // (Wi-Fi config while starting, chat toggle afterwards).
+    static constexpr uint16_t kPowerOffLongPressMs = 3000;
+
+    ReTerminalD1001Board() : boot_button_(BOOT_BUTTON_GPIO, false, kPowerOffLongPressMs) {
         ESP_LOGI(TAG, "initializing reTerminal D1001");
 
         // Minimal power bring-up: I2C1 + PCA9535 and the system power hold.

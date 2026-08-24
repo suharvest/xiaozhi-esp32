@@ -16,8 +16,9 @@ Validated on hardware (P4 v1.3, 32 MB Winbond flash ef/4019, 32 MB PSRAM):
 - ESP-Hosted SDIO link to the factory ESP32-C6 firmware (Wi-Fi, config AP and
   the XiaoZhi cloud connection all work; the co-proc runs esp-hosted 2.3.0
   while this image ships host 2.12.x, see "C6 firmware" below).
-- GPIO3 button: toggles the chat state, or enters Wi-Fi config mode while the
-  device is starting.
+- GPIO3 button: a short press toggles the chat state, or enters Wi-Fi config
+  mode while the device is starting; a 3 s hold powers the board off (see
+  "Power off" below).
 - 800x1280 JD9365DA-H3 MIPI-DSI panel (2 lanes at 1000 Mbps, LDO3 at 2.5 V,
   60 MHz DPI clock, RGB565 with one framebuffer) using the Seeed init
   sequence in `lcd_init_cmds.h`, plus the GPIO14 PWM backlight
@@ -143,6 +144,22 @@ The ESP32-P4 application and the ESP32-C6 ESP-Hosted slave are separate
 firmware images with separate version lifecycles. Building or updating this
 P4 image does not build or silently update the C6 firmware; record and
 manage both versions independently.
+
+## Power off
+
+Holding the GPIO3 button for 3 s shows `正在关机 ...` on screen, mutes the
+power amplifier, waits 500 ms so the speaker does not pop and then drops the
+PCA9535 power-hold bit (`ReTerminalD1001Expander::PowerOff()`). The long press
+is registered with `Button(gpio, false, 3000)`; the click threshold is
+unchanged, and `iot_button` does not emit a single click after a long press
+(`iot_button.c`, `PRESS_LONG_PRESS_UP_CHECK`), so the short-press behaviour
+stays as it was.
+
+Power-hold only gates the battery path. **Not measured yet:** with USB power
+plugged in the rail may be fed from the host, in which case the board keeps
+running after the bit drops; the firmware logs
+`Still running after PowerOff(); external power?` when that happens. On battery
+the board is expected to switch off. Both need a bench check.
 
 ## On-screen settings
 
