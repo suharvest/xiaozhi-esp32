@@ -30,3 +30,4 @@ d1001-dev/
 .pull-idf.*
 .tmp-boards.txt
 .tmp/
+tools/raspberry_pi_display/uploads/
