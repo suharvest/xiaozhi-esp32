@@ -147,7 +147,7 @@ main/boards/seeed-studio/reterminal-d1001/
 - I2S0 TX，标准 I2S，16-bit mono，首选 24 kHz 与 XiaoZhi 当前音频链路保持一致。
 - MCLK multiple 256。
 - ES8311 只配置 DAC 模式。
-- `pa_pin` 不得填写 Seeed 工厂代码中的 GPIO53。D1001 的 PA 实际由 PCA9535 bit 11 控制，应向 codec 传 `GPIO_NUM_NC`，由板级 expander 独立管理。
+- `pa_pin` 传 `GPIO_NUM_NC`：原理图（Audio 页）确认 NS4150B 的 CTRL 由 `EN_PA ← EXP_GPO11`（PCA9535 bit 11）驱动，PA_VCC 直连 VSYS 常供电；工厂代码里 es8311 的 `.pa_pin = GPIO_NUM_53` 实际接的是 Lora_BUSY，与功放无关。
 - 开启输出：准备 DMA 静音数据 → open codec → 设置音量 → 打开 PA。
 - 关闭输出：先关闭 PA → close codec，避免尾音和爆音。
 
