@@ -12,6 +12,7 @@ ReTerminalD1001AudioCodec::ReTerminalD1001AudioCodec(i2c_master_bus_handle_t i2c
                                                      int input_sample_rate,
                                                      int output_sample_rate) {
     duplex_ = true;
+    input_gain_ = AUDIO_MIC_GAIN;
     input_reference_ = false;
     input_channels_ = 1;  // TDM carries 4 slots; XiaoZhi consumes slot 0
     input_sample_rate_ = input_sample_rate;

@@ -11,6 +11,10 @@
 #define PCA9535_I2C_ADDRESS 0x20
 #define ES8311_I2C_ADDRESS 0x18
 #define ES7210_I2C_ADDRESS 0x40
+// ES7210 analog gain for the microphone slots, from the factory BSP
+// (CODEC_DEFAULT_ADC_VOLUME = 37.5 dB). With the default 0 dB the mics are
+// ~40 dB down and the wake word fires on noise while ASR hears nothing.
+#define AUDIO_MIC_GAIN 37.5f
 #define AUDIO_INPUT_SAMPLE_RATE 16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
