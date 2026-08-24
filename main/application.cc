@@ -508,9 +508,7 @@ void Application::CheckNewVersion() {
 }
 
 void Application::InitializeProtocol() {
-    auto& board = Board::GetInstance();
-    auto display = board.GetDisplay();
-    auto codec = board.GetAudioCodec();
+    auto display = Board::GetInstance().GetDisplay();
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
@@ -540,6 +538,16 @@ void Application::InitializeProtocol() {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
+
+    SetupProtocolCallbacks();
+}
+
+void Application::SetupProtocolCallbacks() {
+    // Wires callbacks on protocol_ and starts it. Must not touch ota_: this
+    // also runs at fallback time, long after ota_ has been released.
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    auto codec = board.GetAudioCodec();
 
     protocol_->OnConnected([this]() { DismissAlert(); });
 
@@ -732,7 +740,8 @@ void Application::FallbackToWebsocket() {
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         protocol_->CloseAudioChannel();
     }
-    InitializeProtocol();
+    protocol_ = std::make_unique<WebsocketProtocol>();
+    SetupProtocolCallbacks();
     SetDeviceState(kDeviceStateIdle);
 }
 

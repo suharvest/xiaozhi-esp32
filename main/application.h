@@ -160,6 +160,7 @@ private:
 
     bool EvaluateUplinkProbe();
     void FallbackToWebsocket();
+    void SetupProtocolCallbacks();
 
     // Event handlers
     void HandleStateChangedEvent();
