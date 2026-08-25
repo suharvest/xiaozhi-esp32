@@ -137,7 +137,14 @@ void ReTerminalD1001BatteryMonitor::SampleLoop() {
         bool usb = usb_mv > kUsbPresentMv;
         usb_present_.store(usb);
         // STAT low while USB present = actively charging.
-        charging_.store(usb && gpio_get_level(kChargeStateGpio) == 0);
+        int stat = gpio_get_level(kChargeStateGpio);
+        charging_.store(usb && stat == 0);
+        static int log_tick = 0;
+        if (++log_tick >= 30) {
+            log_tick = 0;
+            ESP_LOGI(TAG, "bat=%dmV level=%d%% usb=%dmV stat=%d charging=%d", bat_mv,
+                     level_.load(), usb_mv, stat, (int)charging_.load());
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

@@ -863,8 +863,13 @@ bool EspVideo::Capture() {
                 return false;
         }
 
-        auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
-        display->SetPreviewImage(std::move(image));
+        if (preview_enabled_) {
+            auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h,
+                                                              stride, color_format);
+            display->SetPreviewImage(std::move(image));
+        } else {
+            heap_caps_free(data);
+        }
     }
     return true;
 }

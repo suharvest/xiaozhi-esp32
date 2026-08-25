@@ -60,7 +60,10 @@ bool FaceService::RecognizeOnce(std::vector<FaceHit>& hits, std::string* error) 
         return false;
     }
     std::vector<uint8_t> jpeg;
-    if (!camera_->CaptureToJpeg(jpeg) || jpeg.empty()) {
+    camera_->SetPreviewEnabled(false);
+    bool captured = camera_->CaptureToJpeg(jpeg);
+    camera_->SetPreviewEnabled(true);
+    if (!captured || jpeg.empty()) {
         if (error) *error = "capture failed";
         return false;
     }

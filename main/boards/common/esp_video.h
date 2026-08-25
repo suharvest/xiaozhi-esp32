@@ -34,6 +34,7 @@ private:
 #endif  // CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
     int video_fd_ = -1;
     bool streaming_on_ = false;
+    bool preview_enabled_ = true;
     struct MmapBuffer {
         void* start = nullptr;
         size_t length = 0;
@@ -49,6 +50,9 @@ public:
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();
+    // Suppresses the on-screen preview during background captures (face
+    // service); take_photo keeps the preview.
+    void SetPreviewEnabled(bool enabled) { preview_enabled_ = enabled; }
     // Captures one frame and encodes it to JPEG into `out` (synchronous).
     virtual bool CaptureToJpeg(std::vector<uint8_t>& out);
     // 翻转控制函数
