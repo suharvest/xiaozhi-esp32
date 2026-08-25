@@ -13,8 +13,11 @@ ReTerminalD1001AudioCodec::ReTerminalD1001AudioCodec(i2c_master_bus_handle_t i2c
                                                      int output_sample_rate) {
     duplex_ = true;
     input_gain_ = AUDIO_MIC_GAIN;
-    input_reference_ = false;
-    input_channels_ = 1;  // TDM carries 4 slots; XiaoZhi consumes slot 0
+    // TDM carries 4 slots: 0/2 = mics, 1 = DAC playback loopback (electrical,
+    // pre-PA), 3 = empty. Slot 0 + slot 1 give the AFE an "MR" pair, enabling
+    // on-device AEC and full-duplex (realtime) listening.
+    input_reference_ = true;
+    input_channels_ = 2;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
 
@@ -270,7 +273,8 @@ void ReTerminalD1001AudioCodec::EnableInput(bool enable) {
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 4,
-            .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
+            .channel_mask =
+                ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
         };
