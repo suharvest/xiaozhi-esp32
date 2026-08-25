@@ -40,6 +40,7 @@
 #define EXPANDER_BIT_LCD_BACKLIGHT_EN (1ULL << 7)  // EXP_PIN_NUM_7: backlight power enable
 #define EXPANDER_BIT_PWR_HOLD (1ULL << 8)          // EXP_PIN_NUM_8: system power hold (vdd_3v3)
 #define EXPANDER_BIT_PA_ENABLE (1ULL << 11)        // EXP_PIN_NUM_11: NS4150B power amp enable
+#define EXPANDER_BIT_BAT_READ_EN (1ULL << 6)       // EXP_PIN_NUM_6: battery voltage divider gate
 #define EXPANDER_BIT_LTE_PWR_EN (1ULL << 15)      // EXP_PIN_NUM_15: mPCIe/LTE power
 #define EXPANDER_BIT_TOUCH_RST (1ULL << 12)        // EXP_PIN_NUM_12: GSL3670 touch reset
 #define EXPANDER_BIT_CAM_EN (1ULL << 1)            // EXP_PIN_NUM_1: camera rail enable

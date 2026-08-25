@@ -39,6 +39,8 @@ public:
     void SetBacklightPower(bool on);
     void SetTouchReset(bool asserted);
     void SetPowerAmp(bool on);
+    // Battery voltage divider gate (BAT_READ_EN, bit 6).
+    void SetBatteryReadEnable(bool on);
     void SetCameraPower(bool on);
     void SetCameraPowerDown(bool asserted);
     void SetCameraReset(bool asserted);

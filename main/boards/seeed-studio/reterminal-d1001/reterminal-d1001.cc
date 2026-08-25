@@ -12,6 +12,7 @@
 #include "settings_ui.h"
 #include "push_panel.h"
 #include "camera_tuning.h"
+#include "battery_monitor.h"
 
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
@@ -273,6 +274,7 @@ private:
     ReTerminalD1001Display* display_ = nullptr;
     std::unique_ptr<SettingsUi> settings_ui_;
     std::unique_ptr<PushPanel> push_panel_;
+    std::unique_ptr<ReTerminalD1001BatteryMonitor> battery_;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
@@ -676,6 +678,11 @@ public:
         expander_.Initialize();
         expander_.ApplyMinimalPowerSequence();
 
+        battery_.reset(new ReTerminalD1001BatteryMonitor(&expander_));
+        if (!battery_->Initialize()) {
+            battery_.reset();
+        }
+
         audio_codec_ = new ReTerminalD1001AudioCodec(expander_.GetI2cBus(), AUDIO_INPUT_SAMPLE_RATE,
                                                      AUDIO_OUTPUT_SAMPLE_RATE);
         audio_codec_->SetPowerAmpCallback([this](bool on) { expander_.SetPowerAmp(on); });
@@ -725,6 +732,10 @@ public:
                 });
             push_panel_->Start();
         }
+    }
+
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+        return battery_ != nullptr && battery_->GetLevel(level, charging, discharging);
     }
 
     virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }

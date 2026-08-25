@@ -99,6 +99,10 @@ void ReTerminalD1001Expander::SetTouchReset(bool asserted) {
 
 void ReTerminalD1001Expander::SetPowerAmp(bool on) { SetLevel(EXPANDER_BIT_PA_ENABLE, on); }
 
+void ReTerminalD1001Expander::SetBatteryReadEnable(bool on) {
+    SetLevel(EXPANDER_BIT_BAT_READ_EN, on);
+}
+
 void ReTerminalD1001Expander::SetCameraPower(bool on) { SetLevel(EXPANDER_BIT_CAM_EN, on); }
 
 void ReTerminalD1001Expander::SetCameraPowerDown(bool asserted) {
