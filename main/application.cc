@@ -938,8 +938,9 @@ void Application::HandleWakeWordDetectedEvent() {
 }
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
-    // Must run in the main task with the device in idle state
-    audio_service_.EncodeWakeWord();
+    // The wake-word cache keeps filling while the channel connects (bridge in
+    // the AFE engine); encoding is deferred to ContinueWakeWordInvoke so the
+    // snapshot includes speech spoken during the connect gap.
 
     // Always pass through the connecting state, even if the audio channel is
     // already opened. ContinueWakeWordInvoke() rejects any other state, so
@@ -983,7 +984,8 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
-    // Encode and send the wake word data to the server
+    // Snapshot the cache now (wake phrase + connect-gap speech) and send it
+    audio_service_.EncodeWakeWord();
     while (auto packet = audio_service_.PopWakeWordPacket()) {
         protocol_->SendAudio(std::move(packet));
     }
@@ -991,6 +993,9 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
 #else
+    // Even without sending, run the encoder once to stop the cache bridge and
+    // clear the ring buffer.
+    audio_service_.EncodeWakeWord();
     // Set flag to play popup sound after state changes to listening
     // (PlaySound here would be cleared by ResetDecoder in EnableVoiceProcessing)
     play_popup_on_listening_ = true;

@@ -101,7 +101,9 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms, srmode
             }
         }
 #if CONFIG_SEND_WAKE_WORD_DATA
-        if (!wake_word_audio_cache_.Initialize(16000 * 2)) {
+        // 6s ring: pre-roll + wake phrase + whatever the user keeps saying
+        // while the audio channel connects (see wake_cache_bridge_).
+        if (!wake_word_audio_cache_.Initialize(16000 * 6)) {
             ESP_LOGW(TAG, "Wake-word audio upload disabled: PSRAM cache allocation failed");
         }
 #endif
@@ -377,7 +379,9 @@ void AfeAudioEngine::ProcessingTask() {
         }
 
         EventBits_t bits = xEventGroupGetBits(event_group_);
-        if (bits & kWakeWordEnabled) {
+        if ((bits & kWakeWordEnabled) || wake_cache_bridge_.load()) {
+            // The bridge keeps filling the wake-word cache after detection so
+            // speech spoken while the audio channel connects is not lost.
             HandleWakeWordResult(result);
         }
         if (kUseAfeForVoiceProcessing && (bits & kVoiceProcessingEnabled)) {
@@ -407,6 +411,7 @@ void AfeAudioEngine::HandleWakeWordResult(const afe_fetch_result_t* result) {
     }
 
     last_detected_wake_word_ = wake_words_[model_index];
+    wake_cache_bridge_.store(true);
     xEventGroupClearBits(event_group_, kWakeWordEnabled);
     // UpdateActiveState marks the AFE controls dirty; the next loop iteration
     // of ProcessingTask disables WakeNet via ApplyAfeControls.
@@ -478,6 +483,11 @@ void AfeAudioEngine::EncodeWakeWordData() {
     if (wake_detector_ != WakeDetector::kWakeNet) {
         return;
     }
+
+    // Stop the post-detection cache bridge: the snapshot below covers
+    // everything up to this moment (the caller runs this after the audio
+    // channel opened, so the connect-gap speech is included).
+    wake_cache_bridge_.store(false);
 
     const size_t stack_size = 4096 * 6;
     wake_word_opus_.clear();

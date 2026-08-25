@@ -93,6 +93,7 @@ private:
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
     StackType_t* wake_word_encode_task_stack_ = nullptr;
     WakeWordAudioCache wake_word_audio_cache_;
+    std::atomic<bool> wake_cache_bridge_{false};
     std::deque<std::vector<uint8_t>> wake_word_opus_;
     std::mutex wake_word_mutex_;
     std::condition_variable wake_word_cv_;
