@@ -314,13 +314,22 @@ void PushPanel::OpenRoot(const char* title) {
         return;
     }
 
-    // Full-screen overlay parented to the screen so labels inherit the theme
+    // Floating bottom card parented to the screen so labels inherit the theme
     // text font (which can be reloaded at runtime and must never be cached).
+    // It covers only the lower part of the screen, leaving the status bar and
+    // the assistant's face visible above it, like a chat window.
     root_ = lv_obj_create(screen);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_size(root_, LV_PCT(96), LV_PCT(55));
+    lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(root_, 16, 0);
+    lv_obj_set_style_border_width(root_, 1, 0);
+    lv_obj_set_style_border_color(root_, AccentColor(), 0);
+    lv_obj_set_style_border_opa(root_, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_width(root_, 24, 0);
+    lv_obj_set_style_shadow_opa(root_, LV_OPA_20, 0);
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
