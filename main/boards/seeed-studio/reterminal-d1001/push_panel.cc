@@ -10,7 +10,7 @@ static const char* TAG = "PushPanel";
 
 // 30px CJK font (common-glyph subset) for headings and ?size=large bodies;
 // linked from the xiaozhi-fonts component.
-LV_FONT_DECLARE(font_puhui_basic_30_4);
+LV_FONT_DECLARE(font_noto_sans_basic_30_4);
 
 namespace {
 
@@ -465,11 +465,11 @@ void PushPanel::AddTextBlock(const std::string& text, int heading_level) {
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, LV_PCT(100));
     if (heading_level > 0) {
-        lv_obj_set_style_text_font(label, &font_puhui_basic_30_4, 0);
+        lv_obj_set_style_text_font(label, &font_noto_sans_basic_30_4, 0);
         lv_obj_set_style_text_color(label, AccentColor(), 0);
         lv_obj_set_style_pad_top(label, heading_level == 1 ? 8 : 4, 0);
     } else if (large_text_) {
-        lv_obj_set_style_text_font(label, &font_puhui_basic_30_4, 0);
+        lv_obj_set_style_text_font(label, &font_noto_sans_basic_30_4, 0);
     }
 }
 
