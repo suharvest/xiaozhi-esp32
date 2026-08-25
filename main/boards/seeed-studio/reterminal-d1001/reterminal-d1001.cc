@@ -134,6 +134,11 @@ public:
 
         rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
         volume_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_VOLUME_UP, OnVolumeClicked);
+        face_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_PERSON, OnFaceClicked);
+        {
+            Settings settings("face", false);
+            ApplyFaceIconState(settings.GetInt("mode", 0));
+        }
     }
 
     void SetTheme(Theme* theme) override {
@@ -145,6 +150,11 @@ public:
         // pointer.
         ApplyStatusIconStyle(rotation_icon_);
         ApplyStatusIconStyle(volume_icon_);
+        ApplyStatusIconStyle(face_icon_);
+        {
+            Settings settings("face", false);
+            ApplyFaceIconState(settings.GetInt("mode", 0));
+        }
         if (on_theme_changed_) {
             on_theme_changed_();
         }
@@ -180,6 +190,27 @@ public:
         }
         lv_obj_update_layout(bottom_bar_);
         return lv_obj_get_height(bottom_bar_);
+    }
+
+    // Face wake toggle: callback flips the mode and returns the new one
+    // (-1 = unavailable); the icon turns accent-colored while enabled.
+    void SetFaceToggleCallback(std::function<int()> callback) {
+        face_toggle_ = std::move(callback);
+    }
+
+    void SetFaceIconVisible(bool visible) {
+        DisplayLockGuard lock(this);
+        SetHidden(face_icon_, !visible);
+    }
+
+    void ApplyFaceIconState(int mode) {
+        if (face_icon_ == nullptr) {
+            return;
+        }
+        ApplyStatusIconStyle(face_icon_);
+        if (mode == 1) {
+            lv_obj_set_style_text_color(face_icon_, kAccentColor(), 0);
+        }
     }
 
     void SetStatusBarEntriesHidden(bool hidden) {
@@ -256,6 +287,16 @@ private:
         Dispatch(event, SettingsPage::Volume);
     }
 
+    static void OnFaceClicked(lv_event_t* event) {
+        auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
+        if (self != nullptr && self->face_toggle_) {
+            int mode = self->face_toggle_();
+            if (mode >= 0) {
+                self->ApplyFaceIconState(mode);
+            }
+        }
+    }
+
     static void Dispatch(lv_event_t* event, SettingsPage page) {
         auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
         if (self != nullptr && self->open_settings_) {
@@ -264,11 +305,13 @@ private:
     }
 
     OpenSettingsCallback open_settings_;
+    std::function<int()> face_toggle_;
     std::function<void()> on_theme_changed_;
     lv_obj_t* network_hotspot_ = nullptr;
     lv_obj_t* status_actions_ = nullptr;
     lv_obj_t* rotation_icon_ = nullptr;
     lv_obj_t* volume_icon_ = nullptr;
+    lv_obj_t* face_icon_ = nullptr;
 };
 
 class ReTerminalD1001Board : public WifiBoard {
@@ -817,6 +860,9 @@ public:
             if (camera_ != nullptr) {
                 face_service_.reset(new FaceService(camera_));
                 face_service_->Start();
+                display_->SetFaceToggleCallback([this]() {
+                    return face_service_ != nullptr ? face_service_->ToggleMode() : -1;
+                });
                 push_panel_->SetFaceHooks(
                     [this]() {
                         return face_service_ != nullptr ? face_service_->StatusJson()
@@ -826,6 +872,9 @@ public:
                         return face_service_ != nullptr &&
                                face_service_->ApplyConfigJson(body, error);
                     });
+            }
+            if (camera_ == nullptr) {
+                display_->SetFaceIconVisible(false);
             }
             push_panel_->Start();
         }

@@ -207,6 +207,15 @@ void FaceService::WatchLoop() {
     }
 }
 
+int FaceService::ToggleMode() {
+    int next = mode_.load() == 1 ? 0 : 1;
+    Settings settings("face", true);
+    settings.SetInt("mode", next);
+    mode_ = next;
+    ESP_LOGI(TAG, "mode toggled to %d", next);
+    return next;
+}
+
 std::string FaceService::StatusJson() {
     std::lock_guard<std::mutex> lock(mutex_);
     return "{\"mode\":" + std::to_string(mode_.load()) +

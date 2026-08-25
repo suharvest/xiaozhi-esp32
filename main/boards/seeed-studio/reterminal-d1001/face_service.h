@@ -43,6 +43,11 @@ public:
     // `error` on capture/network/parse failure.
     bool RecognizeOnce(std::vector<FaceHit>& hits, std::string* error = nullptr);
 
+    // Flips wake-on-face between off (0) and on (1); persists and returns
+    // the new mode.
+    int ToggleMode();
+    int GetMode() const { return mode_.load(); }
+
     std::string StatusJson();
     bool ApplyConfigJson(const std::string& body, std::string* error);
 
