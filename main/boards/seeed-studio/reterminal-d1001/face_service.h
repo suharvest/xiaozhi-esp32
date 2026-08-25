@@ -68,6 +68,7 @@ private:
     std::atomic<int> duration_s_{2};  // face must persist this long to wake
     std::atomic<int> cooldown_s_{8};  // after a wake, wait this long + face gone
     std::atomic<int> known_only_{1};  // 1 = "unknown" faces do not wake
+    std::atomic<int> api_{0};         // 0 = raw JPEG POST, 1 = {"image_base64"} JSON
     std::string endpoint_;
 
     std::string last_result_ = "[]";

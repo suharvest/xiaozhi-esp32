@@ -9,6 +9,7 @@
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <mbedtls/base64.h>
 
 static const char* TAG = "FaceService";
 
@@ -26,6 +27,7 @@ void FaceService::LoadConfig() {
     duration_s_ = settings.GetInt("duration_s", 2);
     cooldown_s_ = settings.GetInt("cooldown_s", 8);
     known_only_ = settings.GetInt("known_only", 1);
+    api_ = settings.GetInt("api", 0);
     std::lock_guard<std::mutex> lock(mutex_);
     endpoint_ = settings.GetString("endpoint", "");
 }
@@ -65,13 +67,34 @@ bool FaceService::RecognizeOnce(std::vector<FaceHit>& hits, std::string* error) 
 
     auto network = Board::GetInstance().GetNetwork();
     auto http = network->CreateHttp(3);
-    http->SetHeader("Content-Type", "image/jpeg");
     http->SetHeader("Transfer-Encoding", "chunked");
-    if (!http->Open("POST", endpoint)) {
-        if (error) *error = "connect failed";
-        return false;
+    if (api_.load() == 1) {
+        // SenseCraft-style recognizer: {"image_base64": "..."}
+        size_t b64_len = 0;
+        std::string b64((jpeg.size() + 2) / 3 * 4 + 4, '\0');
+        if (mbedtls_base64_encode(reinterpret_cast<unsigned char*>(b64.data()), b64.size(),
+                                  &b64_len, jpeg.data(), jpeg.size()) != 0) {
+            if (error) *error = "base64 encode failed";
+            return false;
+        }
+        b64.resize(b64_len);
+        http->SetHeader("Content-Type", "application/json");
+        if (!http->Open("POST", endpoint)) {
+            if (error) *error = "connect failed";
+            return false;
+        }
+        static const char kPrefix[] = "{\"image_base64\":\"";
+        http->Write(kPrefix, sizeof(kPrefix) - 1);
+        http->Write(b64.data(), b64.size());
+        http->Write("\"}", 2);
+    } else {
+        http->SetHeader("Content-Type", "image/jpeg");
+        if (!http->Open("POST", endpoint)) {
+            if (error) *error = "connect failed";
+            return false;
+        }
+        http->Write(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
     }
-    http->Write(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
     http->Write("", 0);
     int status = http->GetStatusCode();
     std::string body = http->ReadAll();
@@ -88,15 +111,30 @@ bool FaceService::RecognizeOnce(std::vector<FaceHit>& hits, std::string* error) 
     }
     hits.clear();
     cJSON* faces = cJSON_GetObjectItem(root, "faces");
-    cJSON* face = nullptr;
-    cJSON_ArrayForEach(face, faces) {
-        cJSON* name = cJSON_GetObjectItem(face, "name");
-        cJSON* score = cJSON_GetObjectItem(face, "score");
-        FaceHit hit;
-        hit.name = cJSON_IsString(name) ? name->valuestring : "unknown";
-        double value = cJSON_IsNumber(score) ? score->valuedouble : 0;
-        hit.score = static_cast<int>(value <= 1.0 ? value * 100 : value);
-        hits.push_back(std::move(hit));
+    if (faces != nullptr) {
+        // Generic shape: {"faces":[{"name","score"}]}
+        cJSON* face = nullptr;
+        cJSON_ArrayForEach(face, faces) {
+            cJSON* name = cJSON_GetObjectItem(face, "name");
+            cJSON* score = cJSON_GetObjectItem(face, "score");
+            FaceHit hit;
+            hit.name = cJSON_IsString(name) ? name->valuestring : "unknown";
+            double value = cJSON_IsNumber(score) ? score->valuedouble : 0;
+            hit.score = static_cast<int>(value <= 1.0 ? value * 100 : value);
+            hits.push_back(std::move(hit));
+        }
+    } else if (cJSON_GetObjectItem(root, "matched") != nullptr) {
+        // SenseCraft single-face shape: {matched, name, confidence, live, ...}
+        cJSON* matched = cJSON_GetObjectItem(root, "matched");
+        if (cJSON_IsTrue(matched)) {
+            cJSON* name = cJSON_GetObjectItem(root, "name");
+            cJSON* confidence = cJSON_GetObjectItem(root, "confidence");
+            FaceHit hit;
+            hit.name = cJSON_IsString(name) ? name->valuestring : "unknown";
+            double value = cJSON_IsNumber(confidence) ? confidence->valuedouble : 0;
+            hit.score = static_cast<int>(value <= 1.0 ? value * 100 : value);
+            hits.push_back(std::move(hit));
+        }
     }
     cJSON_Delete(root);
 
@@ -225,6 +263,7 @@ std::string FaceService::StatusJson() {
            ",\"duration_s\":" + std::to_string(duration_s_.load()) +
            ",\"cooldown_s\":" + std::to_string(cooldown_s_.load()) +
            ",\"known_only\":" + std::to_string(known_only_.load()) +
+           ",\"api\":" + std::to_string(api_.load()) +
            ",\"last\":" + last_result_ +
            ",\"last_ts_ms\":" + std::to_string(last_ts_ms_.load()) + "}";
 }
@@ -250,6 +289,7 @@ bool FaceService::ApplyConfigJson(const std::string& body, std::string* error) {
     set_int("duration_s", duration_s_, 0, 60);
     set_int("cooldown_s", cooldown_s_, 0, 3600);
     set_int("known_only", known_only_, 0, 1);
+    set_int("api", api_, 0, 1);
     cJSON* endpoint = cJSON_GetObjectItem(root, "endpoint");
     if (cJSON_IsString(endpoint)) {
         settings.SetString("endpoint", endpoint->valuestring);
