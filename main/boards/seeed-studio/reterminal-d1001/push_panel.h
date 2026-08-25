@@ -58,6 +58,7 @@ private:
     // All UI helpers must run with the display lock held.
     void OpenRoot(const char* title);
     void CloseRoot();
+    void ArmTtl(int ttl_s);  // 0 cancels; display lock must be held
     void RenderMarkdown(const std::string& text);
     void RenderTable(const std::vector<std::string>& lines);
     void AddTextBlock(const std::string& text, int heading_level);
@@ -67,6 +68,9 @@ private:
     httpd_handle_t server_ = nullptr;
     lv_obj_t* root_ = nullptr;
     lv_obj_t* body_ = nullptr;
+
+    lv_timer_t* ttl_timer_ = nullptr;  // auto-dismiss timer (nullptr = keep)
+    bool large_text_ = false;          // body text uses the 30px font
 
     // Pending /panel/choice state. The HTTP worker blocks on the semaphore;
     // the LVGL task gives it when an option (or the close button) is tapped.

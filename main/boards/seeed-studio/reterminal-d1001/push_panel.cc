@@ -8,6 +8,10 @@
 
 static const char* TAG = "PushPanel";
 
+// 30px CJK font (common-glyph subset) for headings and ?size=large bodies;
+// linked from the xiaozhi-fonts component.
+LV_FONT_DECLARE(font_puhui_basic_30_4);
+
 namespace {
 
 constexpr size_t kMaxBodyBytes = 32 * 1024;
@@ -156,7 +160,8 @@ esp_err_t PushPanel::CloseThunk(httpd_req_t* req) {
 esp_err_t PushPanel::UsageThunk(httpd_req_t* req) {
     static const char kUsage[] =
         "reTerminal D1001 push panel\n"
-        "  POST /panel/markdown   render markdown on the screen\n"
+        "  POST /panel/markdown   render markdown; ?ttl_s=30 auto-close,\n"
+        "                         ?size=large for 30px body text\n"
         "  POST /panel/choice     {\"title\":\"...\",\"options\":[...],\"timeout_s\":60}\n"
         "                         blocks until the user picks an option\n"
         "  POST /panel/close      close the panel\n";
@@ -186,6 +191,20 @@ esp_err_t PushPanel::HandleMarkdown(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized body");
         return ESP_FAIL;
     }
+    // Optional query: ?ttl_s=30 auto-dismisses, ?size=large uses the 30px font
+    // for body text (headings always use it).
+    int ttl_s = 0;
+    bool large_text = false;
+    char query[96];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[16];
+        if (httpd_query_key_value(query, "ttl_s", value, sizeof(value)) == ESP_OK) {
+            ttl_s = std::clamp(atoi(value), 0, 3600);
+        }
+        if (httpd_query_key_value(query, "size", value, sizeof(value)) == ESP_OK) {
+            large_text = strcmp(value, "large") == 0;
+        }
+    }
     {
         DisplayLockGuard lock(display_);
         // A pending choice keeps the screen; markdown replaces everything else.
@@ -193,8 +212,10 @@ esp_err_t PushPanel::HandleMarkdown(httpd_req_t* req) {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "a choice is pending");
             return ESP_FAIL;
         }
+        large_text_ = large_text;
         OpenRoot("推送内容");
         RenderMarkdown(body);
+        ArmTtl(ttl_s);
     }
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_send(req, "OK\n", HTTPD_RESP_USE_STRLEN);
@@ -243,6 +264,8 @@ esp_err_t PushPanel::HandleChoice(httpd_req_t* req) {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "a choice is already pending");
             return ESP_FAIL;
         }
+        ArmTtl(0);
+        large_text_ = false;
         choice_options_ = options;
         choice_selected_ = -2;  // -2 = still waiting, -1 = dismissed
         choice_pending_ = true;
@@ -406,12 +429,31 @@ void PushPanel::OpenRoot(const char* title) {
 }
 
 void PushPanel::CloseRoot() {
+    ArmTtl(0);
     if (root_ == nullptr) {
         return;
     }
     lv_obj_delete(root_);
     root_ = nullptr;
     body_ = nullptr;
+}
+
+void PushPanel::ArmTtl(int ttl_s) {
+    if (ttl_timer_ != nullptr) {
+        lv_timer_delete(ttl_timer_);
+        ttl_timer_ = nullptr;
+    }
+    if (ttl_s <= 0) {
+        return;
+    }
+    ttl_timer_ = lv_timer_create(
+        [](lv_timer_t* timer) {
+            auto* self = static_cast<PushPanel*>(lv_timer_get_user_data(timer));
+            self->ttl_timer_ = nullptr;  // one-shot: deleted right after
+            self->CloseRoot();
+        },
+        ttl_s * 1000, this);
+    lv_timer_set_repeat_count(ttl_timer_, 1);
 }
 
 void PushPanel::AddTextBlock(const std::string& text, int heading_level) {
@@ -423,8 +465,11 @@ void PushPanel::AddTextBlock(const std::string& text, int heading_level) {
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, LV_PCT(100));
     if (heading_level > 0) {
+        lv_obj_set_style_text_font(label, &font_puhui_basic_30_4, 0);
         lv_obj_set_style_text_color(label, AccentColor(), 0);
         lv_obj_set_style_pad_top(label, heading_level == 1 ? 8 : 4, 0);
+    } else if (large_text_) {
+        lv_obj_set_style_text_font(label, &font_puhui_basic_30_4, 0);
     }
 }
 
