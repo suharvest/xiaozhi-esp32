@@ -109,3 +109,29 @@ if r.status_code == 200 and r.json()["selected"] == 0:
 - 30px 字体为 `font_noto_sans_basic_30_4`（常用字子集，约 250KB flash），生僻字可能缺字形
 - 所有 UI 操作持 display lock，与语音对话、设置页共存；旋转后按新分辨率自适应
 - 无鉴权，仅监听局域网；不要暴露到公网
+
+## 人脸识别（外部识别端点）
+
+设备无 NPU，识别走可配置的 HTTP 端点。你的识别服务需实现：
+
+```
+POST <endpoint>   Content-Type: image/jpeg   Body: JPEG 帧
+200 → {"faces":[{"name":"harvest","score":92}]}
+```
+
+`score` 接受 0-1 浮点或 0-100；检出但库中无匹配用 `"unknown"`；无人时 `faces` 为空。
+
+### `POST /face/config` / `GET /face/status`
+
+```bash
+curl -X POST -d '{"mode":1,"endpoint":"http://192.168.3.73:8399/recognize","interval_s":5}' \
+     "http://<IP>/face/config"
+curl "http://<IP>/face/status"
+```
+
+字段：`mode`(0 关/1 人脸唤醒)、`endpoint`、`interval_s`、`threshold`(0-100)、`duration_s` 持续确认、`cooldown_s` 冷却、`known_only`(1=陌生脸不唤醒)。NVS 持久化。
+
+### 两个用途
+
+1. **人脸唤醒**：mode=1 时空闲态按 interval 采集，合格人脸持续 duration_s 秒即以 `<detect>face detected: 名字</detect>` 触发对话（watcher 同款状态机：确认→唤醒→冷却等人离开）
+2. **MCP 鉴权**：助手可调用 `self.face.verify` 识别当前操作者身份，在敏感操作前做权限判断；`self.face.param_get/param_set` 支持语音调参
