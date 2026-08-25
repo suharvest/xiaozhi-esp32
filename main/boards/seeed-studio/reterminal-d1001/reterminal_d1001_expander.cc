@@ -103,6 +103,10 @@ void ReTerminalD1001Expander::SetBatteryReadEnable(bool on) {
     SetLevel(EXPANDER_BIT_BAT_READ_EN, on);
 }
 
+void ReTerminalD1001Expander::SetBatteryChargeEnable(bool on) {
+    SetLevel(EXPANDER_BIT_BAT_CHG_EN, !on);  // active low
+}
+
 void ReTerminalD1001Expander::SetCameraPower(bool on) { SetLevel(EXPANDER_BIT_CAM_EN, on); }
 
 void ReTerminalD1001Expander::SetCameraPowerDown(bool asserted) {

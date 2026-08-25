@@ -94,6 +94,11 @@ bool ReTerminalD1001BatteryMonitor::Initialize() {
     // divider drain is negligible next to the running system.
     expander_->SetBatteryReadEnable(true);
 
+    // The PCA9535 powers up with all outputs high, which holds CHG_ENBn
+    // deasserted: the charger was never enabled and the battery only ever
+    // drained. Enable it; the BQ25616 handles CC/CV termination itself.
+    expander_->SetBatteryChargeEnable(true);
+
     running_ = true;
     xTaskCreate(
         [](void* arg) {

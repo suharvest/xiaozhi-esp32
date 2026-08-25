@@ -41,6 +41,9 @@ public:
     void SetPowerAmp(bool on);
     // Battery voltage divider gate (BAT_READ_EN, bit 6).
     void SetBatteryReadEnable(bool on);
+    // Charger enable (CHG_ENBn, active low). The BQ25616 self-terminates
+    // at full charge, so keeping this enabled is safe.
+    void SetBatteryChargeEnable(bool on);
     void SetCameraPower(bool on);
     void SetCameraPowerDown(bool asserted);
     void SetCameraReset(bool asserted);
