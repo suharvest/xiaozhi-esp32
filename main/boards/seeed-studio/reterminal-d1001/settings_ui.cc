@@ -553,10 +553,13 @@ void SettingsUi::ShowWifiList() {
 
     lv_obj_t* manual = MakeTextButton(row, MATERIAL_SYMBOLS_EDIT_SQUARE, "手动输入",
                                       Action::WifiManualSsid, 0, false);
-    lv_obj_set_width(manual, LV_PCT(48));
+    lv_obj_set_width(manual, LV_PCT(31));
     lv_obj_t* saved =
         MakeTextButton(row, MATERIAL_SYMBOLS_KEY, "已保存", Action::WifiSavedList, 0, false);
-    lv_obj_set_width(saved, LV_PCT(48));
+    lv_obj_set_width(saved, LV_PCT(31));
+    lv_obj_t* static_ip = MakeTextButton(row, MATERIAL_SYMBOLS_EDIT_SQUARE, "静态 IP",
+                                         Action::WifiStaticIp, 0, false);
+    lv_obj_set_width(static_ip, LV_PCT(31));
 }
 
 void SettingsUi::StartWifiScan() {
@@ -820,6 +823,61 @@ bool SettingsUi::SaveRotation(int degrees) {
     Settings settings("reterminal", true);
     settings.SetInt("rotation", degrees);
     return true;  // committed by the Settings destructor
+}
+
+void SettingsUi::ShowStaticIpPage() {
+    lv_obj_t* body = BuildPage("静态 IP", Action::WifiRescan, false);
+
+    Settings settings("wifi", false);
+    bool enabled = settings.GetInt("static_en", 0) != 0;
+    const char* keys[4] = {"static_ip", "static_gw", "static_mask", "static_dns"};
+    const char* hints[4] = {"IP 地址 (192.168.1.50)", "网关", "子网掩码 (255.255.255.0)",
+                            "DNS (可空, 默认网关)"};
+
+    lv_obj_t* state = lv_label_create(body);
+    lv_label_set_text(state, enabled ? "当前: 静态 IP" : "当前: DHCP 自动获取");
+
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t* ta = lv_textarea_create(body);
+        lv_obj_set_width(ta, LV_PCT(100));
+        lv_obj_set_height(ta, kButtonHeight);
+        lv_obj_set_style_radius(ta, 12, 0);
+        lv_textarea_set_one_line(ta, true);
+        lv_textarea_set_max_length(ta, 15);
+        lv_textarea_set_placeholder_text(ta, hints[i]);
+        std::string value = settings.GetString(keys[i], "");
+        if (!value.empty()) {
+            lv_textarea_set_text(ta, value.c_str());
+        }
+        // Clicking a field points the shared keyboard at it.
+        lv_obj_add_event_cb(
+            ta,
+            [](lv_event_t* event) {
+                auto* self = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+                if (self->keyboard_ != nullptr) {
+                    lv_keyboard_set_textarea(
+                        self->keyboard_,
+                        static_cast<lv_obj_t*>(lv_event_get_current_target(event)));
+                }
+            },
+            LV_EVENT_CLICKED, this);
+        static_ta_[i] = ta;
+    }
+
+    lv_obj_t* row = lv_obj_create(body);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), kButtonHeight);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_t* dhcp = MakeTextButton(row, MATERIAL_SYMBOLS_WIFI, "改用 DHCP",
+                                    Action::WifiStaticUseDhcp, 0, false);
+    lv_obj_set_width(dhcp, LV_PCT(38));
+    lv_obj_t* save = MakeTextButton(row, MATERIAL_SYMBOLS_CHECK, "保存并重启",
+                                    Action::WifiStaticSave, 0, true);
+    lv_obj_set_width(save, LV_PCT(58));
+
+    keyboard_ = MakeKeyboard(body, static_ta_[0], Action::WifiStaticSave);
 }
 
 void SettingsUi::ShowDisplaySettings() {
@@ -1092,6 +1150,36 @@ void SettingsUi::HandleAction(Action action, int index) {
             }
             CommitRotation();
             return;
+        case Action::WifiStaticIp:
+            ShowStaticIpPage();
+            break;
+        case Action::WifiStaticSave: {
+            const char* keys[4] = {"static_ip", "static_gw", "static_mask", "static_dns"};
+            std::string values[4];
+            for (int i = 0; i < 4; i++) {
+                values[i] = static_ta_[i] != nullptr ? lv_textarea_get_text(static_ta_[i]) : "";
+            }
+            if (values[0].empty() || values[1].empty() || values[2].empty()) {
+                return;  // ip/gw/mask are required
+            }
+            {
+                Settings settings("wifi", true);
+                settings.SetInt("static_en", 1);
+                for (int i = 0; i < 4; i++) {
+                    settings.SetString(keys[i], values[i]);
+                }
+            }
+            esp_restart();
+            break;
+        }
+        case Action::WifiStaticUseDhcp: {
+            {
+                Settings settings("wifi", true);
+                settings.SetInt("static_en", 0);
+            }
+            esp_restart();
+            break;
+        }
         case Action::VolumeMute: {
             auto* codec = Board::GetInstance().GetAudioCodec();
             if (codec == nullptr) {

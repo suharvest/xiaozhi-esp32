@@ -100,6 +100,9 @@ private:
         RotationSave,
         RotationConfirm,
         VolumeMute,
+        WifiStaticIp,
+        WifiStaticSave,
+        WifiStaticUseDhcp,
     };
 
     struct EventCtx {
@@ -113,6 +116,7 @@ private:
     static void AsyncThunk(void* arg);
     void DrainPendingActions();
     void HandleAction(Action action, int index);
+    void ShowStaticIpPage();
     void Bind(lv_obj_t* obj, Action action, int index = 0,
               lv_event_code_t code = LV_EVENT_CLICKED);
 
@@ -151,6 +155,7 @@ private:
     IconFontProvider icon_font_provider_;
 
     lv_obj_t* root_ = nullptr;
+    lv_obj_t* static_ta_[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* header_ = nullptr;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;

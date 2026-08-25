@@ -14,6 +14,9 @@
 #include "camera_tuning.h"
 #include "battery_monitor.h"
 
+#include <esp_netif.h>
+#include "settings.h"
+
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
 #include <esp_lcd_mipi_dsi.h>
@@ -700,8 +703,45 @@ public:
 
     // The push panel's HTTP server needs lwip up, which only holds once the
     // network stack has been started.
+    // Applies a user-configured static IP (NVS namespace "wifi": static_en,
+    // static_ip/gw/mask/dns) to the station netif, replacing DHCP. Runs right
+    // after the network stack starts, before an address is acquired.
+    void ApplyStaticIpIfConfigured() {
+        Settings settings("wifi", false);
+        if (settings.GetInt("static_en", 0) == 0) {
+            return;
+        }
+        std::string ip = settings.GetString("static_ip", "");
+        std::string gw = settings.GetString("static_gw", "");
+        std::string mask = settings.GetString("static_mask", "");
+        std::string dns = settings.GetString("static_dns", "");
+        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif == nullptr || ip.empty() || gw.empty() || mask.empty()) {
+            ESP_LOGW(TAG, "Static IP enabled but incomplete, keeping DHCP");
+            return;
+        }
+        esp_netif_ip_info_t info = {};
+        if (esp_netif_str_to_ip4(ip.c_str(), &info.ip) != ESP_OK ||
+            esp_netif_str_to_ip4(gw.c_str(), &info.gw) != ESP_OK ||
+            esp_netif_str_to_ip4(mask.c_str(), &info.netmask) != ESP_OK) {
+            ESP_LOGW(TAG, "Invalid static IP config, keeping DHCP");
+            return;
+        }
+        esp_netif_dhcpc_stop(netif);
+        esp_netif_set_ip_info(netif, &info);
+        esp_netif_dns_info_t dns_info = {};
+        dns_info.ip.type = IPADDR_TYPE_V4;
+        if (dns.empty() ||
+            esp_netif_str_to_ip4(dns.c_str(), &dns_info.ip.u_addr.ip4) != ESP_OK) {
+            dns_info.ip.u_addr.ip4 = info.gw;  // default DNS = gateway
+        }
+        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_info);
+        ESP_LOGI(TAG, "Static IP %s (gw %s) applied, DHCP disabled", ip.c_str(), gw.c_str());
+    }
+
     virtual void StartNetwork() override {
         WifiBoard::StartNetwork();
+        ApplyStaticIpIfConfigured();
         if (push_panel_ == nullptr && display_ != nullptr) {
 #if !CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER
             // Without esp_ipa there is no AE/AWB; program static indoor
