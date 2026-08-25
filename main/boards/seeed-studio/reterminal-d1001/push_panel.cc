@@ -72,6 +72,33 @@ bool IsSeparatorRow(const std::vector<std::string>& cells) {
     return true;
 }
 
+// Cap for the floating card: 55% of the current (rotation-aware) height.
+int32_t MaxCardHeight() {
+    return lv_display_get_vertical_resolution(lv_display_get_default()) * 55 / 100;
+}
+
+// Styles the table's first row as a header: accent fill, white text.
+void TableDrawTask(lv_event_t* event) {
+    lv_draw_task_t* task = lv_event_get_draw_task(event);
+    auto* base = static_cast<lv_draw_dsc_base_t*>(lv_draw_task_get_draw_dsc(task));
+    if (base == nullptr || base->part != LV_PART_ITEMS || base->id1 != 0) {
+        return;
+    }
+    lv_draw_task_type_t type = lv_draw_task_get_type(task);
+    if (type == LV_DRAW_TASK_TYPE_FILL) {
+        lv_draw_fill_dsc_t* fill = lv_draw_task_get_fill_dsc(task);
+        if (fill != nullptr) {
+            fill->color = AccentColor();
+            fill->opa = LV_OPA_COVER;
+        }
+    } else if (type == LV_DRAW_TASK_TYPE_LABEL) {
+        lv_draw_label_dsc_t* label = lv_draw_task_get_label_dsc(task);
+        if (label != nullptr) {
+            label->color = lv_color_white();
+        }
+    }
+}
+
 }  // namespace
 
 PushPanel::PushPanel(LcdDisplay* display) : display_(display) {
@@ -227,6 +254,7 @@ esp_err_t PushPanel::HandleChoice(httpd_req_t* req) {
             lv_obj_set_width(button, LV_PCT(100));
             lv_obj_set_height(button, LV_SIZE_CONTENT);
             lv_obj_set_style_pad_ver(button, 14, 0);
+            lv_obj_set_style_radius(button, 10, 0);
             lv_obj_set_style_bg_color(button, AccentColor(), 0);
             lv_obj_add_event_cb(button, OnChoiceClicked, LV_EVENT_CLICKED, this);
             lv_obj_t* label = lv_label_create(button);
@@ -307,6 +335,8 @@ void PushPanel::OpenRoot(const char* title) {
     if (root_ != nullptr) {
         // Reuse the overlay, replace the content.
         lv_obj_clean(body_);
+        lv_obj_set_style_max_height(root_, MaxCardHeight(), 0);
+        lv_obj_set_style_max_height(body_, MaxCardHeight() - kHeaderHeight, 0);
         lv_obj_t* header = lv_obj_get_child(root_, 0);
         lv_obj_t* title_label = lv_obj_get_child(header, 0);
         lv_label_set_text(title_label, title);
@@ -320,7 +350,8 @@ void PushPanel::OpenRoot(const char* title) {
     // the assistant's face visible above it, like a chat window.
     root_ = lv_obj_create(screen);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, LV_PCT(96), LV_PCT(55));
+    lv_obj_set_size(root_, LV_PCT(96), LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(root_, MaxCardHeight(), 0);
     lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
@@ -342,6 +373,10 @@ void PushPanel::OpenRoot(const char* title) {
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(header, 1, 0);
+    lv_obj_set_style_border_color(header, lv_color_black(), 0);
+    lv_obj_set_style_border_opa(header, LV_OPA_10, 0);
 
     lv_obj_t* title_label = lv_label_create(header);
     lv_label_set_text(title_label, title);
@@ -358,7 +393,8 @@ void PushPanel::OpenRoot(const char* title) {
     body_ = lv_obj_create(root_);
     lv_obj_remove_style_all(body_);
     lv_obj_set_width(body_, LV_PCT(100));
-    lv_obj_set_flex_grow(body_, 1);
+    lv_obj_set_height(body_, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(body_, MaxCardHeight() - kHeaderHeight, 0);
     lv_obj_set_style_pad_hor(body_, 16, 0);
     lv_obj_set_style_pad_bottom(body_, 16, 0);
     lv_obj_set_style_pad_row(body_, 10, 0);
@@ -418,7 +454,8 @@ void PushPanel::RenderTable(const std::vector<std::string>& lines) {
             lv_table_set_cell_value(table, r, c, StripInline(rows[r][c]).c_str());
         }
     }
-    lv_obj_set_style_text_color(table, AccentColor(), LV_PART_ITEMS);
+    lv_obj_add_flag(table, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    lv_obj_add_event_cb(table, TableDrawTask, LV_EVENT_DRAW_TASK_ADDED, nullptr);
     lv_obj_set_width(table, LV_PCT(100));
     lv_obj_set_height(table, LV_SIZE_CONTENT);
 }
