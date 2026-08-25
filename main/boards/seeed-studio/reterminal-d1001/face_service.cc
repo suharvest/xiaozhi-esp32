@@ -1,0 +1,316 @@
+#include "face_service.h"
+
+#include "application.h"
+#include "board.h"
+#include "esp_video.h"
+#include "mcp_server.h"
+#include "settings.h"
+
+#include <cJSON.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+
+static const char* TAG = "FaceService";
+
+namespace {
+enum class DetectState { kIdle, kValidating, kCooldown };
+}
+
+FaceService::FaceService(EspVideo* camera) : camera_(camera) {}
+
+void FaceService::LoadConfig() {
+    Settings settings("face", false);
+    mode_ = settings.GetInt("mode", 0);
+    interval_s_ = settings.GetInt("interval_s", 5);
+    threshold_ = settings.GetInt("threshold", 60);
+    duration_s_ = settings.GetInt("duration_s", 2);
+    cooldown_s_ = settings.GetInt("cooldown_s", 8);
+    known_only_ = settings.GetInt("known_only", 1);
+    std::lock_guard<std::mutex> lock(mutex_);
+    endpoint_ = settings.GetString("endpoint", "");
+}
+
+void FaceService::Start() {
+    LoadConfig();
+    RegisterMcpTools();
+    xTaskCreate(
+        [](void* arg) {
+            static_cast<FaceService*>(arg)->WatchLoop();
+            vTaskDelete(nullptr);
+        },
+        "face_watch", 8192, this, 2, &task_);
+    ESP_LOGI(TAG, "started (mode=%d, endpoint %s)", mode_.load(),
+             endpoint_.empty() ? "unset" : "set");
+}
+
+bool FaceService::RecognizeOnce(std::vector<FaceHit>& hits, std::string* error) {
+    std::string endpoint;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoint = endpoint_;
+    }
+    if (endpoint.empty()) {
+        if (error) *error = "no endpoint configured";
+        return false;
+    }
+    if (camera_ == nullptr) {
+        if (error) *error = "no camera";
+        return false;
+    }
+    std::vector<uint8_t> jpeg;
+    if (!camera_->CaptureToJpeg(jpeg) || jpeg.empty()) {
+        if (error) *error = "capture failed";
+        return false;
+    }
+
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(3);
+    http->SetHeader("Content-Type", "image/jpeg");
+    http->SetHeader("Transfer-Encoding", "chunked");
+    if (!http->Open("POST", endpoint)) {
+        if (error) *error = "connect failed";
+        return false;
+    }
+    http->Write(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
+    http->Write("", 0);
+    int status = http->GetStatusCode();
+    std::string body = http->ReadAll();
+    http->Close();
+    if (status != 200) {
+        if (error) *error = "recognizer status " + std::to_string(status);
+        return false;
+    }
+
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        if (error) *error = "invalid recognizer JSON";
+        return false;
+    }
+    hits.clear();
+    cJSON* faces = cJSON_GetObjectItem(root, "faces");
+    cJSON* face = nullptr;
+    cJSON_ArrayForEach(face, faces) {
+        cJSON* name = cJSON_GetObjectItem(face, "name");
+        cJSON* score = cJSON_GetObjectItem(face, "score");
+        FaceHit hit;
+        hit.name = cJSON_IsString(name) ? name->valuestring : "unknown";
+        double value = cJSON_IsNumber(score) ? score->valuedouble : 0;
+        hit.score = static_cast<int>(value <= 1.0 ? value * 100 : value);
+        hits.push_back(std::move(hit));
+    }
+    cJSON_Delete(root);
+
+    // Record for /face/status
+    std::string summary = "[";
+    for (size_t i = 0; i < hits.size(); ++i) {
+        if (i) summary += ",";
+        summary += "{\"name\":\"" + hits[i].name +
+                   "\",\"score\":" + std::to_string(hits[i].score) + "}";
+    }
+    summary += "]";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_result_ = summary;
+    }
+    last_ts_ms_ = esp_timer_get_time() / 1000;
+    return true;
+}
+
+bool FaceService::AnyQualifiedHit(const std::vector<FaceHit>& hits, std::string* names) {
+    bool any = false;
+    for (const auto& hit : hits) {
+        if (hit.score < threshold_.load()) {
+            continue;
+        }
+        if (known_only_.load() != 0 && hit.name == "unknown") {
+            continue;
+        }
+        if (names != nullptr) {
+            if (any) *names += ", ";
+            *names += hit.name;
+        }
+        any = true;
+    }
+    return any;
+}
+
+void FaceService::WatchLoop() {
+    DetectState state = DetectState::kIdle;
+    int64_t state_start_us = 0;
+    int64_t last_hit_us = 0;
+    int64_t last_recog_us = 0;
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (mode_.load() != 1) {
+            state = DetectState::kIdle;
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (endpoint_.empty()) {
+                continue;
+            }
+        }
+        // Only watch while the assistant is idle: it keeps the camera free
+        // for take_photo and avoids waking into an active conversation.
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle) {
+            continue;
+        }
+        int64_t now = esp_timer_get_time();
+        int64_t gap_us =
+            (state == DetectState::kValidating ? 1 : (int64_t)interval_s_.load()) * 1000000LL;
+        if (now - last_recog_us < gap_us) {
+            continue;
+        }
+        last_recog_us = now;
+
+        std::vector<FaceHit> hits;
+        std::string error;
+        if (!RecognizeOnce(hits, &error)) {
+            ESP_LOGD(TAG, "recognize failed: %s", error.c_str());
+            continue;
+        }
+        std::string names;
+        bool hit = AnyQualifiedHit(hits, &names);
+
+        switch (state) {
+            case DetectState::kIdle:
+                if (hit) {
+                    state = DetectState::kValidating;
+                    state_start_us = now;
+                    last_hit_us = now;
+                    ESP_LOGI(TAG, "face candidate: %s", names.c_str());
+                }
+                break;
+            case DetectState::kValidating:
+                if (hit) {
+                    last_hit_us = now;
+                    if (now - state_start_us >= (int64_t)duration_s_.load() * 1000000LL) {
+                        ESP_LOGI(TAG, "face confirmed, waking: %s", names.c_str());
+                        app.WakeWordInvoke("<detect>face detected: " + names + "</detect>");
+                        state = DetectState::kCooldown;
+                        state_start_us = now;
+                    }
+                } else if (now - last_hit_us >= 3 * 1000000LL) {
+                    state = DetectState::kIdle;
+                }
+                break;
+            case DetectState::kCooldown:
+                if (!hit && now - state_start_us >= (int64_t)cooldown_s_.load() * 1000000LL) {
+                    state = DetectState::kIdle;
+                    ESP_LOGI(TAG, "cooldown complete");
+                }
+                break;
+        }
+    }
+}
+
+std::string FaceService::StatusJson() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return "{\"mode\":" + std::to_string(mode_.load()) +
+           ",\"endpoint\":\"" + endpoint_ + "\"" +
+           ",\"interval_s\":" + std::to_string(interval_s_.load()) +
+           ",\"threshold\":" + std::to_string(threshold_.load()) +
+           ",\"duration_s\":" + std::to_string(duration_s_.load()) +
+           ",\"cooldown_s\":" + std::to_string(cooldown_s_.load()) +
+           ",\"known_only\":" + std::to_string(known_only_.load()) +
+           ",\"last\":" + last_result_ +
+           ",\"last_ts_ms\":" + std::to_string(last_ts_ms_.load()) + "}";
+}
+
+bool FaceService::ApplyConfigJson(const std::string& body, std::string* error) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        if (error) *error = "invalid JSON";
+        return false;
+    }
+    Settings settings("face", true);
+    auto set_int = [&](const char* key, std::atomic<int>& target, int lo, int hi) {
+        cJSON* item = cJSON_GetObjectItem(root, key);
+        if (cJSON_IsNumber(item)) {
+            int value = std::max(lo, std::min(hi, item->valueint));
+            settings.SetInt(key, value);
+            target = value;
+        }
+    };
+    set_int("mode", mode_, 0, 1);
+    set_int("interval_s", interval_s_, 1, 3600);
+    set_int("threshold", threshold_, 0, 100);
+    set_int("duration_s", duration_s_, 0, 60);
+    set_int("cooldown_s", cooldown_s_, 0, 3600);
+    set_int("known_only", known_only_, 0, 1);
+    cJSON* endpoint = cJSON_GetObjectItem(root, "endpoint");
+    if (cJSON_IsString(endpoint)) {
+        settings.SetString("endpoint", endpoint->valuestring);
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoint_ = endpoint->valuestring;
+    }
+    cJSON_Delete(root);
+    return true;
+}
+
+void FaceService::RegisterMcpTools() {
+    auto& mcp_server = McpServer::GetInstance();
+
+    mcp_server.AddTool(
+        "self.face.verify",
+        "识别当前镜头前的人脸并返回身份列表。用于需要确认操作者身份的任务鉴权：\n"
+        "在执行敏感操作前调用，根据返回的 name/score 判断当前操作者是否有权限。\n"
+        "返回: {\"faces\":[{\"name\":\"harvest\",\"score\":92}]}；faces 为空表示镜头前无人。",
+        PropertyList(), [this](const PropertyList&) -> ReturnValue {
+            std::vector<FaceHit> hits;
+            std::string error;
+            if (!RecognizeOnce(hits, &error)) {
+                return std::string("{\"error\":\"") + error + "\"}";
+            }
+            std::string result = "{\"faces\":[";
+            for (size_t i = 0; i < hits.size(); ++i) {
+                if (i) result += ",";
+                result += "{\"name\":\"" + hits[i].name +
+                          "\",\"score\":" + std::to_string(hits[i].score) + "}";
+            }
+            result += "]}";
+            return result;
+        });
+
+    mcp_server.AddTool(
+        "self.face.param_get",
+        "获取人脸识别的当前配置：mode(0关/1看到人脸即唤醒)、interval_s 采集间隔、"
+        "threshold 置信度阈值(0-100)、duration_s 持续确认秒数、cooldown_s 冷却秒数、"
+        "known_only(1=只有已知人脸才唤醒)。",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue { return StatusJson(); });
+
+    mcp_server.AddTool(
+        "self.face.param_set",
+        "配置人脸识别参数。用户想开启/关闭看到人自动打招呼、调整灵敏度或频率时使用。\n"
+        "参数均可选，-1 表示保持不变：mode(0关闭 1开启人脸唤醒)、interval_s、"
+        "threshold、duration_s、cooldown_s、known_only。",
+        PropertyList({
+            Property("mode", kPropertyTypeInteger, -1, -1, 1),
+            Property("interval_s", kPropertyTypeInteger, -1, -1, 3600),
+            Property("threshold", kPropertyTypeInteger, -1, -1, 100),
+            Property("duration_s", kPropertyTypeInteger, -1, -1, 60),
+            Property("cooldown_s", kPropertyTypeInteger, -1, -1, 3600),
+            Property("known_only", kPropertyTypeInteger, -1, -1, 1),
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            Settings settings("face", true);
+            auto apply = [&](const char* key, std::atomic<int>& target) {
+                int value = properties[key].value<int>();
+                if (value != -1) {
+                    settings.SetInt(key, value);
+                    target = value;
+                }
+            };
+            apply("mode", mode_);
+            apply("interval_s", interval_s_);
+            apply("threshold", threshold_);
+            apply("duration_s", duration_s_);
+            apply("cooldown_s", cooldown_s_);
+            apply("known_only", known_only_);
+            return StatusJson();
+        });
+}

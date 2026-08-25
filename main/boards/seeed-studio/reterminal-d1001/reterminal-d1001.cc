@@ -13,6 +13,7 @@
 #include "push_panel.h"
 #include "camera_tuning.h"
 #include "battery_monitor.h"
+#include "face_service.h"
 
 #include <esp_netif.h>
 #include "power_save_timer.h"
@@ -279,6 +280,7 @@ private:
     std::unique_ptr<SettingsUi> settings_ui_;
     std::unique_ptr<PushPanel> push_panel_;
     std::unique_ptr<ReTerminalD1001BatteryMonitor> battery_;
+    std::unique_ptr<FaceService> face_service_;
     PowerSaveTimer* power_save_timer_ = nullptr;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
@@ -812,6 +814,19 @@ public:
                     tuning.blue_milli = blue_milli;
                     return ApplyCameraTuning(tuning);
                 });
+            if (camera_ != nullptr) {
+                face_service_.reset(new FaceService(camera_));
+                face_service_->Start();
+                push_panel_->SetFaceHooks(
+                    [this]() {
+                        return face_service_ != nullptr ? face_service_->StatusJson()
+                                                        : std::string("{}");
+                    },
+                    [this](const std::string& body, std::string* error) {
+                        return face_service_ != nullptr &&
+                               face_service_->ApplyConfigJson(body, error);
+                    });
+            }
             push_panel_->Start();
         }
     }

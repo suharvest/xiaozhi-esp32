@@ -52,6 +52,15 @@ public:
         camera_tune_ = std::move(tune);
     }
 
+    // Face recognition hooks: status returns the JSON for GET /face/status,
+    // config applies the POST /face/config body.
+    using FaceStatusFn = std::function<std::string()>;
+    using FaceConfigFn = std::function<bool(const std::string&, std::string*)>;
+    void SetFaceHooks(FaceStatusFn status, FaceConfigFn config) {
+        face_status_ = std::move(status);
+        face_config_ = std::move(config);
+    }
+
 private:
     static esp_err_t MarkdownThunk(httpd_req_t* req);
     static esp_err_t ChoiceThunk(httpd_req_t* req);
@@ -59,6 +68,8 @@ private:
     static esp_err_t UsageThunk(httpd_req_t* req);
     static esp_err_t SnapThunk(httpd_req_t* req);
     static esp_err_t TuneThunk(httpd_req_t* req);
+    static esp_err_t FaceStatusThunk(httpd_req_t* req);
+    static esp_err_t FaceConfigThunk(httpd_req_t* req);
     static void OnChoiceClicked(lv_event_t* event);
     static void OnCloseClicked(lv_event_t* event);
     static void OnBackdropClicked(lv_event_t* event);
@@ -68,6 +79,8 @@ private:
     esp_err_t HandleClose(httpd_req_t* req);
     esp_err_t HandleSnap(httpd_req_t* req);
     esp_err_t HandleTune(httpd_req_t* req);
+    esp_err_t HandleFaceStatus(httpd_req_t* req);
+    esp_err_t HandleFaceConfig(httpd_req_t* req);
     bool ReadBody(httpd_req_t* req, std::string* body);
 
     // All UI helpers must run with the display lock held.
@@ -83,6 +96,8 @@ private:
     BottomInsetProvider bottom_inset_;
     CameraSnapFn camera_snap_;
     CameraTuneFn camera_tune_;
+    FaceStatusFn face_status_;
+    FaceConfigFn face_config_;
     httpd_handle_t server_ = nullptr;
     lv_obj_t* root_ = nullptr;
     lv_obj_t* body_ = nullptr;

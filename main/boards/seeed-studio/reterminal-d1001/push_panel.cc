@@ -127,7 +127,7 @@ void PushPanel::Start() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.stack_size = 10240;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&server_, &config);
     if (err != ESP_OK) {
@@ -142,6 +142,8 @@ void PushPanel::Start() {
         {.uri = "/", .method = HTTP_GET, .handler = UsageThunk, .user_ctx = this},
         {.uri = "/camera/snap", .method = HTTP_GET, .handler = SnapThunk, .user_ctx = this},
         {.uri = "/camera/tune", .method = HTTP_POST, .handler = TuneThunk, .user_ctx = this},
+        {.uri = "/face/status", .method = HTTP_GET, .handler = FaceStatusThunk, .user_ctx = this},
+        {.uri = "/face/config", .method = HTTP_POST, .handler = FaceConfigThunk, .user_ctx = this},
     };
     for (const auto& h : handlers) {
         httpd_register_uri_handler(server_, &h);
@@ -208,6 +210,43 @@ esp_err_t PushPanel::HandleTune(httpd_req_t* req) {
     bool ok = camera_tune_(exp_pct, gain_idx, red, blue);
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_send(req, ok ? "OK\n" : "FAILED\n", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t PushPanel::FaceStatusThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleFaceStatus(req);
+}
+
+esp_err_t PushPanel::FaceConfigThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleFaceConfig(req);
+}
+
+esp_err_t PushPanel::HandleFaceStatus(httpd_req_t* req) {
+    if (!face_status_) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no face service");
+        return ESP_FAIL;
+    }
+    std::string json = face_status_();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json.c_str(), json.size());
+}
+
+esp_err_t PushPanel::HandleFaceConfig(httpd_req_t* req) {
+    if (!face_config_) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no face service");
+        return ESP_FAIL;
+    }
+    std::string body;
+    if (!ReadBody(req, &body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized body");
+        return ESP_FAIL;
+    }
+    std::string error;
+    if (!face_config_(body, &error)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, error.c_str());
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, "OK\n", HTTPD_RESP_USE_STRLEN);
 }
 
 esp_err_t PushPanel::UsageThunk(httpd_req_t* req) {
