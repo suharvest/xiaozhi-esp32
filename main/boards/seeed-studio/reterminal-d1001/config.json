@@ -42,6 +42,8 @@
                 "CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y",
                 "CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n",
                 "CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y",
+                "CONFIG_CAMERA_SC202CS_CUSTOMIZED_IPA_JSON_CONFIGURATION_FILE=y",
+                "CONFIG_CAMERA_SC202CS_CUSTOMIZED_IPA_JSON_CONFIGURATION_FILE_PATH=\"main/boards/seeed-studio/reterminal-d1001/sc202cs_reterminal.json\"",
                 "CONFIG_USE_DEVICE_AEC=y",
                 "CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y"
             ],
