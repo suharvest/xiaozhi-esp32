@@ -11,6 +11,9 @@
 #include <esp_timer.h>
 #include <mbedtls/base64.h>
 
+#include "human_face_detect.hpp"
+#include <linux/videodev2.h>
+
 static const char* TAG = "FaceService";
 
 namespace {
@@ -175,6 +178,53 @@ bool FaceService::AnyQualifiedHit(const std::vector<FaceHit>& hits, std::string*
     return any;
 }
 
+bool FaceService::DetectFaceLocal() {
+    if (camera_ == nullptr) {
+        return false;
+    }
+    if (detector_ == nullptr) {
+        detector_ = new HumanFaceDetect();
+    }
+    EspVideo::RawFrame frame;
+    if (!camera_->CaptureRaw(frame)) {
+        return false;
+    }
+    dl::image::pix_type_t pix_type;
+    switch (frame.v4l2_format) {
+        case V4L2_PIX_FMT_RGB565:
+            pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
+            break;
+        case V4L2_PIX_FMT_RGB24:
+            pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
+            break;
+        case V4L2_PIX_FMT_YUYV:
+            pix_type = dl::image::DL_IMAGE_PIX_TYPE_YUYV;
+            break;
+        case V4L2_PIX_FMT_UYVY:
+            pix_type = dl::image::DL_IMAGE_PIX_TYPE_UYVY;
+            break;
+        case V4L2_PIX_FMT_GREY:
+            pix_type = dl::image::DL_IMAGE_PIX_TYPE_GRAY;
+            break;
+        default:
+            ESP_LOGW(TAG, "unsupported frame format 0x%08lx for local detect",
+                     (unsigned long)frame.v4l2_format);
+            return false;
+    }
+    dl::image::img_t img = {};
+    img.data = const_cast<uint8_t*>(frame.data);
+    img.width = frame.width;
+    img.height = frame.height;
+    img.pix_type = pix_type;
+    auto& results = detector_->run(img);
+    for (const auto& result : results) {
+        if (result.score >= 0.5f) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void FaceService::WatchLoop() {
     DetectState state = DetectState::kIdle;
     int64_t state_start_us = 0;
@@ -183,11 +233,12 @@ void FaceService::WatchLoop() {
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(500));
-        if (mode_.load() != 1) {
+        int mode = mode_.load();
+        if (mode == 0) {
             state = DetectState::kIdle;
             continue;
         }
-        {
+        if (mode == 2) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (endpoint_.empty()) {
                 continue;
@@ -207,14 +258,26 @@ void FaceService::WatchLoop() {
         }
         last_recog_us = now;
 
-        std::vector<FaceHit> hits;
-        std::string error;
-        if (!RecognizeOnce(hits, &error)) {
-            ESP_LOGD(TAG, "recognize failed: %s", error.c_str());
-            continue;
+        // Local esp-dl detection first (fast, on-device). Mode 1 wakes on any
+        // face; mode 2 only forwards to the remote recognizer when a face is
+        // actually present, and wakes on known identities.
+        bool face_present = DetectFaceLocal();
+        bool hit = false;
+        std::string names = "face";
+        if (face_present) {
+            if (mode == 1) {
+                hit = true;
+            } else {
+                std::vector<FaceHit> hits;
+                std::string error;
+                if (RecognizeOnce(hits, &error)) {
+                    names.clear();
+                    hit = AnyQualifiedHit(hits, &names);
+                } else {
+                    ESP_LOGD(TAG, "recognize failed: %s", error.c_str());
+                }
+            }
         }
-        std::string names;
-        bool hit = AnyQualifiedHit(hits, &names);
 
         switch (state) {
             case DetectState::kIdle:
@@ -249,7 +312,7 @@ void FaceService::WatchLoop() {
 }
 
 int FaceService::ToggleMode() {
-    int next = mode_.load() == 1 ? 0 : 1;
+    int next = (mode_.load() + 1) % 3;
     Settings settings("face", true);
     settings.SetInt("mode", next);
     mode_ = next;
@@ -286,7 +349,7 @@ bool FaceService::ApplyConfigJson(const std::string& body, std::string* error) {
             target = value;
         }
     };
-    set_int("mode", mode_, 0, 1);
+    set_int("mode", mode_, 0, 2);
     set_int("interval_s", interval_s_, 1, 3600);
     set_int("threshold", threshold_, 0, 100);
     set_int("duration_s", duration_s_, 0, 60);
@@ -329,7 +392,7 @@ void FaceService::RegisterMcpTools() {
 
     mcp_server.AddTool(
         "self.face.param_get",
-        "获取人脸识别的当前配置：mode(0关/1看到人脸即唤醒)、interval_s 采集间隔、"
+        "获取人脸识别的当前配置：mode(0关/1本地检测到人脸即唤醒/2检测后送识别、认识的人才唤醒)、interval_s 采集间隔、"
         "threshold 置信度阈值(0-100)、duration_s 持续确认秒数、cooldown_s 冷却秒数、"
         "known_only(1=只有已知人脸才唤醒)。",
         PropertyList(),
@@ -338,10 +401,10 @@ void FaceService::RegisterMcpTools() {
     mcp_server.AddTool(
         "self.face.param_set",
         "配置人脸识别参数。用户想开启/关闭看到人自动打招呼、调整灵敏度或频率时使用。\n"
-        "参数均可选，-1 表示保持不变：mode(0关闭 1开启人脸唤醒)、interval_s、"
+        "参数均可选，-1 表示保持不变：mode(0关/1检测唤醒/2识别唤醒)、interval_s、"
         "threshold、duration_s、cooldown_s、known_only。",
         PropertyList({
-            Property("mode", kPropertyTypeInteger, -1, -1, 1),
+            Property("mode", kPropertyTypeInteger, -1, -1, 2),
             Property("interval_s", kPropertyTypeInteger, -1, -1, 3600),
             Property("threshold", kPropertyTypeInteger, -1, -1, 100),
             Property("duration_s", kPropertyTypeInteger, -1, -1, 60),

@@ -1093,3 +1093,17 @@ bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
         },
         &out);
 }
+
+bool EspVideo::CaptureRaw(RawFrame& out) {
+    preview_enabled_ = false;
+    bool ok = Capture();
+    preview_enabled_ = true;
+    if (!ok || frame_.data == nullptr) {
+        return false;
+    }
+    out.data = frame_.data;
+    out.width = frame_.width;
+    out.height = frame_.height;
+    out.v4l2_format = frame_.format;
+    return true;
+}

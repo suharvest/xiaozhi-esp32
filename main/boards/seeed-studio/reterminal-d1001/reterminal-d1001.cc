@@ -203,12 +203,15 @@ public:
         SetHidden(face_icon_, !visible);
     }
 
+    // 0 = off (dimmed), 1 = detect-wake (full text color), 2 = recognize-wake
+    // (accent).
     void ApplyFaceIconState(int mode) {
         if (face_icon_ == nullptr) {
             return;
         }
         ApplyStatusIconStyle(face_icon_);
-        if (mode == 1) {
+        lv_obj_set_style_text_opa(face_icon_, mode == 0 ? LV_OPA_40 : LV_OPA_COVER, 0);
+        if (mode == 2) {
             lv_obj_set_style_text_color(face_icon_, kAccentColor(), 0);
         }
     }

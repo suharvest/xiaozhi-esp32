@@ -10,6 +10,7 @@
 #include <vector>
 
 class EspVideo;
+class HumanFaceDetect;
 
 // One recognized face from the external recognizer.
 struct FaceHit {
@@ -43,7 +44,8 @@ public:
     // `error` on capture/network/parse failure.
     bool RecognizeOnce(std::vector<FaceHit>& hits, std::string* error = nullptr);
 
-    // Flips wake-on-face between off (0) and on (1); persists and returns
+    // Cycles 0 (off) -> 1 (local face detect wakes) -> 2 (detect locally,
+    // then recognize remotely; only known faces wake); persists and returns
     // the new mode.
     int ToggleMode();
     int GetMode() const { return mode_.load(); }
@@ -56,13 +58,16 @@ private:
     void LoadConfig();
     void RegisterMcpTools();
     bool AnyQualifiedHit(const std::vector<FaceHit>& hits, std::string* names);
+    // On-device esp-dl face detection on a raw camera frame.
+    bool DetectFaceLocal();
 
     EspVideo* camera_;
     TaskHandle_t task_ = nullptr;
     std::mutex mutex_;  // endpoint_ + last_result_
 
     // Settings namespace "face"
-    std::atomic<int> mode_{0};        // 0 = off, 1 = wake-on-face
+    std::atomic<int> mode_{0};  // 0 off, 1 detect-wake (local), 2 recognize-wake
+    HumanFaceDetect* detector_ = nullptr;  // lazy; model streams from its partition
     std::atomic<int> interval_s_{5};  // seconds between recognitions
     std::atomic<int> threshold_{60};  // min score
     std::atomic<int> duration_s_{2};  // face must persist this long to wake

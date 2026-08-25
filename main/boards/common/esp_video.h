@@ -53,6 +53,16 @@ public:
     // Suppresses the on-screen preview during background captures (face
     // service); take_photo keeps the preview.
     void SetPreviewEnabled(bool enabled) { preview_enabled_ = enabled; }
+
+    // Silent capture exposing the raw frame for on-device inference. The
+    // pointers stay valid until the next capture.
+    struct RawFrame {
+        const uint8_t* data;
+        uint16_t width;
+        uint16_t height;
+        uint32_t v4l2_format;
+    };
+    bool CaptureRaw(RawFrame& out);
     // Captures one frame and encodes it to JPEG into `out` (synchronous).
     virtual bool CaptureToJpeg(std::vector<uint8_t>& out);
     // 翻转控制函数
