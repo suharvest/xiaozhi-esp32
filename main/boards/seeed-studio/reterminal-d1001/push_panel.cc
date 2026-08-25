@@ -335,6 +335,8 @@ void PushPanel::OpenRoot(const char* title) {
     if (root_ != nullptr) {
         // Reuse the overlay, replace the content.
         lv_obj_clean(body_);
+        int32_t inset = bottom_inset_ ? bottom_inset_() : 0;
+        lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -(8 + inset));
         lv_obj_set_style_max_height(root_, MaxCardHeight(), 0);
         lv_obj_set_style_max_height(body_, MaxCardHeight() - kHeaderHeight, 0);
         lv_obj_t* header = lv_obj_get_child(root_, 0);
@@ -352,7 +354,8 @@ void PushPanel::OpenRoot(const char* title) {
     lv_obj_remove_style_all(root_);
     lv_obj_set_size(root_, LV_PCT(96), LV_SIZE_CONTENT);
     lv_obj_set_style_max_height(root_, MaxCardHeight(), 0);
-    lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -8);
+    int32_t inset = bottom_inset_ ? bottom_inset_() : 0;
+    lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -(8 + inset));
     lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(root_, 16, 0);

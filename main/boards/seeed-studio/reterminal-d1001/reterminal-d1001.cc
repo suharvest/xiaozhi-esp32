@@ -164,6 +164,17 @@ public:
         }
     }
 
+    // Height of the bottom chat bar (0 if it was never created). Used by the
+    // push panel to keep the chat text visible below the card. Must be called
+    // with the display lock held.
+    int32_t GetChatBarHeight() {
+        if (bottom_bar_ == nullptr) {
+            return 0;
+        }
+        lv_obj_update_layout(bottom_bar_);
+        return lv_obj_get_height(bottom_bar_);
+    }
+
     void SetStatusBarEntriesHidden(bool hidden) {
         SetHidden(network_hotspot_, hidden);
         SetHidden(status_actions_, hidden);
@@ -685,6 +696,8 @@ public:
         WifiBoard::StartNetwork();
         if (push_panel_ == nullptr && display_ != nullptr) {
             push_panel_.reset(new PushPanel(display_));
+            push_panel_->SetBottomInsetProvider(
+                [this]() -> int32_t { return display_->GetChatBarHeight(); });
             push_panel_->Start();
         }
     }

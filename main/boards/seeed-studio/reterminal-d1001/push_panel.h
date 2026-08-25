@@ -7,6 +7,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,14 @@ public:
     // Requires lwip/esp_netif to be initialized; call after network start.
     void Start();
 
+    // Height (px) the card must keep clear at the screen bottom, so the chat
+    // bar underneath stays visible. Queried under the display lock on every
+    // push.
+    using BottomInsetProvider = std::function<int32_t()>;
+    void SetBottomInsetProvider(BottomInsetProvider provider) {
+        bottom_inset_ = std::move(provider);
+    }
+
 private:
     static esp_err_t MarkdownThunk(httpd_req_t* req);
     static esp_err_t ChoiceThunk(httpd_req_t* req);
@@ -54,6 +63,7 @@ private:
     void AddTextBlock(const std::string& text, int heading_level);
 
     LcdDisplay* display_;
+    BottomInsetProvider bottom_inset_;
     httpd_handle_t server_ = nullptr;
     lv_obj_t* root_ = nullptr;
     lv_obj_t* body_ = nullptr;
