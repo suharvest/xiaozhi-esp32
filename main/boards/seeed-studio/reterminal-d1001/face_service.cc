@@ -11,8 +11,7 @@
 #include <esp_timer.h>
 #include <mbedtls/base64.h>
 
-#include "human_face_detect.hpp"
-#include <linux/videodev2.h>
+#include "human_face_detect.hpp"  // brings esp-dl's V4L2_PIX_FMT_* defines
 
 static const char* TAG = "FaceService";
 
