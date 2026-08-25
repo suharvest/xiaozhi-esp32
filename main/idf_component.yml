@@ -44,6 +44,10 @@ dependencies:
     version: ^2.1.6
     rules:
     - if: target in [esp32s3]
+  espressif/human_face_detect:
+    version: "~0.5.0"
+    rules:
+    - if: target in [esp32p4]
   espressif/esp_video:
     # Pinned to 2.3.x: esp_video 2.4.x pulls esp_ipa 2.3.0, whose IDF6
     # prebuilt esp32p4 libraries were silently rebuilt with the Zb (bit
