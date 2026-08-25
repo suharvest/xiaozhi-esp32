@@ -11,6 +11,7 @@
 #include "reterminal_d1001_expander.h"
 #include "settings_ui.h"
 #include "push_panel.h"
+#include "camera_tuning.h"
 
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
@@ -695,9 +696,31 @@ public:
     virtual void StartNetwork() override {
         WifiBoard::StartNetwork();
         if (push_panel_ == nullptr && display_ != nullptr) {
+            // Without esp_ipa there is no AE/AWB; program static indoor
+            // defaults (tunable at runtime via POST /camera/tune).
+            if (camera_ != nullptr) {
+                CameraTuning tuning;
+                tuning.exposure_pct = 60;
+                tuning.gain_index = 62;  // ~3.9x analog gain
+                tuning.red_milli = 1300;
+                tuning.blue_milli = 1300;
+                ApplyCameraTuning(tuning);
+            }
             push_panel_.reset(new PushPanel(display_));
             push_panel_->SetBottomInsetProvider(
                 [this]() -> int32_t { return display_->GetChatBarHeight(); });
+            push_panel_->SetCameraHooks(
+                [this](std::vector<uint8_t>& out) {
+                    return camera_ != nullptr && camera_->CaptureToJpeg(out);
+                },
+                [](int exp_pct, int gain_index, int red_milli, int blue_milli) {
+                    CameraTuning tuning;
+                    tuning.exposure_pct = exp_pct;
+                    tuning.gain_index = gain_index;
+                    tuning.red_milli = red_milli;
+                    tuning.blue_milli = blue_milli;
+                    return ApplyCameraTuning(tuning);
+                });
             push_panel_->Start();
         }
     }

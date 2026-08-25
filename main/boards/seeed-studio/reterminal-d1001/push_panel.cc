@@ -140,6 +140,8 @@ void PushPanel::Start() {
         {.uri = "/panel/choice", .method = HTTP_POST, .handler = ChoiceThunk, .user_ctx = this},
         {.uri = "/panel/close", .method = HTTP_POST, .handler = CloseThunk, .user_ctx = this},
         {.uri = "/", .method = HTTP_GET, .handler = UsageThunk, .user_ctx = this},
+        {.uri = "/camera/snap", .method = HTTP_GET, .handler = SnapThunk, .user_ctx = this},
+        {.uri = "/camera/tune", .method = HTTP_POST, .handler = TuneThunk, .user_ctx = this},
     };
     for (const auto& h : handlers) {
         httpd_register_uri_handler(server_, &h);
@@ -157,6 +159,55 @@ esp_err_t PushPanel::ChoiceThunk(httpd_req_t* req) {
 
 esp_err_t PushPanel::CloseThunk(httpd_req_t* req) {
     return static_cast<PushPanel*>(req->user_ctx)->HandleClose(req);
+}
+
+esp_err_t PushPanel::SnapThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleSnap(req);
+}
+
+esp_err_t PushPanel::TuneThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleTune(req);
+}
+
+esp_err_t PushPanel::HandleSnap(httpd_req_t* req) {
+    if (!camera_snap_) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no camera");
+        return ESP_FAIL;
+    }
+    std::vector<uint8_t> jpeg;
+    if (!camera_snap_(jpeg) || jpeg.empty()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "capture failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    return httpd_resp_send(req, reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
+}
+
+esp_err_t PushPanel::HandleTune(httpd_req_t* req) {
+    if (!camera_tune_) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no camera");
+        return ESP_FAIL;
+    }
+    int exp_pct = -1, gain_idx = -1, red = -1, blue = -1;
+    char query[96];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[12];
+        if (httpd_query_key_value(query, "exp_pct", value, sizeof(value)) == ESP_OK) {
+            exp_pct = atoi(value);
+        }
+        if (httpd_query_key_value(query, "gain_idx", value, sizeof(value)) == ESP_OK) {
+            gain_idx = atoi(value);
+        }
+        if (httpd_query_key_value(query, "r", value, sizeof(value)) == ESP_OK) {
+            red = atoi(value);
+        }
+        if (httpd_query_key_value(query, "b", value, sizeof(value)) == ESP_OK) {
+            blue = atoi(value);
+        }
+    }
+    bool ok = camera_tune_(exp_pct, gain_idx, red, blue);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, ok ? "OK\n" : "FAILED\n", HTTPD_RESP_USE_STRLEN);
 }
 
 esp_err_t PushPanel::UsageThunk(httpd_req_t* req) {

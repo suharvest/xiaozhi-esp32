@@ -49,6 +49,8 @@ public:
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();
+    // Captures one frame and encodes it to JPEG into `out` (synchronous).
+    virtual bool CaptureToJpeg(std::vector<uint8_t>& out);
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;

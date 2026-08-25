@@ -42,11 +42,23 @@ public:
         bottom_inset_ = std::move(provider);
     }
 
+    // Optional camera hooks: snap returns a JPEG of the current view
+    // (GET /camera/snap), tune applies manual exposure/gain/white-balance
+    // values, -1 skipping a field (POST /camera/tune?exp_pct=&gain_idx=&r=&b=).
+    using CameraSnapFn = std::function<bool(std::vector<uint8_t>&)>;
+    using CameraTuneFn = std::function<bool(int, int, int, int)>;
+    void SetCameraHooks(CameraSnapFn snap, CameraTuneFn tune) {
+        camera_snap_ = std::move(snap);
+        camera_tune_ = std::move(tune);
+    }
+
 private:
     static esp_err_t MarkdownThunk(httpd_req_t* req);
     static esp_err_t ChoiceThunk(httpd_req_t* req);
     static esp_err_t CloseThunk(httpd_req_t* req);
     static esp_err_t UsageThunk(httpd_req_t* req);
+    static esp_err_t SnapThunk(httpd_req_t* req);
+    static esp_err_t TuneThunk(httpd_req_t* req);
     static void OnChoiceClicked(lv_event_t* event);
     static void OnCloseClicked(lv_event_t* event);
     static void OnBackdropClicked(lv_event_t* event);
@@ -54,6 +66,8 @@ private:
     esp_err_t HandleMarkdown(httpd_req_t* req);
     esp_err_t HandleChoice(httpd_req_t* req);
     esp_err_t HandleClose(httpd_req_t* req);
+    esp_err_t HandleSnap(httpd_req_t* req);
+    esp_err_t HandleTune(httpd_req_t* req);
     bool ReadBody(httpd_req_t* req, std::string* body);
 
     // All UI helpers must run with the display lock held.
@@ -67,6 +81,8 @@ private:
 
     LcdDisplay* display_;
     BottomInsetProvider bottom_inset_;
+    CameraSnapFn camera_snap_;
+    CameraTuneFn camera_tune_;
     httpd_handle_t server_ = nullptr;
     lv_obj_t* root_ = nullptr;
     lv_obj_t* body_ = nullptr;

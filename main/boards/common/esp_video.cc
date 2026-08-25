@@ -1068,3 +1068,23 @@ std::string EspVideo::Explain(const std::string& question) {
              (int)frame_.len, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
     return result;
 }
+
+bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
+    if (!Capture()) {
+        return false;
+    }
+    out.clear();
+    uint16_t w = frame_.width ? frame_.width : 320;
+    uint16_t h = frame_.height ? frame_.height : 240;
+    return image_to_jpeg_cb(
+        frame_.data, frame_.len, w, h, frame_.format, 80,
+        [](void* arg, size_t /*index*/, const void* data, size_t len) -> size_t {
+            auto* vec = static_cast<std::vector<uint8_t>*>(arg);
+            if (data != nullptr && len > 0) {
+                auto* bytes = static_cast<const uint8_t*>(data);
+                vec->insert(vec->end(), bytes, bytes + len);
+            }
+            return len;
+        },
+        &out);
+}
