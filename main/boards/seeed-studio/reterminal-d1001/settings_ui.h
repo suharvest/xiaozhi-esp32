@@ -62,6 +62,12 @@ public:
         icon_font_provider_ = std::move(provider);
     }
 
+    // Invoked after the sleep/auto-off settings change so the board can
+    // reconfigure its power save timer immediately.
+    void SetPowerSaveChangedCallback(std::function<void()> callback) {
+        power_save_changed_ = std::move(callback);
+    }
+
     // Must run inside the LVGL context (event callback) or while the display
     // lock is held.
     // Opens straight on one page; the page's back arrow closes the overlay.
@@ -103,6 +109,8 @@ private:
         WifiStaticIp,
         WifiStaticSave,
         WifiStaticUseDhcp,
+        SleepDimCycle,
+        SleepOffCycle,
     };
 
     struct EventCtx {
@@ -156,6 +164,7 @@ private:
 
     lv_obj_t* root_ = nullptr;
     lv_obj_t* static_ta_[4] = {nullptr, nullptr, nullptr, nullptr};
+    std::function<void()> power_save_changed_;
     lv_obj_t* header_ = nullptr;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;

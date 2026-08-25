@@ -15,6 +15,7 @@
 #include "battery_monitor.h"
 
 #include <esp_netif.h>
+#include "power_save_timer.h"
 #include "settings.h"
 
 #include <driver/i2c_master.h>
@@ -278,6 +279,7 @@ private:
     std::unique_ptr<SettingsUi> settings_ui_;
     std::unique_ptr<PushPanel> push_panel_;
     std::unique_ptr<ReTerminalD1001BatteryMonitor> battery_;
+    PowerSaveTimer* power_save_timer_ = nullptr;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
@@ -450,6 +452,16 @@ private:
         // The GSL3670 is polled and jitters a few pixels; a larger scroll
         // threshold keeps taps on list rows from being turned into scrolls.
         lv_indev_set_scroll_limit(indev, 24);
+        // Any touch resets (and wakes) the power save timer.
+        lv_indev_add_event_cb(
+            indev,
+            [](lv_event_t* event) {
+                auto* self = static_cast<ReTerminalD1001Board*>(lv_event_get_user_data(event));
+                if (self->power_save_timer_ != nullptr) {
+                    self->power_save_timer_->WakeUp();
+                }
+            },
+            LV_EVENT_PRESSED, this);
         ESP_LOGI(TAG, "Touch panel initialized");
     }
 
@@ -463,6 +475,7 @@ private:
                 [this]() { display_->SetStatusBarEntriesHidden(false); }));
             settings_ui_->SetIconFontProvider(
                 [this](bool large) { return display_->GetIconFont(large); });
+            settings_ui_->SetPowerSaveChangedCallback([this]() { ApplyPowerSaveConfig(); });
             display_->SetOnThemeChanged([this]() {
                 if (settings_ui_ != nullptr) {
                     settings_ui_->RefreshIconFonts();
@@ -699,6 +712,35 @@ public:
         InitializeButtons();
 
         GetBacklight()->RestoreBrightness();
+
+        ApplyPowerSaveConfig();
+    }
+
+    // (Re)builds the power save timer from Settings("power"): dim_s seconds
+    // until the screen dims (0 = never), off_s seconds until shutdown
+    // (0 = never). Called at boot and whenever the settings UI changes them.
+    void ApplyPowerSaveConfig() {
+        if (power_save_timer_ != nullptr) {
+            power_save_timer_->SetEnabled(false);
+            delete power_save_timer_;
+            power_save_timer_ = nullptr;
+        }
+        Settings settings("power", false);
+        int dim_s = settings.GetInt("dim_s", 60);
+        int off_s = settings.GetInt("off_s", 0);
+        if (dim_s == 0 && off_s == 0) {
+            return;
+        }
+        power_save_timer_ = new PowerSaveTimer(-1, dim_s > 0 ? dim_s : -1,
+                                               off_s > 0 ? off_s : -1);
+        power_save_timer_->OnEnterSleepMode([this]() {
+            GetBacklight()->SetBrightness(8);
+        });
+        power_save_timer_->OnExitSleepMode([this]() {
+            GetBacklight()->RestoreBrightness();
+        });
+        power_save_timer_->OnShutdownRequest([this]() { StartPowerOff(); });
+        power_save_timer_->SetEnabled(true);
     }
 
     // The push panel's HTTP server needs lwip up, which only holds once the

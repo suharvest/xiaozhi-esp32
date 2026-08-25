@@ -924,6 +924,20 @@ void SettingsUi::ShowDisplaySettings() {
         Bind(tile, Action::RotationPick, i);
     }
 
+    {
+        Settings settings("power", false);
+        int dim_s = settings.GetInt("dim_s", 60);
+        int off_s = settings.GetInt("off_s", 0);
+        char dim_text[24];
+        snprintf(dim_text, sizeof(dim_text), dim_s == 0 ? "关" : "%d 分钟", dim_s / 60);
+        char off_text[24];
+        snprintf(off_text, sizeof(off_text), off_s == 0 ? "关" : "%d 分钟", off_s / 60);
+        MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "自动息屏", dim_text, Action::SleepDimCycle, 0,
+                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        MakeListItem(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "无操作关机", off_text,
+                     Action::SleepOffCycle, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+    }
+
     MakeTextButton(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave,
                    0, true);
 }
@@ -1150,6 +1164,42 @@ void SettingsUi::HandleAction(Action action, int index) {
             }
             CommitRotation();
             return;
+        case Action::SleepDimCycle: {
+            static const int kDimChoices[] = {0, 60, 300, 600};
+            Settings settings("power", true);
+            int current = settings.GetInt("dim_s", 60);
+            int next = kDimChoices[0];
+            for (int i = 0; i < 4; i++) {
+                if (kDimChoices[i] == current) {
+                    next = kDimChoices[(i + 1) % 4];
+                    break;
+                }
+            }
+            settings.SetInt("dim_s", next);
+            if (power_save_changed_) {
+                power_save_changed_();
+            }
+            ShowDisplaySettings();
+            break;
+        }
+        case Action::SleepOffCycle: {
+            static const int kOffChoices[] = {0, 600, 1800};
+            Settings settings("power", true);
+            int current = settings.GetInt("off_s", 0);
+            int next = kOffChoices[0];
+            for (int i = 0; i < 3; i++) {
+                if (kOffChoices[i] == current) {
+                    next = kOffChoices[(i + 1) % 3];
+                    break;
+                }
+            }
+            settings.SetInt("off_s", next);
+            if (power_save_changed_) {
+                power_save_changed_();
+            }
+            ShowDisplaySettings();
+            break;
+        }
         case Action::WifiStaticIp:
             ShowStaticIpPage();
             break;
