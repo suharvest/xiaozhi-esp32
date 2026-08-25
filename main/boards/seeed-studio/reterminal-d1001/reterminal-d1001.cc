@@ -696,6 +696,7 @@ public:
     virtual void StartNetwork() override {
         WifiBoard::StartNetwork();
         if (push_panel_ == nullptr && display_ != nullptr) {
+#if !CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER
             // Without esp_ipa there is no AE/AWB; program static indoor
             // defaults (tunable at runtime via POST /camera/tune).
             if (camera_ != nullptr) {
@@ -706,6 +707,7 @@ public:
                 tuning.blue_milli = 1300;
                 ApplyCameraTuning(tuning);
             }
+#endif
             push_panel_.reset(new PushPanel(display_));
             push_panel_->SetBottomInsetProvider(
                 [this]() -> int32_t { return display_->GetChatBarHeight(); });

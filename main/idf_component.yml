@@ -45,7 +45,12 @@ dependencies:
     rules:
     - if: target in [esp32s3]
   espressif/esp_video:
-    version: ^2.3.0
+    # Pinned to 2.3.x: esp_video 2.4.x pulls esp_ipa 2.3.0, whose IDF6
+    # prebuilt esp32p4 libraries were silently rebuilt with the Zb (bit
+    # manipulation) extension and crash with an illegal instruction on
+    # P4 chips < v3.0. esp_ipa 2.2.x libraries are Zb-free (verified with
+    # readelf on every published version).
+    version: ~2.3.0
     rules:
     - if: target in [esp32p4, esp32s3, esp32s31]
 
