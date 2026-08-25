@@ -49,6 +49,7 @@ private:
     static esp_err_t UsageThunk(httpd_req_t* req);
     static void OnChoiceClicked(lv_event_t* event);
     static void OnCloseClicked(lv_event_t* event);
+    static void OnBackdropClicked(lv_event_t* event);
 
     esp_err_t HandleMarkdown(httpd_req_t* req);
     esp_err_t HandleChoice(httpd_req_t* req);
@@ -59,6 +60,7 @@ private:
     void OpenRoot(const char* title);
     void CloseRoot();
     void ArmTtl(int ttl_s);  // 0 cancels; display lock must be held
+    void DismissFromUi();    // close button / backdrop / state change
     void RenderMarkdown(const std::string& text);
     void RenderTable(const std::vector<std::string>& lines);
     void AddTextBlock(const std::string& text, int heading_level);
@@ -68,6 +70,9 @@ private:
     httpd_handle_t server_ = nullptr;
     lv_obj_t* root_ = nullptr;
     lv_obj_t* body_ = nullptr;
+    lv_obj_t* backdrop_ = nullptr;     // full-screen tap-outside-to-close layer
+    lv_timer_t* state_timer_ = nullptr;  // dismisses when the device state changes
+    int open_state_ = -1;              // device state snapshot at open time
 
     lv_timer_t* ttl_timer_ = nullptr;  // auto-dismiss timer (nullptr = keep)
     bool large_text_ = false;          // body text uses the 30px font

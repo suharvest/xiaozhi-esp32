@@ -259,3 +259,7 @@ pin.
 | Panel           | 800x1280 JD9365DA-H3, MIPI-DSI 2 lane, LDO3 2.5 V, backlight PWM GPIO14 |
 | Touch           | GSL3670 on I2C0 (SDA 37, SCL 38), INT GPIO16 (unused, polled) |
 | Button          | GPIO3                                       |
+
+## HTTP 推送面板
+
+局域网 HTTP 推送 Markdown 上屏 / 屏上选择接口，见 [PUSH_PANEL.md](PUSH_PANEL.md)。

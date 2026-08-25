@@ -1,5 +1,7 @@
 #include "push_panel.h"
 
+#include "application.h"
+
 #include <cJSON.h>
 #include <esp_log.h>
 
@@ -341,16 +343,16 @@ void PushPanel::OnChoiceClicked(lv_event_t* event) {
 
 void PushPanel::OnCloseClicked(lv_event_t* event) {
     auto* self = static_cast<PushPanel*>(lv_event_get_user_data(event));
-    if (self == nullptr) {
-        return;
+    if (self != nullptr) {
+        self->DismissFromUi();
     }
-    if (self->choice_pending_) {
-        self->choice_selected_ = -1;
-        xSemaphoreGive(self->choice_sem_);
-        // The waiting HTTP worker closes the panel.
-        return;
+}
+
+void PushPanel::OnBackdropClicked(lv_event_t* event) {
+    auto* self = static_cast<PushPanel*>(lv_event_get_user_data(event));
+    if (self != nullptr) {
+        self->DismissFromUi();
     }
-    self->CloseRoot();
 }
 
 void PushPanel::OpenRoot(const char* title) {
@@ -365,9 +367,20 @@ void PushPanel::OpenRoot(const char* title) {
         lv_obj_t* header = lv_obj_get_child(root_, 0);
         lv_obj_t* title_label = lv_obj_get_child(header, 0);
         lv_label_set_text(title_label, title);
+        open_state_ = static_cast<int>(Application::GetInstance().GetDeviceState());
+        lv_obj_move_foreground(backdrop_);
         lv_obj_move_foreground(root_);
         return;
     }
+
+    // Tap-outside-to-close layer under the card.
+    backdrop_ = lv_obj_create(screen);
+    lv_obj_remove_style_all(backdrop_);
+    lv_obj_set_size(backdrop_, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(backdrop_, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(backdrop_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(backdrop_, OnBackdropClicked, LV_EVENT_CLICKED, this);
+    lv_obj_move_foreground(backdrop_);
 
     // Floating bottom card parented to the screen so labels inherit the theme
     // text font (which can be reloaded at runtime and must never be cached).
@@ -416,6 +429,22 @@ void PushPanel::OpenRoot(const char* title) {
     lv_obj_set_ext_click_area(close_button, 16);
     lv_obj_add_event_cb(close_button, OnCloseClicked, LV_EVENT_CLICKED, this);
 
+    // The panel dismisses itself when the device state changes after it was
+    // opened (e.g. a conversation starts or ends). Polled at 500 ms so no
+    // hook into the shared application code is needed.
+    open_state_ = static_cast<int>(Application::GetInstance().GetDeviceState());
+    if (state_timer_ == nullptr) {
+        state_timer_ = lv_timer_create(
+            [](lv_timer_t* timer) {
+                auto* self = static_cast<PushPanel*>(lv_timer_get_user_data(timer));
+                int current = static_cast<int>(Application::GetInstance().GetDeviceState());
+                if (current != self->open_state_) {
+                    self->DismissFromUi();
+                }
+            },
+            500, this);
+    }
+
     body_ = lv_obj_create(root_);
     lv_obj_remove_style_all(body_);
     lv_obj_set_width(body_, LV_PCT(100));
@@ -430,12 +459,30 @@ void PushPanel::OpenRoot(const char* title) {
 
 void PushPanel::CloseRoot() {
     ArmTtl(0);
+    if (state_timer_ != nullptr) {
+        lv_timer_delete(state_timer_);
+        state_timer_ = nullptr;
+    }
+    if (backdrop_ != nullptr) {
+        lv_obj_delete(backdrop_);
+        backdrop_ = nullptr;
+    }
     if (root_ == nullptr) {
         return;
     }
     lv_obj_delete(root_);
     root_ = nullptr;
     body_ = nullptr;
+}
+
+void PushPanel::DismissFromUi() {
+    if (choice_pending_) {
+        choice_selected_ = -1;
+        xSemaphoreGive(choice_sem_);
+        // The waiting HTTP worker closes the panel.
+        return;
+    }
+    CloseRoot();
 }
 
 void PushPanel::ArmTtl(int ttl_s) {
