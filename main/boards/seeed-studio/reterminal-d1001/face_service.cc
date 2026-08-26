@@ -17,6 +17,20 @@ static const char* TAG = "FaceService";
 
 namespace {
 enum class DetectState { kIdle, kValidating, kCooldown };
+
+// The official cloud rejects listen/state=detect texts over ~25 UTF-8 bytes
+// with an ERROR alert screen (see commit 2dceb7c: tags <f></f>/<d></d>, 18
+// content bytes). Truncate on a character boundary.
+std::string TruncateUtf8(const std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) {
+        return s;
+    }
+    size_t end = max_bytes;
+    while (end > 0 && (static_cast<unsigned char>(s[end]) & 0xC0) == 0x80) {
+        --end;
+    }
+    return s.substr(0, end);
+}
 }
 
 FaceService::FaceService(EspVideo* camera) : camera_(camera) {}
@@ -262,7 +276,7 @@ void FaceService::WatchLoop() {
         // actually present, and wakes on known identities.
         bool face_present = DetectFaceLocal();
         bool hit = false;
-        std::string names = "face";
+        std::string names = "人脸";
         if (face_present) {
             if (mode == 1) {
                 hit = true;
@@ -292,7 +306,9 @@ void FaceService::WatchLoop() {
                     last_hit_us = now;
                     if (now - state_start_us >= (int64_t)duration_s_.load() * 1000000LL) {
                         ESP_LOGI(TAG, "face confirmed, waking: %s", names.c_str());
-                        app.WakeWordInvoke("<detect>face detected: " + names + "</detect>");
+                        // <f>...</f> with 18 content bytes: the official cloud
+                        // hard-rejects longer detect texts (2dceb7c).
+                        app.WakeWordInvoke("<f>" + TruncateUtf8(names, 18) + "</f>");
                         state = DetectState::kCooldown;
                         state_start_us = now;
                     }
