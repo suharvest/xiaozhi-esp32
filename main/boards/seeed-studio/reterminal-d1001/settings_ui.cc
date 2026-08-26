@@ -937,21 +937,17 @@ void SettingsUi::ShowFacePage() {
         int cooldown = settings.GetInt("cooldown_s", 8);
         int threshold = settings.GetInt("threshold", 60);
         int known_only = settings.GetInt("known_only", 1);
+        // Only the two everyday knobs live on screen; interval, threshold and
+        // known_only stay reachable over MCP (self.face.param_set) or HTTP.
+        (void)interval;
+        (void)threshold;
+        (void)known_only;
         char text[24];
-        snprintf(text, sizeof(text), "%d 秒", interval);
-        MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "采集间隔", text, Action::FaceParamCycle, 0,
-                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
         snprintf(text, sizeof(text), "%d 秒", duration);
         MakeListItem(body, MATERIAL_SYMBOLS_CHECK, "持续确认", text, Action::FaceParamCycle, 1,
                      MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
         snprintf(text, sizeof(text), "%d 秒", cooldown);
         MakeListItem(body, MATERIAL_SYMBOLS_VOLUME_OFF, "唤醒冷却", text, Action::FaceParamCycle, 2,
-                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-        snprintf(text, sizeof(text), "%d", threshold);
-        MakeListItem(body, MATERIAL_SYMBOLS_EYEGLASSES, "置信度阈值", text, Action::FaceParamCycle,
-                     3, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-        MakeListItem(body, MATERIAL_SYMBOLS_PERSON, "谁能唤醒",
-                     known_only ? "仅认识的人" : "任何人脸", Action::FaceParamCycle, 4,
                      MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
     }
 

@@ -492,9 +492,17 @@ private:
             ESP_LOGE(TAG, "Failed to register the touch panel with LVGL");
             return;
         }
-        // The GSL3670 is polled and jitters a few pixels; a larger scroll
-        // threshold keeps taps on list rows from being turned into scrolls.
-        lv_indev_set_scroll_limit(indev, 24);
+        // The GSL3670 is polled and jitters a few pixels; a slightly raised
+        // scroll threshold keeps taps on list rows from turning into scrolls.
+        // 24 made scrolling feel laggy (a finger had to travel 24px before
+        // anything moved); 12 still absorbs the jitter.
+        lv_indev_set_scroll_limit(indev, 12);
+        // Poll the touch controller more often than the 30ms default so drags
+        // track the finger.
+        lv_timer_t* read_timer = lv_indev_get_read_timer(indev);
+        if (read_timer != nullptr) {
+            lv_timer_set_period(read_timer, 15);
+        }
         // Any touch resets (and wakes) the power save timer.
         lv_indev_add_event_cb(
             indev,
