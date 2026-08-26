@@ -107,10 +107,17 @@ void WifiBoard::TryWifiConnect() {
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
     } else {
+#ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
+        // No SSID configured: point the user at the on-screen Wi-Fi setup.
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
+                                         "gear", Lang::Sounds::OGG_WIFICONFIG);
+#else
         // No SSID configured, enter config mode
         // Wait for the board version to be shown
         vTaskDelay(pdMS_TO_TICKS(1500));
         StartWifiConfigMode();
+#endif
     }
 }
 
@@ -160,11 +167,19 @@ void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
 }
 
 void WifiBoard::OnWifiConnectTimeout(void* arg) {
+#ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
+    (void)arg;
+    ESP_LOGW(TAG, "WiFi connection timeout; prompting on-screen configuration");
+    Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
+                                     "gear", Lang::Sounds::OGG_WIFICONFIG);
+    // The station keeps scanning with backoff; no AP config mode.
+#else
     auto* board = static_cast<WifiBoard*>(arg);
     ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
     WifiManager::GetInstance().StopStation();
     board->StartWifiConfigMode();
+#endif
 }
 
 void WifiBoard::StartWifiConfigMode() {

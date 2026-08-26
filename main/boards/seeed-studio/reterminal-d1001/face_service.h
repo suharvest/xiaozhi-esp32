@@ -51,6 +51,8 @@ public:
     int GetMode() const { return mode_.load(); }
     std::string GetEndpoint();
     void SetModeAndEndpoint(int mode, const std::string& endpoint);
+    // Re-reads every parameter from Settings("face") (after on-screen edits).
+    void ReloadConfig() { LoadConfig(); }
 
     std::string StatusJson();
     bool ApplyConfigJson(const std::string& body, std::string* error);

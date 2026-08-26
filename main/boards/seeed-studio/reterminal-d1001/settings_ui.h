@@ -123,6 +123,7 @@ private:
         SleepOffCycle,
         FacePick,
         FaceSave,
+        FaceParamCycle,
     };
 
     struct EventCtx {

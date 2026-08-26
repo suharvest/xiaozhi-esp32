@@ -9,6 +9,16 @@ config PREFER_WEBSOCKET_PROTOCOL
         the WebSocket protocol (audio over TCP) when the OTA config provides
         both.
 
+config WIFI_CONFIG_PROMPT_ONLY
+    bool "Prompt for on-screen Wi-Fi setup instead of starting the config AP"
+    default n
+    help
+        Boards with a touch settings UI can configure Wi-Fi directly on the
+        screen. With this option, a connection timeout or an empty SSID list
+        shows an alert directing the user to the status bar network icon and
+        keeps the station scanning, instead of switching to the phone-binding
+        AP configuration mode.
+
 config OTA_URL
     string "Default OTA URL"
     default "https://api.tenclass.net/xiaozhi/ota/"

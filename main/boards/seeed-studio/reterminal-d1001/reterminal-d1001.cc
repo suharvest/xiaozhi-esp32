@@ -528,6 +528,7 @@ private:
                 [this](int mode, const std::string& endpoint) {
                     if (face_service_ != nullptr) {
                         face_service_->SetModeAndEndpoint(mode, endpoint);
+                        face_service_->ReloadConfig();
                         display_->ApplyFaceIconState(face_service_->GetMode());
                     }
                 });

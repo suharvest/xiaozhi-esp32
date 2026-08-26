@@ -930,6 +930,31 @@ void SettingsUi::ShowFacePage() {
         Bind(tile, Action::FacePick, i);
     }
 
+    {
+        Settings settings("face", false);
+        int interval = settings.GetInt("interval_s", 5);
+        int duration = settings.GetInt("duration_s", 2);
+        int cooldown = settings.GetInt("cooldown_s", 8);
+        int threshold = settings.GetInt("threshold", 60);
+        int known_only = settings.GetInt("known_only", 1);
+        char text[24];
+        snprintf(text, sizeof(text), "%d 秒", interval);
+        MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "采集间隔", text, Action::FaceParamCycle, 0,
+                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        snprintf(text, sizeof(text), "%d 秒", duration);
+        MakeListItem(body, MATERIAL_SYMBOLS_CHECK, "持续确认", text, Action::FaceParamCycle, 1,
+                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        snprintf(text, sizeof(text), "%d 秒", cooldown);
+        MakeListItem(body, MATERIAL_SYMBOLS_VOLUME_OFF, "唤醒冷却", text, Action::FaceParamCycle, 2,
+                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        snprintf(text, sizeof(text), "%d", threshold);
+        MakeListItem(body, MATERIAL_SYMBOLS_EYEGLASSES, "置信度阈值", text, Action::FaceParamCycle,
+                     3, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        MakeListItem(body, MATERIAL_SYMBOLS_PERSON, "谁能唤醒",
+                     known_only ? "仅认识的人" : "任何人脸", Action::FaceParamCycle, 4,
+                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+    }
+
     lv_obj_t* label = lv_label_create(body);
     lv_label_set_text(label, "识别服务地址（识别唤醒模式使用）");
 
@@ -1280,6 +1305,35 @@ void SettingsUi::HandleAction(Action action, int index) {
                 face_apply_(pending_face_mode_, endpoint);
             }
             Close();
+            break;
+        }
+        case Action::FaceParamCycle: {
+            static const char* kKeys[5] = {"interval_s", "duration_s", "cooldown_s",
+                                           "threshold", "known_only"};
+            static const int kChoices[5][4] = {{1, 3, 5, 10},
+                                               {1, 2, 3, -1},
+                                               {3, 8, 15, 30},
+                                               {50, 60, 70, 80},
+                                               {1, 0, -1, -1}};
+            static const int kDefaults[5] = {5, 2, 8, 60, 1};
+            Settings settings("face", true);
+            int current = settings.GetInt(kKeys[index], kDefaults[index]);
+            int next = kChoices[index][0];
+            for (int i = 0; i < 4 && kChoices[index][i] != -1; i++) {
+                if (kChoices[index][i] == current) {
+                    int j = i + 1;
+                    if (j >= 4 || kChoices[index][j] == -1) {
+                        j = 0;
+                    }
+                    next = kChoices[index][j];
+                    break;
+                }
+            }
+            settings.SetInt(kKeys[index], next);
+            if (face_apply_) {
+                face_apply_(pending_face_mode_, "");
+            }
+            ShowFacePage();
             break;
         }
         case Action::WifiStaticIp:
