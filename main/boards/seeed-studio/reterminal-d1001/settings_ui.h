@@ -180,7 +180,7 @@ private:
     std::function<void()> power_save_changed_;
     FaceGetCallback face_get_;
     FaceApplyCallback face_apply_;
-    int pending_face_mode_ = 0;
+    int pending_face_mode_ = -1;  // -1 = load from saved config on page entry
     lv_obj_t* header_ = nullptr;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;

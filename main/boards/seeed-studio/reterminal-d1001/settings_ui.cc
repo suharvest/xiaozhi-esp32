@@ -450,6 +450,7 @@ void SettingsUi::Open(SettingsPage page) {
     if (root_ != nullptr) {
         return;
     }
+    pending_face_mode_ = -1;
     ESP_LOGI(TAG, "Opening settings overlay on page %d", static_cast<int>(page));
 
     lv_obj_t* screen = lv_screen_active();
@@ -890,7 +891,11 @@ void SettingsUi::ShowFacePage() {
     if (face_get_) {
         face_get_(mode, endpoint);
     }
-    pending_face_mode_ = mode;
+    // Only seed the selection from the saved config on first entry; a tile
+    // tap rebuilds the page and must keep the user's pick.
+    if (pending_face_mode_ < 0) {
+        pending_face_mode_ = mode;
+    }
 
     lv_obj_t* body = BuildPage("人脸识别", Action::Close, false);
 
