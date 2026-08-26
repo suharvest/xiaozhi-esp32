@@ -13,6 +13,7 @@ enum class SettingsPage {
     Wifi,
     Display,
     Volume,
+    Face,
 };
 
 enum class WifiSettingsState {
@@ -68,6 +69,15 @@ public:
         power_save_changed_ = std::move(callback);
     }
 
+    // Face recognition page hooks: get returns {mode, endpoint}; apply saves
+    // them. Wired by the board to the FaceService.
+    using FaceGetCallback = std::function<void(int&, std::string&)>;
+    using FaceApplyCallback = std::function<void(int, const std::string&)>;
+    void SetFaceCallbacks(FaceGetCallback get, FaceApplyCallback apply) {
+        face_get_ = std::move(get);
+        face_apply_ = std::move(apply);
+    }
+
     // Must run inside the LVGL context (event callback) or while the display
     // lock is held.
     // Opens straight on one page; the page's back arrow closes the overlay.
@@ -111,6 +121,8 @@ private:
         WifiStaticUseDhcp,
         SleepDimCycle,
         SleepOffCycle,
+        FacePick,
+        FaceSave,
     };
 
     struct EventCtx {
@@ -125,6 +137,7 @@ private:
     void DrainPendingActions();
     void HandleAction(Action action, int index);
     void ShowStaticIpPage();
+    void ShowFacePage();
     void Bind(lv_obj_t* obj, Action action, int index = 0,
               lv_event_code_t code = LV_EVENT_CLICKED);
 
@@ -165,6 +178,9 @@ private:
     lv_obj_t* root_ = nullptr;
     lv_obj_t* static_ta_[4] = {nullptr, nullptr, nullptr, nullptr};
     std::function<void()> power_save_changed_;
+    FaceGetCallback face_get_;
+    FaceApplyCallback face_apply_;
+    int pending_face_mode_ = 0;
     lv_obj_t* header_ = nullptr;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* textarea_ = nullptr;

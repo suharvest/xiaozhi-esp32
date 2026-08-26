@@ -291,13 +291,8 @@ private:
     }
 
     static void OnFaceClicked(lv_event_t* event) {
-        auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
-        if (self != nullptr && self->face_toggle_) {
-            int mode = self->face_toggle_();
-            if (mode >= 0) {
-                self->ApplyFaceIconState(mode);
-            }
-        }
+        // Opens the face settings page (mode tiles + recognizer endpoint).
+        Dispatch(event, SettingsPage::Face);
     }
 
     static void Dispatch(lv_event_t* event, SettingsPage page) {
@@ -524,6 +519,18 @@ private:
             settings_ui_->SetIconFontProvider(
                 [this](bool large) { return display_->GetIconFont(large); });
             settings_ui_->SetPowerSaveChangedCallback([this]() { ApplyPowerSaveConfig(); });
+            settings_ui_->SetFaceCallbacks(
+                [this](int& mode, std::string& endpoint) {
+                    mode = face_service_ != nullptr ? face_service_->GetMode() : 0;
+                    endpoint =
+                        face_service_ != nullptr ? face_service_->GetEndpoint() : "";
+                },
+                [this](int mode, const std::string& endpoint) {
+                    if (face_service_ != nullptr) {
+                        face_service_->SetModeAndEndpoint(mode, endpoint);
+                        display_->ApplyFaceIconState(face_service_->GetMode());
+                    }
+                });
             display_->SetOnThemeChanged([this]() {
                 if (settings_ui_ != nullptr) {
                     settings_ui_->RefreshIconFonts();

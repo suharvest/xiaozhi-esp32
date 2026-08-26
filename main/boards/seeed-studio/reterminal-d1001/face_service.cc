@@ -310,6 +310,25 @@ void FaceService::WatchLoop() {
     }
 }
 
+std::string FaceService::GetEndpoint() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return endpoint_;
+}
+
+void FaceService::SetModeAndEndpoint(int mode, const std::string& endpoint) {
+    Settings settings("face", true);
+    if (mode >= 0 && mode <= 2) {
+        settings.SetInt("mode", mode);
+        mode_ = mode;
+    }
+    if (!endpoint.empty()) {
+        settings.SetString("endpoint", endpoint);
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoint_ = endpoint;
+    }
+    ESP_LOGI(TAG, "face config saved: mode=%d", mode_.load());
+}
+
 int FaceService::ToggleMode() {
     int next = (mode_.load() + 1) % 3;
     Settings settings("face", true);

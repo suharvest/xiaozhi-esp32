@@ -49,6 +49,8 @@ public:
     // the new mode.
     int ToggleMode();
     int GetMode() const { return mode_.load(); }
+    std::string GetEndpoint();
+    void SetModeAndEndpoint(int mode, const std::string& endpoint);
 
     std::string StatusJson();
     bool ApplyConfigJson(const std::string& body, std::string* error);

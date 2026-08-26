@@ -473,6 +473,9 @@ void SettingsUi::Open(SettingsPage page) {
         case SettingsPage::Volume:
             ShowVolumeSettings();
             break;
+        case SettingsPage::Face:
+            ShowFacePage();
+            break;
         case SettingsPage::Wifi:
         default:
             ShowWifiPage();
@@ -880,6 +883,67 @@ void SettingsUi::ShowStaticIpPage() {
     keyboard_ = MakeKeyboard(body, static_ta_[0], Action::WifiStaticSave);
 }
 
+void SettingsUi::ShowFacePage() {
+    page_ = SettingsPage::Face;
+    int mode = 0;
+    std::string endpoint;
+    if (face_get_) {
+        face_get_(mode, endpoint);
+    }
+    pending_face_mode_ = mode;
+
+    lv_obj_t* body = BuildPage("人脸识别", Action::Close, false);
+
+    static const char* kModeNames[3] = {"关闭", "检测唤醒", "识别唤醒"};
+    static const char* kModeHints[3] = {"不采集", "本地检测到人脸即唤醒", "认识的人才唤醒"};
+    lv_obj_t* grid = lv_obj_create(body);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_width(grid, LV_PCT(100));
+    lv_obj_set_height(grid, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(grid, kGap, 0);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
+    for (int i = 0; i < 3; i++) {
+        bool selected = i == pending_face_mode_;
+        lv_obj_t* tile = lv_button_create(grid);
+        lv_obj_set_size(tile, LV_PCT(31), 132);
+        lv_obj_set_style_radius(tile, kCardRadius, 0);
+        lv_obj_set_style_shadow_width(tile, 0, 0);
+        lv_obj_set_style_bg_color(tile, selected ? lv_color_hex(kAccentColor) : CardColor(), 0);
+        if (selected) {
+            lv_obj_set_style_text_color(tile, lv_color_hex(0xFFFFFF), 0);
+        }
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(tile, 6, 0);
+        lv_obj_t* name = lv_label_create(tile);
+        lv_label_set_text(name, kModeNames[i]);
+        lv_obj_t* hint = lv_label_create(tile);
+        lv_label_set_text(hint, kModeHints[i]);
+        lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
+        Bind(tile, Action::FacePick, i);
+    }
+
+    lv_obj_t* label = lv_label_create(body);
+    lv_label_set_text(label, "识别服务地址（识别唤醒模式使用）");
+
+    textarea_ = lv_textarea_create(body);
+    lv_obj_set_width(textarea_, LV_PCT(100));
+    lv_obj_set_height(textarea_, kButtonHeight);
+    lv_obj_set_style_radius(textarea_, 12, 0);
+    lv_textarea_set_one_line(textarea_, true);
+    lv_textarea_set_max_length(textarea_, 96);
+    lv_textarea_set_placeholder_text(textarea_, "http://192.168.x.x:8001/recognize");
+    if (!endpoint.empty()) {
+        lv_textarea_set_text(textarea_, endpoint.c_str());
+    }
+
+    MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "保存", Action::FaceSave, 0, true);
+
+    keyboard_ = MakeKeyboard(body, textarea_, Action::FaceSave);
+}
+
 void SettingsUi::ShowDisplaySettings() {
     page_ = SettingsPage::Display;
     int current = LoadRotationProfile().degrees;
@@ -1198,6 +1262,19 @@ void SettingsUi::HandleAction(Action action, int index) {
                 power_save_changed_();
             }
             ShowDisplaySettings();
+            break;
+        }
+        case Action::FacePick:
+            pending_face_mode_ = index;
+            ShowFacePage();
+            break;
+        case Action::FaceSave: {
+            std::string endpoint =
+                textarea_ != nullptr ? lv_textarea_get_text(textarea_) : "";
+            if (face_apply_) {
+                face_apply_(pending_face_mode_, endpoint);
+            }
+            Close();
             break;
         }
         case Action::WifiStaticIp:
