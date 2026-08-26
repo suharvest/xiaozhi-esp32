@@ -125,7 +125,10 @@ void PushPanel::Start() {
         return;
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
+    // 8080: the Wi-Fi config-AP mode starts its own HTTP server on port 80,
+    // and binding it too made that path abort (listen errno 112) in a reboot
+    // loop whenever the station could not connect.
+    config.server_port = 8080;
     config.stack_size = 10240;
     config.max_uri_handlers = 10;
     config.lru_purge_enable = true;

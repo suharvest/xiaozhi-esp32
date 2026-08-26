@@ -1,6 +1,6 @@
 # reTerminal D1001 HTTP 推送面板
 
-设备联网后在 **80 端口**提供一个 HTTP 服务，局域网内任何客户端都可以把内容推到屏幕上：Markdown 渲染、让用户在屏上做选择并取回结果。面板以底部悬浮卡片显示，不遮挡状态栏、表情和屏底对话文本。
+设备联网后在 **8080 端口**提供一个 HTTP 服务，局域网内任何客户端都可以把内容推到屏幕上：Markdown 渲染、让用户在屏上做选择并取回结果。面板以底部悬浮卡片显示，不遮挡状态栏、表情和屏底对话文本。
 
 设备 IP 可在设置 → Wi-Fi 页查看，或从路由器 / 串口日志（`sta ip:`）获取。
 
@@ -30,8 +30,8 @@ Body 为 Markdown 文本（UTF-8，≤32KB）。支持的子集：
 | `size=large` | 正文也用 30px 大字（默认 20px） |
 
 ```bash
-curl -X POST --data-binary @notes.md "http://<IP>/panel/markdown"
-curl -X POST --data-binary $'# 提醒\n- 三点开会' "http://<IP>/panel/markdown?ttl_s=60&size=large"
+curl -X POST --data-binary @notes.md "http://<IP>:8080/panel/markdown"
+curl -X POST --data-binary $'# 提醒\n- 三点开会' "http://<IP>:8080/panel/markdown?ttl_s=60&size=large"
 ```
 
 返回 `200 OK`。再次推送会原位替换内容。有 choice 挂起时返回 400。
@@ -57,7 +57,7 @@ HTTP 请求**阻塞**直到用户点选或超时：
 
 ```bash
 curl -X POST -d '{"title":"部署到哪台","options":["spark","orin-nano"],"timeout_s":120}' \
-     "http://<IP>/panel/choice"
+     "http://<IP>:8080/panel/choice"
 ```
 
 同一时刻只允许一个 choice 挂起（并发返回 400）。
@@ -81,10 +81,10 @@ curl -X POST -d '{"title":"部署到哪台","options":["spark","orin-nano"],"tim
 IP=192.168.10.168
 # 1. 推对比表格（30 秒自动消失，防止忘关）
 curl -X POST --data-binary $'# 模组对比\n\n| 型号 | 分辨率 | 接口 |\n|---|---|---|\n| SC202CS | 2MP | MIPI |\n| OV5647 | 5MP | MIPI |' \
-     "http://$IP/panel/markdown?ttl_s=30"
+     "http://$IP:8080/panel/markdown?ttl_s=30"
 sleep 8
 # 2. 让人选择，取回结果
-CHOICE=$(curl -s -X POST -d '{"title":"用哪个","options":["SC202CS","OV5647"]}' "http://$IP/panel/choice")
+CHOICE=$(curl -s -X POST -d '{"title":"用哪个","options":["SC202CS","OV5647"]}' "http://$IP:8080/panel/choice")
 echo "$CHOICE"   # {"selected":0,"option":"SC202CS"}
 ```
 
@@ -93,9 +93,9 @@ Python：
 ```python
 import requests
 IP = "192.168.10.168"
-requests.post(f"http://{IP}/panel/markdown", data="# 部署确认\n- 目标: spark".encode(),
+requests.post(f"http://{IP}:8080/panel/markdown", data="# 部署确认\n- 目标: spark".encode(),
               params={"ttl_s": 30})
-r = requests.post(f"http://{IP}/panel/choice",
+r = requests.post(f"http://{IP}:8080/panel/choice",
                   json={"title": "继续部署？", "options": ["继续", "取消"], "timeout_s": 120},
                   timeout=130)
 if r.status_code == 200 and r.json()["selected"] == 0:
@@ -125,8 +125,8 @@ POST <endpoint>   Content-Type: image/jpeg   Body: JPEG 帧
 
 ```bash
 curl -X POST -d '{"mode":1,"endpoint":"http://192.168.3.73:8399/recognize","interval_s":5}' \
-     "http://<IP>/face/config"
-curl "http://<IP>/face/status"
+     "http://<IP>:8080/face/config"
+curl "http://<IP>:8080/face/status"
 ```
 
 字段：`mode`(0 关/1 人脸唤醒)、`endpoint`、`interval_s`、`threshold`(0-100)、`duration_s` 持续确认、`cooldown_s` 冷却、`known_only`(1=陌生脸不唤醒)。NVS 持久化。
