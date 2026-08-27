@@ -1075,6 +1075,7 @@ std::string EspVideo::Explain(const std::string& question) {
 }
 
 bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
     if (!Capture()) {
         return false;
     }

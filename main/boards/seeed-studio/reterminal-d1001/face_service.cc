@@ -198,6 +198,7 @@ bool FaceService::DetectFaceLocal() {
     if (detector_ == nullptr) {
         detector_ = new HumanFaceDetect();
     }
+    std::lock_guard<std::mutex> capture_lock(camera_->capture_mutex());
     EspVideo::RawFrame frame;
     if (!camera_->CaptureRaw(frame)) {
         return false;

@@ -3,6 +3,7 @@
 
 #include <lvgl.h>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -35,6 +36,7 @@ private:
     int video_fd_ = -1;
     bool streaming_on_ = false;
     bool preview_enabled_ = true;
+    std::mutex capture_mutex_;
     struct MmapBuffer {
         void* start = nullptr;
         size_t length = 0;
@@ -63,6 +65,9 @@ public:
         uint32_t v4l2_format;
     };
     bool CaptureRaw(RawFrame& out);
+    // Serializes camera access between the face service, take_photo and the
+    // HTTP snapshot endpoint (concurrent captures corrupt frames).
+    std::mutex& capture_mutex() { return capture_mutex_; }
     // Captures one frame and encodes it to JPEG into `out` (synchronous).
     virtual bool CaptureToJpeg(std::vector<uint8_t>& out);
     // 翻转控制函数
