@@ -44,6 +44,8 @@ void FaceService::LoadConfig() {
     cooldown_s_ = settings.GetInt("cooldown_s", 8);
     known_only_ = settings.GetInt("known_only", 1);
     api_ = settings.GetInt("api", 0);
+    det_thr0_ = settings.GetInt("det_thr0", 5);
+    det_thr1_ = settings.GetInt("det_thr1", 50);
     std::lock_guard<std::mutex> lock(mutex_);
     endpoint_ = settings.GetString("endpoint", "");
 }
@@ -198,6 +200,14 @@ bool FaceService::DetectFaceLocal() {
     if (detector_ == nullptr) {
         detector_ = new HumanFaceDetect();
     }
+    // On ESP32-P4 the MSR stage reports scores around 0.06-0.09 for a large
+    // frontal face (roughly 10x below the model's documented calibration),
+    // so the default 0.5 stage threshold rejects everything. Run MSR nearly
+    // open and let the MNP confirm stage (scores saturate near 1.0 for real
+    // faces) do the filtering. Both are tunable via /face/config
+    // (det_thr0/det_thr1, percent).
+    detector_->set_score_thr(det_thr0_.load() / 100.0f, 0);
+    detector_->set_score_thr(det_thr1_.load() / 100.0f, 1);
     std::lock_guard<std::mutex> capture_lock(camera_->capture_mutex());
     EspVideo::RawFrame frame;
     if (!camera_->CaptureRaw(frame)) {
@@ -231,8 +241,9 @@ bool FaceService::DetectFaceLocal() {
     img.height = frame.height;
     img.pix_type = pix_type;
     auto& results = detector_->run(img);
+    const float wake_thr = det_thr1_.load() / 100.0f;
     for (const auto& result : results) {
-        if (result.score >= 0.5f) {
+        if (result.score >= wake_thr) {
             return true;
         }
     }
@@ -365,6 +376,8 @@ std::string FaceService::StatusJson() {
            ",\"cooldown_s\":" + std::to_string(cooldown_s_.load()) +
            ",\"known_only\":" + std::to_string(known_only_.load()) +
            ",\"api\":" + std::to_string(api_.load()) +
+           ",\"det_thr0\":" + std::to_string(det_thr0_.load()) +
+           ",\"det_thr1\":" + std::to_string(det_thr1_.load()) +
            ",\"last\":" + last_result_ +
            ",\"last_ts_ms\":" + std::to_string(last_ts_ms_.load()) + "}";
 }
@@ -391,6 +404,8 @@ bool FaceService::ApplyConfigJson(const std::string& body, std::string* error) {
     set_int("cooldown_s", cooldown_s_, 0, 3600);
     set_int("known_only", known_only_, 0, 1);
     set_int("api", api_, 0, 1);
+    set_int("det_thr0", det_thr0_, 1, 100);
+    set_int("det_thr1", det_thr1_, 1, 100);
     cJSON* endpoint = cJSON_GetObjectItem(root, "endpoint");
     if (cJSON_IsString(endpoint)) {
         settings.SetString("endpoint", endpoint->valuestring);
