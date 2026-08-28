@@ -56,9 +56,21 @@
 
 #define TAG "EspVideo"
 
+#if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
+#if CONFIG_XIAOZHI_CAMERA_HMIRROR
+static constexpr bool kConfiguredHMirror = true;
+#else
+static constexpr bool kConfiguredHMirror = false;
+#endif
+#if CONFIG_XIAOZHI_CAMERA_VFLIP
+static constexpr bool kConfiguredVFlip = true;
+#else
+static constexpr bool kConfiguredVFlip = false;
+#endif
+#endif
+
 #if defined(CONFIG_CAMERA_SENSOR_SWAP_PIXEL_BYTE_ORDER) || defined(CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP)
-#warning \
-    "CAMERA_SENSOR_SWAP_PIXEL_BYTE_ORDER or CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP is enabled, which may cause image corruption in YUV422 format!"
+#pragma message("CAMERA_SENSOR_SWAP_PIXEL_BYTE_ORDER or CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP is enabled; verify YUV422 image integrity")
 #endif
 
 #if CONFIG_XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
@@ -191,7 +203,8 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
     uint32_t best_fmt = 0;
     int best_rank = 1 << 30;  // large number
 
-    // 注: 当前版本 esp_video 中 YUV422P 实际输出为 YUYV。
+    // esp_video 2.x uses the packed YUYV/UYVY FOURCC values. Keep YUV422P
+    // for compatibility with esp_video 1.x, where it was used for YUYV data.
 #if defined(CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE) && defined(CONFIG_SOC_PPA_SUPPORTED)
     auto get_rank = [](uint32_t fmt) -> int {
         switch (fmt) {
@@ -203,6 +216,9 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
             case V4L2_PIX_FMT_YUV420:  // 软件 JPEG 编码器不支持 YUV420 格式
                 return 2;
 #endif  // CONFIG_XIAOZHI_ENABLE_HARDWARE_JPEG_ENCODER
+            case V4L2_PIX_FMT_YUYV:
+            case V4L2_PIX_FMT_UYVY:
+                return 3;
             case V4L2_PIX_FMT_GREY:
             case V4L2_PIX_FMT_YUV422P:
             default:
@@ -212,6 +228,8 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
 #else
     auto get_rank = [](uint32_t fmt) -> int {
         switch (fmt) {
+            case V4L2_PIX_FMT_YUYV:
+            case V4L2_PIX_FMT_UYVY:
             case V4L2_PIX_FMT_YUV422P:
                 return 10;
             case V4L2_PIX_FMT_RGB565:
@@ -265,6 +283,11 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         sensor_format_ = 0;
         return;
     }
+
+#if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
+    SetHMirror(kConfiguredHMirror);
+    SetVFlip(kConfiguredVFlip);
+#endif
 
 #ifdef CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
     frame_.width = setformat.fmt.pix.height;
@@ -433,6 +456,7 @@ bool EspVideo::Capture() {
                 case V4L2_PIX_FMT_RGB565:
                 case V4L2_PIX_FMT_RGB24:
                 case V4L2_PIX_FMT_YUYV:
+                case V4L2_PIX_FMT_UYVY:
                 case V4L2_PIX_FMT_YUV420:
                 case V4L2_PIX_FMT_GREY:
 #ifdef CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT
@@ -517,6 +541,9 @@ bool EspVideo::Capture() {
                     rotate_cfg.in_pixel_fmt = ESP_IMGFX_PIXEL_FMT_RGB565_LE;
                     break;
                 case V4L2_PIX_FMT_YUYV:
+                case V4L2_PIX_FMT_UYVY:
+                    // Rotate packed YUV422 as opaque 16-bit pixels. The rotation
+                    // operation only needs the pixel size and does not convert color.
                     rotate_cfg.in_pixel_fmt = ESP_IMGFX_PIXEL_FMT_RGB565_LE;
                     break;
                 case V4L2_PIX_FMT_GREY:
@@ -584,8 +611,9 @@ bool EspVideo::Capture() {
                     rotate_src = (uint8_t*)frame_.data;
                     ppa_color_mode = PPA_SRM_COLOR_MODE_RGB888;
                     break;
-                case V4L2_PIX_FMT_YUYV: {
-                    ESP_LOGW(TAG, "YUYV format is not supported for PPA rotation, using software conversion to RGB888");
+                case V4L2_PIX_FMT_YUYV:
+                case V4L2_PIX_FMT_UYVY: {
+                    ESP_LOGW(TAG, "YUV422 format is not supported for PPA rotation, using software conversion to RGB888");
                     rotate_src = (uint8_t*)heap_caps_malloc(frame_.width * frame_.height * 3,
                                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                     if (rotate_src == nullptr) {
@@ -598,7 +626,7 @@ bool EspVideo::Capture() {
                     esp_imgfx_color_convert_cfg_t convert_cfg = {
                         .in_res = {.width = static_cast<int16_t>(frame_.width),
                                    .height = static_cast<int16_t>(frame_.height)},
-                        .in_pixel_fmt = ESP_IMGFX_PIXEL_FMT_YUYV,
+                        .in_pixel_fmt = static_cast<esp_imgfx_pixel_fmt_t>(frame_.format),
                         .out_pixel_fmt = ESP_IMGFX_PIXEL_FMT_RGB888,
                     };
                     esp_imgfx_color_convert_handle_t convert_handle = nullptr;
@@ -746,6 +774,7 @@ bool EspVideo::Capture() {
         switch (frame_.format) {
             // LVGL 显示 YUV 系的图像似乎都有问题，暂时转换为 RGB565 显示
             case V4L2_PIX_FMT_YUYV:
+            case V4L2_PIX_FMT_UYVY:
             case V4L2_PIX_FMT_YUV420:
             case V4L2_PIX_FMT_RGB24: {
                 color_format = LV_COLOR_FORMAT_RGB565;
@@ -834,8 +863,13 @@ bool EspVideo::Capture() {
                 return false;
         }
 
-        auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
-        display->SetPreviewImage(std::move(image));
+        if (preview_enabled_) {
+            auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h,
+                                                              stride, color_format);
+            display->SetPreviewImage(std::move(image));
+        } else {
+            heap_caps_free(data);
+        }
     }
     return true;
 }
@@ -1038,4 +1072,49 @@ std::string EspVideo::Explain(const std::string& question) {
     ESP_LOGI(TAG, "Explain image size=%d bytes, compressed size=%d, remain stack size=%d, question=%s\n%s",
              (int)frame_.len, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
     return result;
+}
+
+bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    if (!Capture()) {
+        return false;
+    }
+    out.clear();
+    uint16_t w = frame_.width ? frame_.width : 320;
+    uint16_t h = frame_.height ? frame_.height : 240;
+    return image_to_jpeg_cb(
+        frame_.data, frame_.len, w, h, frame_.format, 80,
+        [](void* arg, size_t /*index*/, const void* data, size_t len) -> size_t {
+            auto* vec = static_cast<std::vector<uint8_t>*>(arg);
+            if (data != nullptr && len > 0) {
+                auto* bytes = static_cast<const uint8_t*>(data);
+                vec->insert(vec->end(), bytes, bytes + len);
+            }
+            return len;
+        },
+        &out);
+}
+
+bool EspVideo::CaptureRaw(RawFrame& out) {
+    preview_enabled_ = false;
+    bool ok = Capture();
+    preview_enabled_ = true;
+    if (!ok || frame_.data == nullptr) {
+        return false;
+    }
+    out.data = frame_.data;
+    out.width = frame_.width;
+    out.height = frame_.height;
+    out.v4l2_format = frame_.format;
+    return true;
+}
+
+bool EspVideo::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    if (!CaptureRaw(info)) {
+        return false;
+    }
+    bytes.assign(info.data, info.data + frame_.len);
+    info.data = bytes.data();
+    return true;
 }

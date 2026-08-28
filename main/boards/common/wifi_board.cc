@@ -10,13 +10,13 @@
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_log.h>
+#include <esp_mac.h>
 #include <utility>
 
-#include <font_awesome.h>
+#include <material_symbols.h>
 #include <wifi_manager.h>
 #include <wifi_station.h>
 #include <ssid_manager.h>
-#include "afsk_demod.h"
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
 #include "blufi.h"
 #endif
@@ -56,6 +56,17 @@ void WifiBoard::StartNetwork() {
     WifiManagerConfig config;
     config.ssid_prefix = "Xiaozhi";
     config.language = Lang::CODE;
+    config.show_ota_config = true;
+    config.show_sleep_config = true;
+
+    // Set a DHCP hostname so the router shows a friendly name instead of "espressif".
+    // Uses the same "<prefix>-<last 2 MAC bytes>" scheme as the config AP SSID.
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        char hostname[32];
+        snprintf(hostname, sizeof(hostname), "%s-%02X%02X", config.ssid_prefix.c_str(), mac[4], mac[5]);
+        config.station_hostname = hostname;
+    }
     wifi_manager.Initialize(config);
 
     // Set unified event callback - forward to NetworkEvent with SSID data
@@ -96,10 +107,17 @@ void WifiBoard::TryWifiConnect() {
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
     } else {
+#ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
+        // No SSID configured: point the user at the on-screen Wi-Fi setup.
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
+                                         "gear", Lang::Sounds::OGG_WIFICONFIG);
+#else
         // No SSID configured, enter config mode
         // Wait for the board version to be shown
         vTaskDelay(pdMS_TO_TICKS(1500));
         StartWifiConfigMode();
+#endif
     }
 }
 
@@ -149,11 +167,19 @@ void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
 }
 
 void WifiBoard::OnWifiConnectTimeout(void* arg) {
+#ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
+    (void)arg;
+    ESP_LOGW(TAG, "WiFi connection timeout; prompting on-screen configuration");
+    Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
+                                     "gear", Lang::Sounds::OGG_WIFICONFIG);
+    // The station keeps scanning with backoff; no AP config mode.
+#else
     auto* board = static_cast<WifiBoard*>(arg);
     ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
     WifiManager::GetInstance().StopStation();
     board->StartWifiConfigMode();
+#endif
 }
 
 void WifiBoard::StartWifiConfigMode() {
@@ -178,21 +204,6 @@ void WifiBoard::StartWifiConfigMode() {
     auto &blufi = Blufi::GetInstance();
     // initialize esp-blufi protocol
     blufi.init();
-#endif
-#if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
-    // Start acoustic provisioning task
-    auto codec = Board::GetInstance().GetAudioCodec();
-    int channel = codec ? codec->input_channels() : 1;
-    ESP_LOGI(TAG, "Starting acoustic WiFi provisioning, channels: %d", channel);
-
-    xTaskCreate([](void* arg) {
-        auto ch = reinterpret_cast<intptr_t>(arg);
-        auto& app = Application::GetInstance();
-        auto& wifi = WifiManager::GetInstance();
-        auto disp = Board::GetInstance().GetDisplay();
-        audio_wifi_config::ReceiveWifiCredentialsFromAudio(&app, &wifi, disp, ch);
-        vTaskDelete(NULL);
-    }, "acoustic_wifi", 4096, reinterpret_cast<void*>(channel), 2, NULL);
 #endif
 }
 
@@ -250,25 +261,26 @@ const char* WifiBoard::GetNetworkStateIcon() {
     auto& wifi = WifiManager::GetInstance();
 
     if (wifi.IsConfigMode()) {
-        return FONT_AWESOME_WIFI;
+        return MATERIAL_SYMBOLS_WIFI;
     }
     if (!wifi.IsConnected()) {
-        return FONT_AWESOME_WIFI_SLASH;
+        return MATERIAL_SYMBOLS_WIFI_OFF;
     }
 
     int rssi = wifi.GetRssi();
     if (rssi >= -65) {
-        return FONT_AWESOME_WIFI;
+        return MATERIAL_SYMBOLS_WIFI;
     } else if (rssi >= -75) {
-        return FONT_AWESOME_WIFI_FAIR;
+        return MATERIAL_SYMBOLS_WIFI_2_BAR;
     }
-    return FONT_AWESOME_WIFI_WEAK;
+    return MATERIAL_SYMBOLS_WIFI_1_BAR;
 }
 
 std::string WifiBoard::GetBoardJson() {
     auto& wifi = WifiManager::GetInstance();
     std::string json = R"({"type":")" + std::string(BOARD_TYPE) + R"(",)";
     json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
+    json += R"("manufacturer":")" + std::string(BOARD_MANUFACTURER) + R"(",)";
 
     if (!wifi.IsConfigMode()) {
         json += R"("ssid":")" + wifi.GetSsid() + R"(",)";
