@@ -1108,3 +1108,13 @@ bool EspVideo::CaptureRaw(RawFrame& out) {
     out.v4l2_format = frame_.format;
     return true;
 }
+
+bool EspVideo::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    if (!CaptureRaw(info)) {
+        return false;
+    }
+    bytes.assign(info.data, info.data + frame_.len);
+    info.data = bytes.data();
+    return true;
+}

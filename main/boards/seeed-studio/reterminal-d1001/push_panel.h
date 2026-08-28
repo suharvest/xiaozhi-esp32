@@ -47,9 +47,11 @@ public:
     // values, -1 skipping a field (POST /camera/tune?exp_pct=&gain_idx=&r=&b=).
     using CameraSnapFn = std::function<bool(std::vector<uint8_t>&)>;
     using CameraTuneFn = std::function<bool(int, int, int, int)>;
-    void SetCameraHooks(CameraSnapFn snap, CameraTuneFn tune) {
+    using CameraRawFn = std::function<bool(std::vector<uint8_t>&, std::string&)>;
+    void SetCameraHooks(CameraSnapFn snap, CameraTuneFn tune, CameraRawFn raw = nullptr) {
         camera_snap_ = std::move(snap);
         camera_tune_ = std::move(tune);
+        camera_raw_ = std::move(raw);
     }
 
     // Face recognition hooks: status returns the JSON for GET /face/status,
@@ -68,6 +70,7 @@ private:
     static esp_err_t UsageThunk(httpd_req_t* req);
     static esp_err_t SnapThunk(httpd_req_t* req);
     static esp_err_t TuneThunk(httpd_req_t* req);
+    static esp_err_t RawThunk(httpd_req_t* req);
     static esp_err_t FaceStatusThunk(httpd_req_t* req);
     static esp_err_t FaceConfigThunk(httpd_req_t* req);
     static void OnChoiceClicked(lv_event_t* event);
@@ -79,6 +82,7 @@ private:
     esp_err_t HandleClose(httpd_req_t* req);
     esp_err_t HandleSnap(httpd_req_t* req);
     esp_err_t HandleTune(httpd_req_t* req);
+    esp_err_t HandleRaw(httpd_req_t* req);
     esp_err_t HandleFaceStatus(httpd_req_t* req);
     esp_err_t HandleFaceConfig(httpd_req_t* req);
     bool ReadBody(httpd_req_t* req, std::string* body);
@@ -96,6 +100,7 @@ private:
     BottomInsetProvider bottom_inset_;
     CameraSnapFn camera_snap_;
     CameraTuneFn camera_tune_;
+    CameraRawFn camera_raw_;
     FaceStatusFn face_status_;
     FaceConfigFn face_config_;
     httpd_handle_t server_ = nullptr;

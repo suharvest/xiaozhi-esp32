@@ -130,7 +130,7 @@ void PushPanel::Start() {
     // loop whenever the station could not connect.
     config.server_port = 8080;
     config.stack_size = 10240;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&server_, &config);
     if (err != ESP_OK) {
@@ -145,6 +145,7 @@ void PushPanel::Start() {
         {.uri = "/", .method = HTTP_GET, .handler = UsageThunk, .user_ctx = this},
         {.uri = "/camera/snap", .method = HTTP_GET, .handler = SnapThunk, .user_ctx = this},
         {.uri = "/camera/tune", .method = HTTP_POST, .handler = TuneThunk, .user_ctx = this},
+        {.uri = "/camera/raw", .method = HTTP_GET, .handler = RawThunk, .user_ctx = this},
         {.uri = "/face/status", .method = HTTP_GET, .handler = FaceStatusThunk, .user_ctx = this},
         {.uri = "/face/config", .method = HTTP_POST, .handler = FaceConfigThunk, .user_ctx = this},
     };
@@ -213,6 +214,26 @@ esp_err_t PushPanel::HandleTune(httpd_req_t* req) {
     bool ok = camera_tune_(exp_pct, gain_idx, red, blue);
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_send(req, ok ? "OK\n" : "FAILED\n", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t PushPanel::RawThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleRaw(req);
+}
+
+esp_err_t PushPanel::HandleRaw(httpd_req_t* req) {
+    if (!camera_raw_) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no camera");
+        return ESP_FAIL;
+    }
+    std::vector<uint8_t> bytes;
+    std::string meta;
+    if (!camera_raw_(bytes, meta) || bytes.empty()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "capture failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "X-Frame-Meta", meta.c_str());
+    return httpd_resp_send(req, reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 esp_err_t PushPanel::FaceStatusThunk(httpd_req_t* req) {
