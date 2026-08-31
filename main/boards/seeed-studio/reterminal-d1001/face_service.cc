@@ -210,7 +210,7 @@ bool FaceService::DetectFaceLocal() {
     // (det_thr0/det_thr1, percent).
     detector_->set_score_thr(det_thr0_.load() / 100.0f, 0);
     detector_->set_score_thr(det_thr1_.load() / 100.0f, 1);
-    std::lock_guard<std::mutex> capture_lock(camera_->capture_mutex());
+    std::lock_guard<std::recursive_mutex> capture_lock(camera_->capture_mutex());
     EspVideo::RawFrame frame;
     if (!camera_->CaptureRaw(frame)) {
         return false;
