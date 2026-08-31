@@ -875,6 +875,20 @@ public:
                     tuning.red_milli = red_milli;
                     tuning.blue_milli = blue_milli;
                     return ApplyCameraTuning(tuning);
+                },
+                [this](std::vector<uint8_t>& bytes, std::string& meta) {
+                    if (camera_ == nullptr) {
+                        return false;
+                    }
+                    EspVideo::RawFrame info;
+                    if (!camera_->CaptureRawCopy(bytes, info)) {
+                        return false;
+                    }
+                    char text[48];
+                    snprintf(text, sizeof(text), "%u %u 0x%08lx", info.width, info.height,
+                             (unsigned long)info.v4l2_format);
+                    meta = text;
+                    return true;
                 });
             if (camera_ != nullptr) {
                 face_service_.reset(new FaceService(camera_));

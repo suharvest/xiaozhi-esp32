@@ -276,13 +276,18 @@ bool FaceService::DetectFaceLocal() {
         }
     }
     auto& results = detector_->run(img);
-    const float wake_thr = det_thr1_.load() / 100.0f;
+    float best = 0;
     for (const auto& result : results) {
-        if (result.score >= wake_thr) {
-            return true;
-        }
+        best = std::max(best, result.score);
     }
-    return false;
+    // Diagnostic heartbeat (every ~10 runs) plus per-hit detail.
+    static int diag_tick = 0;
+    if (!results.empty() || ++diag_tick >= 10) {
+        diag_tick = 0;
+        ESP_LOGI(TAG, "detect: %ux%u results=%d best=%.2f", img.width, img.height,
+                 (int)results.size(), best);
+    }
+    return best >= det_thr1_.load() / 100.0f;
 }
 
 void FaceService::WatchLoop() {

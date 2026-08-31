@@ -65,6 +65,9 @@ public:
         uint32_t v4l2_format;
     };
     bool CaptureRaw(RawFrame& out);
+    // Silent capture that copies the frame out under the capture mutex, for
+    // debug export. Returns false on failure.
+    bool CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info);
     // Serializes camera access between the face service, take_photo and the
     // HTTP snapshot endpoint (concurrent captures corrupt frames).
     std::recursive_mutex& capture_mutex() { return capture_mutex_; }
