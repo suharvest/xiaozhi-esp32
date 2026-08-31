@@ -46,7 +46,7 @@ void FaceService::LoadConfig() {
     cooldown_s_ = settings.GetInt("cooldown_s", 8);
     known_only_ = settings.GetInt("known_only", 1);
     api_ = settings.GetInt("api", 0);
-    det_thr0_ = settings.GetInt("det_thr0", 5);
+    det_thr0_ = settings.GetInt("det_thr0", 50);
     det_thr1_ = settings.GetInt("det_thr1", 50);
     std::lock_guard<std::mutex> lock(mutex_);
     endpoint_ = settings.GetString("endpoint", "");
@@ -353,9 +353,19 @@ void FaceService::WatchLoop() {
                     last_hit_us = now;
                     if (now - state_start_us >= (int64_t)duration_s_.load() * 1000000LL) {
                         ESP_LOGI(TAG, "face confirmed, waking: %s", names.c_str());
-                        // <f>...</f> with 18 content bytes: the official cloud
-                        // hard-rejects longer detect texts (2dceb7c).
-                        app.WakeWordInvoke("<f>" + TruncateUtf8(names, 18) + "</f>");
+                        // Tag convention (2dceb7c): <f>name</f> means a
+                        // recognized identity; <d>object</d> means a bare
+                        // detection. Mode 1 only detects, so it must not
+                        // claim an identity — "<f>人脸</f>" made the agent
+                        // call self.face.verify and report the (possibly
+                        // unreachable) recognizer as broken on every wake.
+                        // Content is capped at 18 bytes: the official cloud
+                        // hard-rejects longer detect texts.
+                        if (mode == 1) {
+                            app.WakeWordInvoke("<d>人</d>");
+                        } else {
+                            app.WakeWordInvoke("<f>" + TruncateUtf8(names, 18) + "</f>");
+                        }
                         state = DetectState::kCooldown;
                         state_start_us = now;
                     }

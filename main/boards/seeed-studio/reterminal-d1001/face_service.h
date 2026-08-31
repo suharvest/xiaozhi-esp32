@@ -74,7 +74,7 @@ private:
     HumanFaceDetect* detector_ = nullptr;  // lazy; model streams from its partition
     std::atomic<int> interval_s_{5};  // seconds between recognitions
     std::atomic<int> threshold_{60};  // min score
-    std::atomic<int> det_thr0_{5};   // MSR stage score thr (percent)
+    std::atomic<int> det_thr0_{50};  // MSR stage score thr (percent)
     std::atomic<int> det_thr1_{50};  // MNP stage score thr (percent)
     std::atomic<int> duration_s_{2};  // face must persist this long to wake
     std::atomic<int> cooldown_s_{8};  // after a wake, wait this long + face gone
