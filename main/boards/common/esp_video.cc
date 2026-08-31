@@ -409,6 +409,10 @@ void EspVideo::SetExplainUrl(const std::string& url, const std::string& token) {
 }
 
 bool EspVideo::Capture() {
+    // Self-guarding: generic callers (MCP take_photo) reach Capture()
+    // directly; frame_.data is freed and reallocated here, so every capture
+    // must serialize against the face service and snapshot paths.
+    std::lock_guard<std::recursive_mutex> capture_lock(capture_mutex_);
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
@@ -1075,7 +1079,7 @@ std::string EspVideo::Explain(const std::string& question) {
 }
 
 bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
-    std::lock_guard<std::mutex> lock(capture_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
     if (!Capture()) {
         return false;
     }
@@ -1110,7 +1114,7 @@ bool EspVideo::CaptureRaw(RawFrame& out) {
 }
 
 bool EspVideo::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
-    std::lock_guard<std::mutex> lock(capture_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
     if (!CaptureRaw(info)) {
         return false;
     }

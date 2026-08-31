@@ -1,5 +1,7 @@
 #include "face_service.h"
 
+#include <cstring>
+
 #include "application.h"
 #include "board.h"
 #include "esp_video.h"
@@ -208,7 +210,7 @@ bool FaceService::DetectFaceLocal() {
     // (det_thr0/det_thr1, percent).
     detector_->set_score_thr(det_thr0_.load() / 100.0f, 0);
     detector_->set_score_thr(det_thr1_.load() / 100.0f, 1);
-    std::lock_guard<std::mutex> capture_lock(camera_->capture_mutex());
+    std::lock_guard<std::recursive_mutex> capture_lock(camera_->capture_mutex());
     EspVideo::RawFrame frame;
     if (!camera_->CaptureRaw(frame)) {
         return false;
@@ -240,6 +242,39 @@ bool FaceService::DetectFaceLocal() {
     img.width = frame.width;
     img.height = frame.height;
     img.pix_type = pix_type;
+    // Aspect-preserving letterbox: the MSR stage resizes the whole image to
+    // its small 4:3 input (160x120). Feeding 16:9 720p directly means an
+    // anisotropic ~8x squash that leaves MSR scores marginal (collapses in
+    // poor light). Pre-decimate UYVY 2x into a 4:3 gray canvas so the
+    // internal resize is uniform. Wake only uses scores, so the letterbox
+    // offset needs no box remapping.
+    static std::vector<uint8_t> lb;
+    if (pix_type == dl::image::DL_IMAGE_PIX_TYPE_UYVY && (frame.width % 8) == 0 &&
+        (frame.height % 2) == 0 && frame.width > 640) {
+        const uint16_t iw = frame.width / 2, ih = frame.height / 2;
+        const uint16_t cw = iw, ch = (uint16_t)((iw * 3 / 4 + 1) & ~1);
+        if (ch >= ih) {
+            const uint16_t top = (ch - ih) / 2;
+            const size_t canvas_bytes = (size_t)cw * ch * 2;
+            static uint16_t last_cw = 0, last_ch = 0, last_top = 0;
+            if (lb.size() != canvas_bytes || cw != last_cw || ch != last_ch || top != last_top) {
+                lb.assign(canvas_bytes, 0x80);  // UYVY mid-gray
+                last_cw = cw; last_ch = ch; last_top = top;
+            }
+            const uint8_t* srcp = frame.data;
+            uint8_t* base = lb.data() + (size_t)top * cw * 2;
+            for (uint16_t y = 0; y < ih; ++y) {
+                const uint8_t* row = srcp + (size_t)(y * 2) * frame.width * 2;
+                uint8_t* d = base + (size_t)y * cw * 2;
+                for (uint16_t x = 0; x < cw / 2; ++x) {
+                    memcpy(d + (size_t)x * 4, row + (size_t)x * 8, 4);
+                }
+            }
+            img.data = lb.data();
+            img.width = cw;
+            img.height = ch;
+        }
+    }
     auto& results = detector_->run(img);
     float best = 0;
     for (const auto& result : results) {
@@ -249,8 +284,7 @@ bool FaceService::DetectFaceLocal() {
     static int diag_tick = 0;
     if (!results.empty() || ++diag_tick >= 10) {
         diag_tick = 0;
-        ESP_LOGI(TAG, "detect: fmt=0x%08lx %ux%u results=%d best=%.2f",
-                 (unsigned long)frame.v4l2_format, frame.width, frame.height,
+        ESP_LOGI(TAG, "detect: %ux%u results=%d best=%.2f", img.width, img.height,
                  (int)results.size(), best);
     }
     return best >= det_thr1_.load() / 100.0f;
