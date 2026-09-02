@@ -582,7 +582,18 @@ void SettingsUi::StartWifiScan() {
             scan_config.scan_time.active.min = 100;
             scan_config.scan_time.active.max = 300;
 
-            esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+            // The C6 radio comes up over esp_hosted noticeably later than the
+            // UI: a scan issued right after boot fails with
+            // ESP_ERR_WIFI_NOT_STARTED (transient toast users reported). Wait
+            // for the station to start instead of surfacing the race.
+            esp_err_t err = ESP_ERR_WIFI_NOT_STARTED;
+            for (int attempt = 0; attempt < 20; ++attempt) {
+                err = esp_wifi_scan_start(&scan_config, true);
+                if (err != ESP_ERR_WIFI_NOT_STARTED) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
             if (err == ESP_OK) {
                 uint16_t ap_count = 0;
                 err = esp_wifi_scan_get_ap_num(&ap_count);
