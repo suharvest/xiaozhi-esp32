@@ -941,7 +941,12 @@ void SettingsUi::ShowFacePage() {
         Bind(tile, Action::FacePick, i);
     }
 
-    {
+    // With face features off the tuning rows and recognizer endpoint are
+    // noise — hide them (values stay in NVS untouched; FaceSave passes an
+    // empty endpoint, which SetModeAndEndpoint ignores).
+    if (pending_face_mode_ == 0) {
+        textarea_ = nullptr;
+    } else {
         Settings settings("face", false);
         int interval = settings.GetInt("interval_s", 5);
         int duration = settings.GetInt("duration_s", 2);
@@ -960,10 +965,9 @@ void SettingsUi::ShowFacePage() {
         snprintf(text, sizeof(text), "%d 秒", cooldown);
         MakeListItem(body, MATERIAL_SYMBOLS_VOLUME_OFF, "唤醒冷却", text, Action::FaceParamCycle, 2,
                      MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-    }
 
-    lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text(label, "识别服务地址（识别唤醒模式使用）");
+        lv_obj_t* label = lv_label_create(body);
+        lv_label_set_text(label, "识别服务地址（识别唤醒模式使用）");
 
     textarea_ = lv_textarea_create(body);
     lv_obj_set_width(textarea_, LV_PCT(100));
@@ -973,12 +977,14 @@ void SettingsUi::ShowFacePage() {
     lv_textarea_set_max_length(textarea_, 96);
     lv_textarea_set_placeholder_text(textarea_, "http://192.168.x.x:8001/recognize");
     if (!endpoint.empty()) {
-        lv_textarea_set_text(textarea_, endpoint.c_str());
+            lv_textarea_set_text(textarea_, endpoint.c_str());
+        }
     }
+    
 
     MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "保存", Action::FaceSave, 0, true);
 
-    keyboard_ = MakeKeyboard(body, textarea_, Action::FaceSave);
+    keyboard_ = textarea_ != nullptr ? MakeKeyboard(body, textarea_, Action::FaceSave) : nullptr;
 }
 
 void SettingsUi::ShowDisplaySettings() {
