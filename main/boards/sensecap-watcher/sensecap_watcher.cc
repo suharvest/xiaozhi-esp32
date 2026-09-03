@@ -10,7 +10,7 @@
 #include "power_save_timer.h"
 #include "sscma_camera.h"
 #include "face_recognition.h"
-#include <font_awesome.h>
+#include <material_symbols.h>
 #include "lvgl_theme.h"
 #include "remote_display.h"
 #include "remote_display_http_server.h"
@@ -133,17 +133,17 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             if (cam != nullptr) {
                 switch (cam->GetVisionWakeMode()) {
                     case SscmaCamera::VISION_FACE_DND:
-                        icon = FONT_AWESOME_MOON;              // 人脸识别·免打扰(熟人 DND)
+                        icon = MATERIAL_SYMBOLS_VOLUME_MUTE;              // 人脸识别·免打扰(熟人 DND)
                         break;
                     case SscmaCamera::VISION_FACE:
-                        icon = FONT_AWESOME_USER;              // 人脸识别·普通(见人打招呼)
+                        icon = MATERIAL_SYMBOLS_PERSON;              // 人脸识别·普通(见人打招呼)
                         break;
                     case SscmaCamera::VISION_OBJECT:
-                        icon = FONT_AWESOME_MAGNIFYING_GLASS;  // 物体检测
+                        icon = MATERIAL_SYMBOLS_SEARCH;  // 物体检测
                         break;
                     case SscmaCamera::VISION_OFF:
                     default:
-                        icon = FONT_AWESOME_CIRCLE_XMARK;      // 完全不唤醒
+                        icon = MATERIAL_SYMBOLS_CANCEL;      // 完全不唤醒
                         break;
                 }
             }
@@ -430,7 +430,7 @@ private:
         ESP_LOGI(TAG, "Install panel IO");
         const esp_lcd_panel_io_spi_config_t io_config = {
             .cs_gpio_num = BSP_LCD_SPI_CS,
-            .dc_gpio_num = -1,
+            .dc_gpio_num = GPIO_NUM_NC,
             .spi_mode = 3,
             .pclk_hz = DRV_LCD_PIXEL_CLK_HZ,
             .trans_queue_depth = 2,
@@ -448,12 +448,11 @@ private:
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_NUM, &io_config, &panel_io_);
     
         ESP_LOGD(TAG, "Install LCD driver");
-        const esp_lcd_panel_dev_config_t panel_config = {
-            .reset_gpio_num = BSP_LCD_GPIO_RST, // Shared with Touch reset
-            .rgb_ele_order = DRV_LCD_RGB_ELEMENT_ORDER,
-            .bits_per_pixel = DRV_LCD_BITS_PER_PIXEL,
-            .vendor_config = &vendor_config,
-        };
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.rgb_ele_order = DRV_LCD_RGB_ELEMENT_ORDER;
+        panel_config.bits_per_pixel = DRV_LCD_BITS_PER_PIXEL;
+        panel_config.reset_gpio_num = BSP_LCD_GPIO_RST; // Shared with Touch reset
+        panel_config.vendor_config = &vendor_config;
         esp_lcd_new_panel_spd2010(panel_io_, &panel_config, &panel_);
 
         esp_lcd_panel_reset(panel_);
