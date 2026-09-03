@@ -150,6 +150,25 @@ private:
     OpusForwardCallback opus_forward_callback_;
     TaskHandle_t activation_task_handle_ = nullptr;
 
+    // MQTT/UDP uplink health probe: MQTT carries audio over raw UDP, which
+    // some networks silently drop. If voiced audio is repeatedly sent during
+    // listening but no STT ever comes back, fall back to WebSocket (TCP).
+    bool udp_probe_active_ = false;      // probing current MQTT protocol
+    bool listen_had_stt_ = false;        // an "stt" message arrived this segment
+    int listen_voice_packets_ = 0;       // packets sent while VAD detects voice
+    int udp_uplink_strikes_ = 0;         // consecutive voiced segments without STT
+
+    // The fallback is remembered per network (a network that blackholes UDP says
+    // nothing about the next one) and expires after a number of boots, so a
+    // network that got repaired is retried instead of being locked out forever.
+    // Repeated failures on the same network double the wait, up to the cap.
+    static constexpr int kWsFallbackInitialBoots = 10;
+    static constexpr int kWsFallbackMaxBoots = 200;
+
+    std::string UplinkFallbackKey();
+    bool EvaluateUplinkProbe();
+    void FallbackToWebsocket();
+
     // Event handlers
     void HandleStateChangedEvent();
     void HandleToggleChatEvent();

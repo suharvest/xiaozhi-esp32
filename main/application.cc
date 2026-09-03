@@ -12,6 +12,8 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_wifi.h>
+#include <algorithm>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -219,6 +221,10 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                if (udp_probe_active_ && GetDeviceState() == kDeviceStateListening &&
+                    audio_service_.IsVoiceDetected()) {
+                    listen_voice_packets_++;
+                }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                     break;
                 }
@@ -502,8 +508,32 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
+    bool prefer_websocket = false;
+#ifdef CONFIG_PREFER_WEBSOCKET_PROTOCOL
+    prefer_websocket = true;
+#endif
+    {
+        auto key = UplinkFallbackKey();
+        Settings settings("protocol", true);
+        // Low 16 bits: boots still to spend on WebSocket. High 16 bits: the
+        // penalty that produced them, doubled on each repeated failure.
+        int packed = settings.GetInt(key.c_str(), 0);
+        int boots_left = packed & 0xFFFF;
+        if (boots_left > 0) {
+            ESP_LOGW(TAG, "UDP uplink was unhealthy on this network; using WebSocket "
+                          "(%d more boots before MQTT is retried)", boots_left);
+            prefer_websocket = true;
+            settings.SetInt(key.c_str(), (packed & ~0xFFFF) | (boots_left - 1));
+        }
+    }
+
+    udp_probe_active_ = false;
+    if (prefer_websocket && ota_->HasWebsocketConfig()) {
+        protocol_ = std::make_unique<WebsocketProtocol>();
+    } else if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
+        // Only probe the UDP uplink if a WebSocket fallback is available
+        udp_probe_active_ = ota_->HasWebsocketConfig();
     } else if (ota_->HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
@@ -544,6 +574,7 @@ void Application::InitializeProtocol() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
+            EvaluateUplinkProbe();
         });
     });
     
@@ -579,6 +610,12 @@ void Application::InitializeProtocol() {
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
+            // Only trust an stt message as uplink proof if voiced audio was
+            // actually sent this segment: the wake word text is echoed back
+            // by the server as an stt message without any audio involved.
+            if (listen_voice_packets_ >= 10) {
+                listen_had_stt_ = true;
+            }
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
@@ -638,6 +675,77 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->Start();
+}
+
+std::string Application::UplinkFallbackKey() {
+    // Bind the WebSocket fallback to the network it was decided on: UDP being
+    // blackholed here says nothing about the next network. Boards without WiFi
+    // (cellular) keep a single global key.
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        char key[16];  // "ws_" + 12 hex digits fits the 15-char NVS key limit
+        snprintf(key, sizeof(key), "ws_%02x%02x%02x%02x%02x%02x", ap.bssid[0], ap.bssid[1],
+                 ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+        return std::string(key);
+    }
+    return "force_ws";
+}
+
+bool Application::EvaluateUplinkProbe() {
+    // Runs in the main task. Judges the listening segment that just ended.
+    if (!udp_probe_active_) {
+        return false;
+    }
+    constexpr int kMinVoicedPackets = 30;  // ~1.8s of voiced audio
+    constexpr int kMaxStrikes = 2;
+
+    if (listen_had_stt_) {
+        // The server transcribed something: the UDP uplink works. Stop probing.
+        ESP_LOGI(TAG, "UDP uplink verified healthy, probe finished");
+        udp_probe_active_ = false;
+        // This network works again: drop the penalty so a future problem starts
+        // from the short backoff rather than the escalated one.
+        Settings settings("protocol", true);
+        settings.SetInt(UplinkFallbackKey().c_str(), 0);
+    } else if (listen_voice_packets_ >= kMinVoicedPackets) {
+        udp_uplink_strikes_++;
+        ESP_LOGW(TAG, "Voiced audio sent (%d packets) but no STT came back (strike %d/%d)",
+                 listen_voice_packets_, udp_uplink_strikes_, kMaxStrikes);
+        if (udp_uplink_strikes_ >= kMaxStrikes) {
+            FallbackToWebsocket();
+            listen_voice_packets_ = 0;
+            listen_had_stt_ = false;
+            return true;
+        }
+    }
+    listen_voice_packets_ = 0;
+    listen_had_stt_ = false;
+    return false;
+}
+
+void Application::FallbackToWebsocket() {
+    // The network is silently dropping the MQTT protocol's UDP audio (common
+    // behind transparent proxies). Switch to WebSocket and remember it.
+    ESP_LOGE(TAG, "UDP uplink appears blackholed, falling back to WebSocket");
+    {
+        auto key = UplinkFallbackKey();
+        Settings settings("protocol", true);
+        int packed = settings.GetInt(key.c_str(), 0);
+        int penalty = (packed >> 16) & 0xFFFF;
+        penalty = penalty == 0 ? kWsFallbackInitialBoots
+                               : std::min(penalty * 2, kWsFallbackMaxBoots);
+        settings.SetInt(key.c_str(), (penalty << 16) | penalty);
+        ESP_LOGW(TAG, "Forcing WebSocket for the next %d boots on this network", penalty);
+    }
+    udp_probe_active_ = false;
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+    }
+    // Swapping protocols in place leaves the audio pipeline in an inconsistent
+    // state (wake word detection stopped working after an in-place swap). This
+    // happens at most once per network, so take the deterministic path: reboot
+    // and come up on WebSocket.
+    Schedule([this]() { Reboot(); });
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
@@ -904,6 +1012,11 @@ void Application::HandleStateChangedEvent() {
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
+            // A new listening segment begins: judge the previous one first. If
+            // this triggers the WebSocket fallback, the device reboots.
+            if (EvaluateUplinkProbe()) {
+                break;
+            }
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 

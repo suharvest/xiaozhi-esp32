@@ -1,5 +1,14 @@
 menu "Xiaozhi Assistant"
 
+config PREFER_WEBSOCKET_PROTOCOL
+    bool "Prefer WebSocket protocol when both MQTT and WebSocket are configured"
+    default n
+    help
+        The MQTT protocol carries audio over raw UDP, which some networks
+        (e.g. behind transparent proxies) silently drop. Enable this to pick
+        the WebSocket protocol (audio over TCP) when the OTA config provides
+        both.
+
 config OTA_URL
     string "Default OTA URL"
     default "https://api.tenclass.net/xiaozhi/ota/"
