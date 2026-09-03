@@ -133,13 +133,13 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             if (cam != nullptr) {
                 switch (cam->GetVisionWakeMode()) {
                     case SscmaCamera::VISION_FACE_DND:
-                        icon = MATERIAL_SYMBOLS_VOLUME_MUTE;              // 人脸识别·免打扰(熟人 DND)
+                        icon = MATERIAL_SYMBOLS_VOLUME_OFF;  // 人脸识别·免打扰(熟人 DND)
                         break;
                     case SscmaCamera::VISION_FACE:
-                        icon = MATERIAL_SYMBOLS_PERSON;              // 人脸识别·普通(见人打招呼)
+                        icon = MATERIAL_SYMBOLS_PERSON;      // 人脸识别·普通(见人打招呼)
                         break;
                     case SscmaCamera::VISION_OBJECT:
-                        icon = MATERIAL_SYMBOLS_SEARCH;  // 物体检测
+                        icon = MATERIAL_SYMBOLS_SEARCH;      // 物体检测
                         break;
                     case SscmaCamera::VISION_OFF:
                     default:
