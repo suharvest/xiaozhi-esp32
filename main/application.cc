@@ -1015,6 +1015,11 @@ void Application::HandleStateChangedEvent() {
             // A new listening segment begins: judge the previous one first. If
             // this triggers the WebSocket fallback, the device reboots.
             if (EvaluateUplinkProbe()) {
+                // The fallback aborts this listening segment half-way: restore
+                // the idle audio pipeline synchronously, otherwise capture keeps
+                // running with wake word detection off and the device goes deaf.
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(true);
                 break;
             }
             display->SetStatus(Lang::Strings::LISTENING);
