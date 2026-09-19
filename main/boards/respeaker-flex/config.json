@@ -24,6 +24,7 @@
                 "CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET=0",
                 "CONFIG_AUDIO_I2S_INPUT_STEREO=y",
                 "CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED=y",
+                "CONFIG_XVF3800_DUMP_CONFIG=y",
                 "CONFIG_AUDIO_INPUT_LEVEL_DEBUG=y",
                 "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
                 "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n"

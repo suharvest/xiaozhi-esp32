@@ -5,6 +5,9 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
+#if CONFIG_XVF3800_DUMP_CONFIG
+#include "xvf3800_control.h"
+#endif
 #include "mcp_server.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
@@ -66,7 +69,16 @@ private:
         } else {
             ESP_LOGW(TAG, "XVF3800 not responding at 0x%02X: %s", XVF3800_I2C_ADDR,
                      esp_err_to_name(err));
+            return;
         }
+#if CONFIG_XVF3800_DUMP_CONFIG
+        // Read-only: report what the two I2S slots carry and how the gain
+        // chain is set, instead of inferring it from signal levels.
+        static Xvf3800Control control;
+        if (control.Initialize(i2c_bus_, XVF3800_I2C_ADDR)) {
+            control.DumpConfiguration();
+        }
+#endif
     }
 
     // ReSpeaker Flex 出厂不带 OLED；探测不到就退到 NoDisplay，不影响语音链路。

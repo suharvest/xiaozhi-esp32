@@ -997,6 +997,21 @@ config AUDIO_I2S_TX_ALWAYS_ENABLED
         Keep the default: boards whose capture works without playback need no
         change. Override it per board in the board config.json.
 
+config XVF3800_DUMP_CONFIG
+    bool "Read Back The XVF3800 Configuration At Boot"
+    default n
+    help
+        Query the XVF3800 over its I2C host control interface at boot and log
+        the firmware version, the mux routing of both I2S output slots, the
+        microphone gain and the AGC and ASR-output settings.
+
+        Read only: nothing on the device is changed. It answers what the two
+        captured slots actually carry, which otherwise has to be guessed from
+        signal levels.
+
+        Only for boards that wire the XVF3800 control interface to the same
+        I2C bus as the rest of the board.
+
 config AUDIO_I2S_SLAVE_ROLE
     bool "ESP Is The I2S Slave"
     default n
