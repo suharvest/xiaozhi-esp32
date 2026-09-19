@@ -19,6 +19,11 @@ public:
     // Reads everything that tells us what the two I2S slots carry and how the
     // gain chain is set, and logs it.
     void DumpConfiguration();
+    // Writes `len` payload bytes to the (resid, cmd) parameter.
+    bool Write(uint8_t resid, uint8_t cmd, const uint8_t* payload, uint8_t len);
+    // Applies the board's tuning overrides, one parameter at a time, reading
+    // the value back before and after each write.
+    void ApplyTuning();
 
 private:
     i2c_master_dev_handle_t dev_ = nullptr;

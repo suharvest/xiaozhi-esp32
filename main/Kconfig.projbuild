@@ -1012,6 +1012,30 @@ config XVF3800_DUMP_CONFIG
         Only for boards that wire the XVF3800 control interface to the same
         I2C bus as the rest of the board.
 
+config XVF3800_APPLY_TUNING
+    bool "Write Tuning Values To The XVF3800 At Boot"
+    default n
+    depends on XVF3800_DUMP_CONFIG
+    help
+        After reading the configuration back, write one tuning parameter to
+        the device. Each write reads the old value first, writes, then reads
+        again, and logs all three, so a write that does not take effect is
+        visible.
+
+        SAVE_CONFIGURATION is never issued, so nothing reaches the device's
+        flash: a power cycle restores whatever was there before.
+
+config XVF3800_AGC_DESIRED_LEVEL_PPM
+    int "AGC Target Output Power, In Parts Per Million"
+    default 20000
+    range 1 1000000
+    depends on XVF3800_APPLY_TUNING
+    help
+        PP_AGCDESIREDLEVEL is the target power of the output signal, valid
+        from 1e-8 to 1.0. Kconfig has no floats, so it is given here in parts
+        per million: 20000 means 0.02, which is a target RMS amplitude of
+        sqrt(0.02) = 0.141, about 4635 on the int16 scale.
+
 config AUDIO_I2S_SLAVE_ROLE
     bool "ESP Is The I2S Slave"
     default n

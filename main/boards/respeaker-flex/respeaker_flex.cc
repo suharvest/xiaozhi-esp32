@@ -77,6 +77,7 @@ private:
         static Xvf3800Control control;
         if (control.Initialize(i2c_bus_, XVF3800_I2C_ADDR)) {
             control.DumpConfiguration();
+            control.ApplyTuning();
         }
 #endif
     }

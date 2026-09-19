@@ -169,6 +169,65 @@ bool Xvf3800Control::Read(uint8_t resid, uint8_t cmd, uint8_t* out, uint8_t len)
     return false;
 }
 
+bool Xvf3800Control::Write(uint8_t resid, uint8_t cmd, const uint8_t* payload, uint8_t len) {
+    if (dev_ == nullptr) {
+        return false;
+    }
+    uint8_t frame[3 + 16];
+    if (len > (int)sizeof(frame) - 3) {
+        ESP_LOGE(TAG, "write length %u too large", (unsigned)len);
+        return false;
+    }
+    frame[0] = resid;
+    frame[1] = cmd;  // no 0x80: bit 7 set would make it a read
+    frame[2] = len;
+    memcpy(frame + 3, payload, len);
+    esp_err_t err = i2c_master_transmit(dev_, frame, len + 3, kTimeoutMs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "resid=%u cmd=%u write failed: %s", (unsigned)resid, (unsigned)cmd,
+                 esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+void Xvf3800Control::ApplyTuning() {
+#if CONFIG_XVF3800_APPLY_TUNING
+    if (dev_ == nullptr) {
+        return;
+    }
+    // One parameter per boot. SAVE_CONFIGURATION (48, 9) is deliberately not
+    // issued, so this never reaches the device's flash and a power cycle puts
+    // the old value back.
+    const float target = CONFIG_XVF3800_AGC_DESIRED_LEVEL_PPM / 1000000.0f;
+    uint8_t buf[8];
+
+    if (!Read(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, buf, kAgcDesiredLevel.bytes)) {
+        ESP_LOGE(TAG, "tuning aborted: cannot read AGC_DESIRED_LEVEL first");
+        return;
+    }
+    const float before = DecodeFloat(buf);
+    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: before = %.8f", before);
+
+    uint8_t payload[4];
+    memcpy(payload, &target, sizeof(target));
+    if (!Write(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, payload, sizeof(payload))) {
+        return;
+    }
+    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: wrote  = %.8f", target);
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (!Read(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, buf, kAgcDesiredLevel.bytes)) {
+        ESP_LOGE(TAG, "cannot read AGC_DESIRED_LEVEL back");
+        return;
+    }
+    const float after = DecodeFloat(buf);
+    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: after  = %.8f %s", after,
+             after == target ? "(applied)" : "(NOT applied)");
+    ESP_LOGW(TAG, "not saved to flash, a power cycle restores %.8f", before);
+#endif
+}
+
 void Xvf3800Control::DumpConfiguration() {
     if (dev_ == nullptr) {
         return;
