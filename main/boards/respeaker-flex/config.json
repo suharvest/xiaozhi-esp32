@@ -1,9 +1,11 @@
 {
+    "type": "respeaker-flex",
     "target": "esp32s3",
     "builds": [
         {
             "name": "respeaker-flex",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_RESPEAKER_FLEX=y",
                 "CONFIG_SPIRAM_MODE_OCT=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/8m_custom_wakeword.csv\"",
