@@ -997,6 +997,25 @@ config AUDIO_I2S_TX_ALWAYS_ENABLED
         Keep the default: boards whose capture works without playback need no
         change. Override it per board in the board config.json.
 
+config AUDIO_I2S_SLAVE_ROLE
+    bool "ESP Is The I2S Slave"
+    default n
+    help
+        Allocate the duplex I2S channels with the slave role, so BCLK and WS
+        are taken from the other device instead of being generated here.
+
+        Needed when the attached codec or DSP drives the bus itself. Leaving
+        both sides as master puts a clock on the wire, so reads appear to
+        succeed, but the sampling phase has no relation to the sender's frame
+        boundary: the captured words are a bit-rotated view of the real stream
+        and the rotation is different on every power-up.
+
+        The driver turns the BCLK and WS pins into inputs by itself in this
+        role. Playback is then paced by the external clock, so a write blocks
+        for as long as that clock is missing.
+
+        Keep the default. Override it per board in the board config.json.
+
 config AUDIO_I2S_INPUT_BIT_OFFSET
     int "I2S Input Bit Offset Correction"
     default 0

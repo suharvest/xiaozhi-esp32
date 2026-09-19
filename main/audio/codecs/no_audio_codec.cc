@@ -69,7 +69,13 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
 
     i2s_chan_config_t chan_cfg = {
         .id = XIAOZHI_I2S_PORT(0),
+#if CONFIG_AUDIO_I2S_SLAVE_ROLE
+        // BCLK and WS come from the other device; the driver turns those pins
+        // into inputs on its own (i2s_std.h: "input in slave role").
+        .role = I2S_ROLE_SLAVE,
+#else
         .role = I2S_ROLE_MASTER,
+#endif
         .dma_desc_num = AUDIO_CODEC_DMA_DESC_NUM,
         .dma_frame_num = AUDIO_CODEC_DMA_FRAME_NUM,
         .auto_clear_after_cb = true,
@@ -116,6 +122,12 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
             }
         }
     };
+#if CONFIG_AUDIO_I2S_SLAVE_ROLE
+    // Slave role derives the internal MCLK as bclk * bclk_div and refuses
+    // anything below 8 (i2s_std.c, i2s_std_calculate_clock). Setting it here
+    // is what the driver would force anyway, minus the warning.
+    std_cfg.clk_cfg.bclk_div = 8;
+#endif
 #if CONFIG_AUDIO_I2S_MSB_JUSTIFIED
     // MSB/left-justified: data starts on the WS edge instead of one BCLK after.
     std_cfg.slot_cfg.bit_shift = false;
