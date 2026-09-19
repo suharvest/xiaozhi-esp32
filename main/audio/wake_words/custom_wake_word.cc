@@ -99,6 +99,21 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         ParseWakenetModelConfig();
     }
 
+#ifdef CONFIG_CUSTOM_WAKE_WORD
+    // ParseWakenetModelConfig() returns early when there is no assets partition
+    // (or no index.json in it), leaving commands_ empty. Without this fallback
+    // esp_mn_commands_update() logs "No commands available" and the model keeps
+    // its built-in default command list, so CONFIG_CUSTOM_WAKE_WORD never takes
+    // effect on the AfeAudioEngine path. Only fills in when nothing was parsed,
+    // so boards that do ship an assets index.json are unaffected.
+    if (commands_.empty()) {
+        threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        ESP_LOGW(TAG, "No commands from assets, falling back to Kconfig wake word: %s",
+                 CONFIG_CUSTOM_WAKE_WORD);
+    }
+#endif
+
     if (models_ == nullptr || models_->num == -1) {
         ESP_LOGE(TAG, "Failed to initialize wakenet model");
         return false;
