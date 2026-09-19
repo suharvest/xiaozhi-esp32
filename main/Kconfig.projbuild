@@ -960,6 +960,21 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config WAKE_WORD_IN_WIFI_CONFIGURING
+    bool "Keep Wake Word Detection Running While Wi-Fi Configuring"
+    default n
+    depends on !WAKE_WORD_DISABLED
+    help
+        By default the device turns voice processing and wake word detection off
+        while it sits in Wi-Fi configuration mode (AP provisioning), so it does
+        not answer speech before it is set up.
+
+        Wake word detection is pure on-device inference and needs no network.
+        Enabling this keeps it running in that state, mirroring the Idle state
+        (uplink off, wake word on), so the wake word can be validated and
+        troubleshooted on a device that is not provisioned yet or whose Wi-Fi
+        connection failed.
+
 config VAD_BARGE_IN
     bool "Interrupt Speaking on Voice Activity"
     default y

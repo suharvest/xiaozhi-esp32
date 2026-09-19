@@ -1141,8 +1141,16 @@ void Application::HandleStateChangedEvent() {
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
+#if CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING
+            // The wake word is pure on-device inference and needs no network, so
+            // mirror the Idle state here (uplink off, wake word on) instead of
+            // going deaf. Lets the wake word be validated without provisioning.
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(true);
+#else
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
+#endif
             break;
         default:
             // Do nothing
