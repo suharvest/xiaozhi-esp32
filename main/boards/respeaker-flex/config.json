@@ -20,6 +20,7 @@
                 "CONFIG_SKIP_WIFI_PROVISIONING=y",
                 "CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING=y",
                 "CONFIG_AUDIO_I2S_INPUT_SHIFT=16",
+                "CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET=4",
                 "CONFIG_AUDIO_I2S_INPUT_STEREO=y",
                 "CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED=y",
                 "CONFIG_AUDIO_INPUT_LEVEL_DEBUG=y",

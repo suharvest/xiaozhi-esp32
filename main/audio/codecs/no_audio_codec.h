@@ -15,6 +15,8 @@ protected:
     bool input_stereo_ = false;
     // TX is running only to provide the shared BCLK/WS, with no playback.
     bool tx_enabled_for_clock_ = false;
+    // Last captured word, carried into the next read by the bit-offset fix.
+    uint32_t bit_carry_ = 0;
 
     virtual int Write(const int16_t* data, int samples) override;
     virtual int Read(int16_t* dest, int samples) override;

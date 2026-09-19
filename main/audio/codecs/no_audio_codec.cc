@@ -116,6 +116,18 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
             }
         }
     };
+#if CONFIG_AUDIO_I2S_MSB_JUSTIFIED
+    // MSB/left-justified: data starts on the WS edge instead of one BCLK after.
+    std_cfg.slot_cfg.bit_shift = false;
+#endif
+#ifdef I2S_HW_VERSION_2
+#if !CONFIG_AUDIO_I2S_LEFT_ALIGN
+    std_cfg.slot_cfg.left_align = false;
+#endif
+#endif
+#if CONFIG_AUDIO_I2S_WS_WIDTH != 32
+    std_cfg.slot_cfg.ws_width = CONFIG_AUDIO_I2S_WS_WIDTH;
+#endif
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
 #if CONFIG_AUDIO_I2S_INPUT_STEREO
     // Only RX switches to stereo. The line format is identical either way
@@ -346,6 +358,23 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     }
 
     const int words_read = bytes_read / sizeof(int32_t);
+#if CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET > 0
+    // The payload's sign bit sits CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET bits below
+    // the top of each captured word, so each word carries the tail of one
+    // sample and the head of the next. Re-slice the stream that many bits
+    // later. The word preceding this buffer arrives from the previous read,
+    // which costs one slot of delay but keeps the phase stable.
+    {
+        constexpr int kOff = CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET;
+        uint32_t prev = bit_carry_;
+        for (int i = 0; i < words_read; i++) {
+            const uint32_t cur = static_cast<uint32_t>(bit32_buffer[i]);
+            bit32_buffer[i] = static_cast<int32_t>((prev << kOff) | (cur >> (32 - kOff)));
+            prev = cur;
+        }
+        bit_carry_ = prev;
+    }
+#endif
     // Integer division drops a trailing half frame rather than desyncing.
     const int frames = words_read / words_per_frame;
     for (int i = 0; i < frames; i++) {

@@ -997,6 +997,47 @@ config AUDIO_I2S_TX_ALWAYS_ENABLED
         Keep the default: boards whose capture works without playback need no
         change. Override it per board in the board config.json.
 
+config AUDIO_I2S_INPUT_BIT_OFFSET
+    int "I2S Input Bit Offset Correction"
+    default 0
+    range 0 31
+    help
+        Re-slice the captured I2S bit stream this many bits later before it is
+        converted to int16. 0 leaves the stream untouched.
+
+        Use it when the payload's sign bit does not sit at the top of each
+        captured 32-bit word, which shows up as raw words whose run of sign
+        bits starts a few bits below bit 31 and whose full-scale ratios land on
+        neat binary fractions. The correction is causal: it carries one word
+        between reads, so the two slots come out one slot later than they went
+        in, which swaps which slot appears first.
+
+        Keep the default. Override it per board in the board config.json.
+
+config AUDIO_I2S_MSB_JUSTIFIED
+    bool "I2S Input/Output Is MSB (Left) Justified"
+    default n
+    help
+        Clear the driver's bit_shift flag, so data starts on the word select
+        edge (MSB/left-justified) instead of one bit clock after it (Philips).
+        A one bit clock difference; nothing else changes.
+
+config AUDIO_I2S_LEFT_ALIGN
+    bool "I2S Left Align The Data In The Slot"
+    default y
+    help
+        The driver's left_align flag, which only exists on I2S hardware
+        version 2. Leave it on unless the source right-aligns its payload
+        inside the slot.
+
+config AUDIO_I2S_WS_WIDTH
+    int "I2S Word Select Width In Bit Clocks"
+    default 32
+    range 8 32
+    help
+        How many bit clocks the word select stays on each side of the frame.
+        32 matches a 32-bit slot.
+
 config AUDIO_I2S_INPUT_STEREO
     bool "Read Both I2S Input Slots (Stereo Capture)"
     default n
