@@ -1,10 +1,11 @@
 # ESP-IDF Partition Table
-# 8MB flash, MultiNet custom wake word. The model partition is enlarged to hold
-# the MultiNet Chinese model (mn7_cn, ~2.56MB); the two OTA slots shrink to fit.
+# 8MB flash, MultiNet custom wake word.
+# The model partition holds srmodels.bin with the MultiNet Chinese model
+# (mn7_cn, 2,681,351 bytes); the two OTA slots take what is left.
 # Name,   Type, SubType, Offset,  Size, Flags
 nvs,      data, nvs,     0x9000,    0x4000,
 otadata,  data, ota,     0xd000,    0x2000,
 phy_init, data, phy,     0xf000,    0x1000,
-model,    data, spiffs,  0x10000,   0x2C0000,
-ota_0,    app,  ota_0,   0x2D0000,  0x290000,
-ota_1,    app,  ota_1,   0x560000,  0x290000,
+model,    data, spiffs,  0x10000,   0x290000,
+ota_0,    app,  ota_0,   0x2A0000,  0x2B0000,
+ota_1,    app,  ota_1,   0x550000,  0x2B0000,
