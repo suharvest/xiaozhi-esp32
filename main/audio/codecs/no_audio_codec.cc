@@ -1,6 +1,8 @@
 #include "no_audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_err.h>
+#include <esp_timer.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -125,6 +127,19 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
 #endif
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
     ESP_LOGI(TAG, "Duplex channels created (input_stereo=%d)", (int)input_stereo_);
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+    // Which channel actually owns the clock is not exposed directly, but the
+    // reported BCLK tells whether a channel computed its own clock or not.
+    i2s_chan_info_t info = {};
+    if (i2s_channel_get_info(tx_handle_, &info) == ESP_OK) {
+        ESP_LOGW(TAG, "i2s tx info: bclk=%u Hz mclk=%u Hz sclk=%u Hz",
+                 (unsigned)info.bclk_hz, (unsigned)info.mclk_hz, (unsigned)info.sclk_hz);
+    }
+    if (i2s_channel_get_info(rx_handle_, &info) == ESP_OK) {
+        ESP_LOGW(TAG, "i2s rx info: bclk=%u Hz mclk=%u Hz sclk=%u Hz",
+                 (unsigned)info.bclk_hz, (unsigned)info.mclk_hz, (unsigned)info.sclk_hz);
+    }
+#endif
 }
 
 
@@ -299,10 +314,35 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     // one 32-bit slot word in mono capture, two (left then right) in stereo.
     const int words_per_frame = input_stereo_ ? 2 : 1;
     std::vector<int32_t> bit32_buffer(static_cast<size_t>(samples) * words_per_frame);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(),
-                         bit32_buffer.size() * sizeof(int32_t), &bytes_read,
-                         kReadTimeoutMs) != ESP_OK) {
+    const size_t want_bytes = bit32_buffer.size() * sizeof(int32_t);
+    bytes_read = 0;
+    esp_err_t err = i2s_channel_read(rx_handle_, bit32_buffer.data(), want_bytes,
+                                     &bytes_read, kReadTimeoutMs);
+    // A silent `return 0` here hides the difference between "microphone is
+    // quiet" and "nothing is arriving at all". Rate limited to one line per
+    // second so a permanently failing read cannot flood the log.
+    static int64_t last_read_log_us = 0;
+    static uint32_t read_fail_count = 0;
+    static uint32_t short_read_count = 0;
+    if (err != ESP_OK) {
+        read_fail_count++;
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_read_log_us >= 1000000) {
+            last_read_log_us = now_us;
+            ESP_LOGE(TAG, "i2s_channel_read failed: %s (want %u bytes, got %u, %u failures)",
+                     esp_err_to_name(err), (unsigned)want_bytes, (unsigned)bytes_read,
+                     (unsigned)read_fail_count);
+        }
         return 0;
+    }
+    if (bytes_read < want_bytes) {
+        short_read_count++;
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_read_log_us >= 1000000) {
+            last_read_log_us = now_us;
+            ESP_LOGW(TAG, "i2s_channel_read short: want %u bytes, got %u (%u short reads)",
+                     (unsigned)want_bytes, (unsigned)bytes_read, (unsigned)short_read_count);
+        }
     }
 
     const int words_read = bytes_read / sizeof(int32_t);
