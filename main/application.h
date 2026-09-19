@@ -68,6 +68,22 @@ public:
 
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+
+    /**
+     * Local interception switches. Which side handles the wake word and which
+     * side handles barge-in has to be selectable at run time, so these are
+     * flags rather than build options. The Kconfig entries only seed them.
+     */
+    void SetVadBargeInEnabled(bool enabled) { vad_barge_in_enabled_ = enabled; }
+    bool IsVadBargeInEnabled() const { return vad_barge_in_enabled_; }
+
+    /**
+     * Keep producing uplink audio without waiting for a wake word. The flag is
+     * plumbed through but nothing acts on it yet: the transport that would
+     * consume the stream does not exist.
+     */
+    void SetContinuousUplinkEnabled(bool enabled) { continuous_uplink_enabled_ = enabled; }
+    bool IsContinuousUplinkEnabled() const { return continuous_uplink_enabled_; }
     
     /**
      * Request state transition
@@ -149,6 +165,12 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     int64_t speaking_started_us_ = 0;  // esp_timer time when playback (Speaking) started
+#ifdef CONFIG_VAD_BARGE_IN
+    std::atomic<bool> vad_barge_in_enabled_{true};
+#else
+    std::atomic<bool> vad_barge_in_enabled_{false};
+#endif
+    std::atomic<bool> continuous_uplink_enabled_{false};
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)

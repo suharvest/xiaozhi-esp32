@@ -21,6 +21,13 @@
 
 #define TAG "Application"
 
+// Seeded from Kconfig; the barge-in switch itself is a run-time flag.
+#ifdef CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS
+constexpr int kVadBargeInMinSpeakingMs = CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS;
+#else
+constexpr int kVadBargeInMinSpeakingMs = 500;
+#endif
+
 Application::Application() {
     event_group_ = xEventGroupCreate();
 
@@ -253,14 +260,14 @@ void Application::Run() {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
             }
-#ifdef CONFIG_VAD_BARGE_IN
-            else if (vad_state == kDeviceStateSpeaking && !aborted_ && IsVoiceDetected()) {
+            else if (vad_barge_in_enabled_ && vad_state == kDeviceStateSpeaking &&
+                     !aborted_ && IsVoiceDetected()) {
                 // Barge-in: the user started talking over the TTS playback. The AEC
                 // needs time to converge, so ignore voice activity reported during the
                 // first CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS of playback, otherwise our
                 // own echo aborts the reply immediately.
                 int64_t elapsed_ms = (esp_timer_get_time() - speaking_started_us_) / 1000;
-                if (elapsed_ms >= CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS) {
+                if (elapsed_ms >= kVadBargeInMinSpeakingMs) {
                     ESP_LOGI(TAG, "Voice detected after %lldms of speaking, barge-in",
                              elapsed_ms);
                     AbortSpeaking(kAbortReasonVoiceDetected);
@@ -269,7 +276,6 @@ void Application::Run() {
                         ;
                 }
             }
-#endif
         }
 
         if (bits & MAIN_EVENT_SCHEDULE) {
