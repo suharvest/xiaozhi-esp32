@@ -960,6 +960,23 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config SKIP_WIFI_PROVISIONING
+    bool "Skip Wi-Fi Provisioning At Boot"
+    default n
+    help
+        Do not run the Wi-Fi bring-up at boot. The board's StartNetwork() goes
+        straight to the idle state instead, so WifiManager is never initialised:
+        no station scan, no configuration access point, no DNS or web server,
+        and no looping setup prompt.
+
+        For devices that reach their host over another transport, such as USB,
+        where there is nothing to provision and the provisioning prompt only
+        gets in the way of on-device audio testing.
+
+        Nothing reports a network connection afterwards, so activation and the
+        protocol client never start. Wake word detection still runs, and the
+        protocol errors that follow a wake word are left in place on purpose.
+
 config AUDIO_I2S_INPUT_STEREO
     bool "Read Both I2S Input Slots (Stereo Capture)"
     default n

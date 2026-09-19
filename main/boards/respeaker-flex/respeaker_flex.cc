@@ -136,6 +136,23 @@ public:
         InitializeButtons();
     }
 
+#if CONFIG_SKIP_WIFI_PROVISIONING
+    // This board talks to its host over USB, so there is nothing to provision.
+    // Not calling the base StartNetwork() leaves WifiManager uninitialised, so
+    // no station scan, no config AP, no DNS or web server, and no looping setup
+    // prompt. All WifiManager getters guard on their internal handles, so the
+    // status bar simply shows "no network".
+    virtual void StartNetwork() override {
+        ESP_LOGW(TAG, "Wi-Fi provisioning skipped, going straight to idle");
+        auto& app = Application::GetInstance();
+        // device_state_machine.cc has no Starting -> Idle edge; Activating is a
+        // legal step out of Starting and has no handler of its own, so this
+        // lands in Idle with a single state-changed event.
+        app.SetDeviceState(kDeviceStateActivating);
+        app.SetDeviceState(kDeviceStateIdle);
+    }
+#endif
+
     virtual Led* GetLed() override {
         static SingleLed led(BUILTIN_LED_GPIO);
         return &led;
