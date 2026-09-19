@@ -960,6 +960,23 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config AUDIO_I2S_INPUT_SHIFT
+    int "I2S Input Right-Shift From 32-bit Slot To int16"
+    default 12
+    range 0 24
+    help
+        How far NoAudioCodec::Read() shifts each 32-bit I2S slot word right
+        before clamping it to int16.
+
+        16 is the neutral 32-to-16 conversion. The default 12 keeps 4 extra
+        bits, i.e. 16x gain, which is what 24-bit left-justified MEMS
+        microphones (INMP441, ICS-43434 and friends) need to reach usable
+        levels. Sources that already deliver line-level audio, such as a DSP
+        doing its own AGC, want 16 instead; leaving it at 12 saturates them.
+
+        Do not change the default: boards relying on the 16x gain would go
+        quiet. Override it per board in the board config.json.
+
 config AUDIO_INPUT_LEVEL_DEBUG
     bool "Log Microphone Input Level (Debug)"
     default n

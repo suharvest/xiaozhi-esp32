@@ -249,18 +249,23 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
 
     samples = bytes_read / sizeof(int32_t);
     for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> 12;
+        int32_t value = bit32_buffer[i] >> CONFIG_AUDIO_I2S_INPUT_SHIFT;
         dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
     }
 #if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
     // One-shot: the raw 32-bit slot words next to the int16 they turn into.
     // Tells where the payload bits actually sit inside the slot.
     static bool raw_dumped = false;
-    if (!raw_dumped && samples >= 8) {
+    if (!raw_dumped && samples >= 32) {
         raw_dumped = true;
-        for (int i = 0; i < 8; i++) {
-            ESP_LOGW(TAG, "raw i2s[%d] = 0x%08x  (>>12) -> %d", i,
-                     (unsigned)bit32_buffer[i], (int)dest[i]);
+        ESP_LOGW(TAG, "raw i2s dump, shift=%d (index 0 may be a start-up artifact)",
+                 CONFIG_AUDIO_I2S_INPUT_SHIFT);
+        for (int i = 0; i < 32; i++) {
+            // Ratio of the raw word to 32-bit full scale, to show the shape of
+            // the distribution rather than just the post-shift clamped value.
+            double ratio = (double)bit32_buffer[i] / 2147483648.0;
+            ESP_LOGW(TAG, "raw i2s[%2d] = 0x%08x  fs=%+.4f  -> %d", i,
+                     (unsigned)bit32_buffer[i], ratio, (int)dest[i]);
         }
     }
 #endif
