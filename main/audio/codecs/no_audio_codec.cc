@@ -7,6 +7,50 @@
 
 #define TAG "NoAudioCodec"
 
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+// Per-slot statistics over a ~1s window, so the two slots of a stereo frame
+// can be compared directly. Values are shifted to the int16 scale first so the
+// numbers line up with what the upper layers see.
+static void LogSlotLevels(const int32_t* buf, int frames, int words_per_frame, int sample_rate) {
+    static uint64_t sum_sq[2] = {0, 0};
+    static int32_t peak[2] = {0, 0};
+    static int32_t vmin[2] = {INT16_MAX, INT16_MAX};
+    static int32_t vmax[2] = {INT16_MIN, INT16_MIN};
+    static uint32_t count = 0;
+    static uint32_t window = 0;
+
+    for (int i = 0; i < frames; i++) {
+        for (int c = 0; c < words_per_frame; c++) {
+            int32_t v = buf[i * words_per_frame + c] >> CONFIG_AUDIO_I2S_INPUT_SHIFT;
+            if (v > INT16_MAX) v = INT16_MAX;
+            if (v < -INT16_MAX) v = -INT16_MAX;
+            int32_t a = v < 0 ? -v : v;
+            if (a > peak[c]) peak[c] = a;
+            if (v < vmin[c]) vmin[c] = v;
+            if (v > vmax[c]) vmax[c] = v;
+            sum_sq[c] += (uint64_t)(v * v);
+        }
+    }
+    count += frames;
+    if (count < (uint32_t)sample_rate) {
+        return;
+    }
+
+    ++window;
+    for (int c = 0; c < words_per_frame; c++) {
+        uint32_t rms = (uint32_t)sqrt((double)sum_sq[c] / (double)count);
+        ESP_LOGW(TAG, "slot level #%u ch%d: rms=%u peak=%d min=%d max=%d n=%u",
+                 (unsigned)window, c, (unsigned)rms, (int)peak[c], (int)vmin[c],
+                 (int)vmax[c], (unsigned)count);
+        sum_sq[c] = 0;
+        peak[c] = 0;
+        vmin[c] = INT16_MAX;
+        vmax[c] = INT16_MIN;
+    }
+    count = 0;
+}
+#endif
+
 NoAudioCodec::~NoAudioCodec() {
     if (rx_handle_ != nullptr) {
         ESP_ERROR_CHECK(i2s_channel_disable(rx_handle_));
@@ -71,8 +115,16 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
         }
     };
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
+#if CONFIG_AUDIO_I2S_INPUT_STEREO
+    // Only RX switches to stereo. The line format is identical either way
+    // (two 32-bit slots per frame); mono RX simply discards the right slot.
+    // TX keeps the mono config so Write() needs no change.
+    std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+    input_stereo_ = true;
+#endif
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
-    ESP_LOGI(TAG, "Duplex channels created");
+    ESP_LOGI(TAG, "Duplex channels created (input_stereo=%d)", (int)input_stereo_);
 }
 
 
@@ -242,34 +294,49 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     size_t bytes_read;
     constexpr uint32_t kReadTimeoutMs = 200;
 
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
+    // `samples` is how many int16 values the caller wants in `dest`. The codec
+    // reports one input channel, so that is also the frame count. One frame is
+    // one 32-bit slot word in mono capture, two (left then right) in stereo.
+    const int words_per_frame = input_stereo_ ? 2 : 1;
+    std::vector<int32_t> bit32_buffer(static_cast<size_t>(samples) * words_per_frame);
+    if (i2s_channel_read(rx_handle_, bit32_buffer.data(),
+                         bit32_buffer.size() * sizeof(int32_t), &bytes_read,
+                         kReadTimeoutMs) != ESP_OK) {
         return 0;
     }
 
-    samples = bytes_read / sizeof(int32_t);
-    for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> CONFIG_AUDIO_I2S_INPUT_SHIFT;
+    const int words_read = bytes_read / sizeof(int32_t);
+    // Integer division drops a trailing half frame rather than desyncing.
+    const int frames = words_read / words_per_frame;
+    for (int i = 0; i < frames; i++) {
+        // In stereo only the first slot of the frame goes upstream.
+        int32_t value = bit32_buffer[i * words_per_frame] >> CONFIG_AUDIO_I2S_INPUT_SHIFT;
         dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
     }
 #if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
-    // One-shot: the raw 32-bit slot words next to the int16 they turn into.
-    // Tells where the payload bits actually sit inside the slot.
+    // One-shot: the raw slot words next to the int16 they turn into. Tells
+    // where the payload bits sit and, in stereo, what each slot carries.
     static bool raw_dumped = false;
-    if (!raw_dumped && samples >= 32) {
+    if (!raw_dumped && frames >= 32) {
         raw_dumped = true;
-        ESP_LOGW(TAG, "raw i2s dump, shift=%d (index 0 may be a start-up artifact)",
-                 CONFIG_AUDIO_I2S_INPUT_SHIFT);
+        ESP_LOGW(TAG, "raw i2s dump, shift=%d stereo=%d (index 0 may be a start-up artifact)",
+                 CONFIG_AUDIO_I2S_INPUT_SHIFT, (int)input_stereo_);
         for (int i = 0; i < 32; i++) {
-            // Ratio of the raw word to 32-bit full scale, to show the shape of
-            // the distribution rather than just the post-shift clamped value.
-            double ratio = (double)bit32_buffer[i] / 2147483648.0;
-            ESP_LOGW(TAG, "raw i2s[%2d] = 0x%08x  fs=%+.4f  -> %d", i,
-                     (unsigned)bit32_buffer[i], ratio, (int)dest[i]);
+            const int32_t w0 = bit32_buffer[i * words_per_frame];
+            if (words_per_frame == 2) {
+                const int32_t w1 = bit32_buffer[i * words_per_frame + 1];
+                ESP_LOGW(TAG, "raw i2s[%2d] ch0=0x%08x fs=%+.4f  ch1=0x%08x fs=%+.4f", i,
+                         (unsigned)w0, (double)w0 / 2147483648.0,
+                         (unsigned)w1, (double)w1 / 2147483648.0);
+            } else {
+                ESP_LOGW(TAG, "raw i2s[%2d] = 0x%08x  fs=%+.4f  -> %d", i,
+                         (unsigned)w0, (double)w0 / 2147483648.0, (int)dest[i]);
+            }
         }
     }
+    LogSlotLevels(bit32_buffer.data(), frames, words_per_frame, input_sample_rate_);
 #endif
-    return samples;
+    return frames;
 }
 
 void NoAudioCodec::EnableInput(bool enable) {

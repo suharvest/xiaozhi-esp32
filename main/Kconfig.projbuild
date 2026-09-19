@@ -960,6 +960,24 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config AUDIO_I2S_INPUT_STEREO
+    bool "Read Both I2S Input Slots (Stereo Capture)"
+    default n
+    help
+        Capture both 32-bit slots of each I2S frame instead of only the left
+        one, and hand the first slot upstream. The wire format does not change
+        (two 32-bit slots per frame either way); only the RX side of the driver
+        keeps both slots rather than discarding the right one. TX is untouched.
+
+        Needed when the source puts different signals on the two slots, such as
+        a DSP that sends processed microphone audio on one and an echo
+        cancellation reference on the other, and the upstream mono path must
+        pick the right one. With AUDIO_INPUT_LEVEL_DEBUG on, both slots get
+        their own level statistics so they can be told apart.
+
+        Keep the default: boards whose microphone sits on the left slot need no
+        change. Override it per board in the board config.json.
+
 config AUDIO_I2S_INPUT_SHIFT
     int "I2S Input Right-Shift From 32-bit Slot To int16"
     default 12

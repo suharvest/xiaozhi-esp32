@@ -10,6 +10,9 @@
 class NoAudioCodec : public AudioCodec {
 protected:
     std::mutex data_if_mutex_;
+    // Two 32-bit slots per frame are kept on the RX side instead of one.
+    // Upstream still receives mono, so input_channels() stays 1.
+    bool input_stereo_ = false;
 
     virtual int Write(const int16_t* data, int samples) override;
     virtual int Read(int16_t* dest, int samples) override;
