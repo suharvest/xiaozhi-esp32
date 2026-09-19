@@ -11,7 +11,12 @@ namespace {
 
 constexpr uint8_t kStatusSuccess = 0;
 constexpr uint8_t kStatusRetry = 64;
-constexpr int kMaxRetries = 8;
+// xvf_host.py retries a status-64 read up to 100 times with a 10 ms gap
+// (python_control/xvf_host.py, the SERVICER_COMMAND_RETRY loop). The first
+// attempt here used 8 tries at 5 ms and gave up on two parameters that the
+// device simply had not finished serving.
+constexpr int kMaxRetries = 100;
+constexpr uint32_t kRetryDelayMs = 10;
 constexpr uint32_t kTimeoutMs = 200;
 
 // Resource / command ids, from the parameter table in reSpeaker's
@@ -34,6 +39,18 @@ constexpr Param kAgcDesiredLevel = {"PP_AGCDESIREDLEVEL", 17, 12, 4};
 constexpr Param kAgcGain         = {"PP_AGCGAIN",         17, 13, 4};
 constexpr Param kAsrOutOnOff     = {"AEC_ASROUTONOFF",    33, 35, 4};
 constexpr Param kAsrOutGain      = {"AEC_ASROUTGAIN",     33, 36, 4};
+// Decides which beams category 8 ("user chosen channels") actually carries,
+// i.e. what our first slot really is.
+constexpr Param kSelectedChannels = {"AUDIO_MGR_SELECTED_CHANNELS", 35, 12, 2};
+// A limiter on the output caps the power the AGC is allowed to reach, so it
+// can explain an AGC that never meets its own target level.
+constexpr Param kLimitOnOff      = {"PP_LIMITONOFF",      17, 19, 4};
+constexpr Param kLimitPLimit     = {"PP_LIMITPLIMIT",     17, 20, 4};
+// Noise suppression gain floors: set too low they eat quiet speech, which
+// shows up as a wake word that only occasionally passes threshold.
+constexpr Param kMinNs           = {"PP_MIN_NS",          17, 21, 4};
+constexpr Param kMinNn           = {"PP_MIN_NN",          17, 22, 4};
+constexpr Param kEchoOnOff       = {"PP_ECHOONOFF",       17, 23, 4};
 
 // Table 26 "Audio manager mux options" of the XVF3800 user guide.
 const char* CategoryName(uint8_t category) {
@@ -140,10 +157,15 @@ bool Xvf3800Control::Read(uint8_t resid, uint8_t cmd, uint8_t* out, uint8_t len)
                      (unsigned)cmd, (unsigned)response[0], hex);
             return false;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
     }
-    ESP_LOGE(TAG, "resid=%u cmd=%u still retrying after %d attempts", (unsigned)resid,
-             (unsigned)cmd, kMaxRetries);
+    char hex[3 * 16 + 1] = {0};
+    int off = 0;
+    for (int i = 0; i < len + 1 && off + 3 < (int)sizeof(hex); i++) {
+        off += snprintf(hex + off, sizeof(hex) - off, "%02x ", response[i]);
+    }
+    ESP_LOGE(TAG, "resid=%u cmd=%u still status 64 after %d attempts, last raw: %s",
+             (unsigned)resid, (unsigned)cmd, kMaxRetries, hex);
     return false;
 }
 
@@ -189,4 +211,23 @@ void Xvf3800Control::DumpConfiguration() {
     if (Read(kAsrOutGain.resid, kAsrOutGain.cmd, buf, kAsrOutGain.bytes)) {
         ESP_LOGW(TAG, "ASR_OUT_GAIN = %.4f", DecodeFloat(buf));
     }
+    if (Read(kSelectedChannels.resid, kSelectedChannels.cmd, buf, kSelectedChannels.bytes)) {
+        ESP_LOGW(TAG, "SELECTED_CHANNELS = (%u, %u)  (beams feeding category 8)", buf[0], buf[1]);
+    }
+    if (Read(kLimitOnOff.resid, kLimitOnOff.cmd, buf, kLimitOnOff.bytes)) {
+        ESP_LOGW(TAG, "LIMIT = %s", DecodeInt32(buf) ? "on" : "off");
+    }
+    if (Read(kLimitPLimit.resid, kLimitPLimit.cmd, buf, kLimitPLimit.bytes)) {
+        ESP_LOGW(TAG, "LIMIT_PLIMIT = %.8f (power)", DecodeFloat(buf));
+    }
+    if (Read(kMinNs.resid, kMinNs.cmd, buf, kMinNs.bytes)) {
+        ESP_LOGW(TAG, "MIN_NS = %.4f (stationary NS gain floor)", DecodeFloat(buf));
+    }
+    if (Read(kMinNn.resid, kMinNn.cmd, buf, kMinNn.bytes)) {
+        ESP_LOGW(TAG, "MIN_NN = %.4f (non-stationary NS gain floor)", DecodeFloat(buf));
+    }
+    if (Read(kEchoOnOff.resid, kEchoOnOff.cmd, buf, kEchoOnOff.bytes)) {
+        ESP_LOGW(TAG, "ECHO_SUPPRESSION = %s", DecodeInt32(buf) ? "on" : "off");
+    }
+    ESP_LOGW(TAG, "---- end of XVF3800 baseline ----");
 }
