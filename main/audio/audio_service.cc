@@ -1,6 +1,10 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <cstring>
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+#include <cmath>
+#include <cstdio>
+#endif
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
     (esp_ae_rate_cvt_cfg_t)                                  \
@@ -230,8 +234,62 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
     audio_debugger_->Feed(data);
 #endif
 
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+    LogInputLevel(data);
+#endif
+
     return true;
 }
+
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+// Accumulate over a ~1s window and print once, so the audio input task is not
+// slowed down by logging every frame.
+void AudioService::LogInputLevel(const std::vector<int16_t>& data) {
+    static uint64_t sum_sq = 0;
+    static uint32_t count = 0;
+    static uint32_t window = 0;
+    static int32_t peak = 0;
+    static int32_t vmin = INT16_MAX;
+    static int32_t vmax = INT16_MIN;
+    static bool dumped = false;
+
+    if (data.empty()) {
+        return;
+    }
+    if (!dumped) {
+        dumped = true;
+        char buf[8 * 5 + 1] = {0};
+        int off = 0;
+        for (size_t i = 0; i < 8 && i < data.size(); i++) {
+            off += snprintf(buf + off, sizeof(buf) - off, "%04x ", (uint16_t)data[i]);
+        }
+        ESP_LOGW(TAG, "input first8 int16: %s(channels=%d, rate=%d)", buf,
+                 codec_->input_channels(), codec_->input_sample_rate());
+    }
+    for (int16_t v : data) {
+        int32_t s32 = v;
+        int32_t a = s32 < 0 ? -s32 : s32;
+        if (a > peak) peak = a;
+        if (s32 < vmin) vmin = s32;
+        if (s32 > vmax) vmax = s32;
+        sum_sq += (uint64_t)(s32 * s32);
+    }
+    count += data.size();
+
+    uint32_t window_samples = (uint32_t)codec_->input_sample_rate() * codec_->input_channels();
+    if (count >= window_samples) {
+        uint32_t rms = (uint32_t)sqrt((double)sum_sq / (double)count);
+        ESP_LOGW(TAG, "input level #%u: rms=%u peak=%d min=%d max=%d n=%u",
+                 (unsigned)++window, (unsigned)rms, (int)peak, (int)vmin, (int)vmax,
+                 (unsigned)count);
+        sum_sq = 0;
+        count = 0;
+        peak = 0;
+        vmin = INT16_MAX;
+        vmax = INT16_MIN;
+    }
+}
+#endif
 
 void AudioService::AudioInputTask() {
     constexpr EventBits_t kAudioInputActiveBits = AS_EVENT_AUDIO_TESTING_RUNNING |

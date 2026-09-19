@@ -18,6 +18,7 @@
                 "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"你好小智\"",
                 "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
                 "CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING=y",
+                "CONFIG_AUDIO_INPUT_LEVEL_DEBUG=y",
                 "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
                 "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n"
             ]

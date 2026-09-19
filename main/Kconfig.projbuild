@@ -960,6 +960,19 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config AUDIO_INPUT_LEVEL_DEBUG
+    bool "Log Microphone Input Level (Debug)"
+    default n
+    help
+        Print periodic statistics (about once per second) of the PCM read from
+        the microphone before it reaches the audio engine: RMS, peak, min, max
+        and sample count, plus a one-shot dump of the first raw I2S words and
+        the first int16 samples.
+
+        Use it to tell "nobody is talking" apart from "no audio is arriving",
+        and to check that the 16 bits taken out of a 32-bit I2S slot are the
+        right ones. Debug aid only, keep it off in production.
+
 config WAKE_WORD_IN_WIFI_CONFIGURING
     bool "Keep Wake Word Detection Running While Wi-Fi Configuring"
     default n

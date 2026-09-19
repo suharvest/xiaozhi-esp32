@@ -252,6 +252,18 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
         int32_t value = bit32_buffer[i] >> 12;
         dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
     }
+#if CONFIG_AUDIO_INPUT_LEVEL_DEBUG
+    // One-shot: the raw 32-bit slot words next to the int16 they turn into.
+    // Tells where the payload bits actually sit inside the slot.
+    static bool raw_dumped = false;
+    if (!raw_dumped && samples >= 8) {
+        raw_dumped = true;
+        for (int i = 0; i < 8; i++) {
+            ESP_LOGW(TAG, "raw i2s[%d] = 0x%08x  (>>12) -> %d", i,
+                     (unsigned)bit32_buffer[i], (int)dest[i]);
+        }
+    }
+#endif
     return samples;
 }
 
