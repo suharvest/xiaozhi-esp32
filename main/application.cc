@@ -248,10 +248,28 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
-            if (GetDeviceState() == kDeviceStateListening) {
+            auto vad_state = GetDeviceState();
+            if (vad_state == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
             }
+#ifdef CONFIG_VAD_BARGE_IN
+            else if (vad_state == kDeviceStateSpeaking && !aborted_ && IsVoiceDetected()) {
+                // Barge-in: the user started talking over the TTS playback. The AEC
+                // needs time to converge, so ignore voice activity reported during the
+                // first CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS of playback, otherwise our
+                // own echo aborts the reply immediately.
+                int64_t elapsed_ms = (esp_timer_get_time() - speaking_started_us_) / 1000;
+                if (elapsed_ms >= CONFIG_VAD_BARGE_IN_MIN_SPEAKING_MS) {
+                    ESP_LOGI(TAG, "Voice detected after %lldms of speaking, barge-in",
+                             elapsed_ms);
+                    AbortSpeaking(kAbortReasonVoiceDetected);
+                    // Clear send queue to avoid sending residues to server
+                    while (audio_service_.PopPacketFromSendQueue())
+                        ;
+                }
+            }
+#endif
         }
 
         if (bits & MAIN_EVENT_SCHEDULE) {
@@ -1113,6 +1131,7 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
+            speaking_started_us_ = esp_timer_get_time();
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);

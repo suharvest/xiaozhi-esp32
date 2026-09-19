@@ -960,6 +960,25 @@ config WAKE_WORD_DETECTION_IN_LISTENING
         which allows interrupting the current conversation.
         When disabled (default), wake word detection is turned off during listening.
 
+config VAD_BARGE_IN
+    bool "Interrupt Speaking on Voice Activity"
+    default y
+    help
+        Abort the current TTS playback when the AFE VAD reports human speech
+        while the device is speaking, without waiting for the wake word.
+        Only effective while voice processing keeps running during playback
+        (real-time listening mode, i.e. AEC enabled).
+
+config VAD_BARGE_IN_MIN_SPEAKING_MS
+    int "Minimum Speaking Time Before Barge-in (ms)"
+    default 500
+    range 0 5000
+    depends on VAD_BARGE_IN
+    help
+        Ignore VAD activity during the first N milliseconds of playback. The AEC
+        needs time to converge; without this guard the device echo triggers a
+        false barge-in immediately after playback starts.
+
 config USE_AUDIO_PROCESSOR
     bool "Enable AFE Audio Processing"
     default y

@@ -148,6 +148,7 @@ private:
 
     bool has_server_time_ = false;
     bool aborted_ = false;
+    int64_t speaking_started_us_ = 0;  // esp_timer time when playback (Speaking) started
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
