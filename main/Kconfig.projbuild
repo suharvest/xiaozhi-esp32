@@ -977,6 +977,26 @@ config SKIP_WIFI_PROVISIONING
         protocol client never start. Wake word detection still runs, and the
         protocol errors that follow a wake word are left in place on purpose.
 
+config AUDIO_I2S_TX_ALWAYS_ENABLED
+    bool "Keep The I2S TX Channel Enabled While Capturing"
+    default n
+    help
+        Enable the TX channel whenever the input is on, and keep it running
+        when playback stops, as long as the input is still on.
+
+        In full-duplex STD mode the driver forces the later initialised channel
+        to the slave role and shares BCLK and WS between the two directions, so
+        those clocks come from the TX channel. Enabling RX on its own then
+        leaves the bus without a clock: a slave codec sends nothing and every
+        read times out. This keeps the clock running for as long as the
+        microphone is in use.
+
+        The idle TX channel sends silence, not noise, because the channel is
+        allocated with auto_clear_after_cb.
+
+        Keep the default: boards whose capture works without playback need no
+        change. Override it per board in the board config.json.
+
 config AUDIO_I2S_INPUT_STEREO
     bool "Read Both I2S Input Slots (Stereo Capture)"
     default n

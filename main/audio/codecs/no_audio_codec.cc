@@ -385,9 +385,26 @@ void NoAudioCodec::EnableInput(bool enable) {
         return;
     }
     if (enable) {
+#if CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED
+        // Full-duplex STD shares BCLK/WS and the driver drives them from the
+        // TX channel, so RX alone leaves the bus unclocked and every read
+        // times out. Bring TX up as the clock source; it sends zeros while
+        // nothing is being played.
+        if (duplex_ && !output_enabled_ && !tx_enabled_for_clock_) {
+            ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
+            tx_enabled_for_clock_ = true;
+            ESP_LOGI(TAG, "TX enabled as the shared I2S clock source");
+        }
+#endif
         ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
     } else {
         ESP_ERROR_CHECK(i2s_channel_disable(rx_handle_));
+#if CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED
+        if (tx_enabled_for_clock_) {
+            ESP_ERROR_CHECK(i2s_channel_disable(tx_handle_));
+            tx_enabled_for_clock_ = false;
+        }
+#endif
     }
     AudioCodec::EnableInput(enable);
 }
@@ -398,8 +415,26 @@ void NoAudioCodec::EnableOutput(bool enable) {
         return;
     }
     if (enable) {
+#if CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED
+        if (tx_enabled_for_clock_) {
+            // Already running as the clock source; hand it over to playback
+            // instead of enabling it twice.
+            tx_enabled_for_clock_ = false;
+            AudioCodec::EnableOutput(enable);
+            return;
+        }
+#endif
         ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
     } else {
+#if CONFIG_AUDIO_I2S_TX_ALWAYS_ENABLED
+        if (duplex_ && input_enabled_) {
+            // The input still needs the shared clock, so keep TX running
+            // rather than stopping it and losing the clock mid-capture.
+            tx_enabled_for_clock_ = true;
+            AudioCodec::EnableOutput(enable);
+            return;
+        }
+#endif
         ESP_ERROR_CHECK(i2s_channel_disable(tx_handle_));
     }
     AudioCodec::EnableOutput(enable);

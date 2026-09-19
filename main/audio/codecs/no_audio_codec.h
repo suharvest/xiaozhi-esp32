@@ -13,6 +13,8 @@ protected:
     // Two 32-bit slots per frame are kept on the RX side instead of one.
     // Upstream still receives mono, so input_channels() stays 1.
     bool input_stereo_ = false;
+    // TX is running only to provide the shared BCLK/WS, with no playback.
+    bool tx_enabled_for_clock_ = false;
 
     virtual int Write(const int16_t* data, int samples) override;
     virtual int Read(int16_t* dest, int samples) override;
