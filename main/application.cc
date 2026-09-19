@@ -1214,7 +1214,14 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
+#if CONFIG_EXTERNAL_HARDWARE_AEC
+    // Echo cancellation happens upstream of the ESP32, so aec_mode_ stays
+    // kAecOff (the ESP does no AEC), but the uplink must keep running during
+    // playback for VAD barge-in to work. That requires real-time mode.
+    return kListeningModeRealtime;
+#else
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+#endif
 }
 
 void Application::Reboot() {

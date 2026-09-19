@@ -1002,6 +1002,20 @@ config USE_DEVICE_AEC
     help
         To work properly, device-side AEC requires a clean output reference path from the speaker signal and physical acoustic isolation between the microphone and speaker.
 
+config EXTERNAL_HARDWARE_AEC
+    bool "AEC Done by External Hardware Upstream of the ESP32"
+    default n
+    depends on USE_AUDIO_PROCESSOR
+    help
+        Select this when echo cancellation happens in external hardware sitting
+        upstream of the ESP32 (for example the XVF3800 DSP on ReSpeaker Flex),
+        so the microphone stream reaching the ESP32 is already echo-free.
+
+        The AFE therefore does not run AEC again, but it must keep VAD enabled,
+        which is why this is not USE_DEVICE_AEC. Enabling this keeps the device
+        in real-time listening mode during playback, so voice processing is not
+        switched off while speaking and VAD barge-in stays usable.
+
 config USE_SERVER_AEC
     bool "Enable Server-Side AEC (Unstable)"
     default n

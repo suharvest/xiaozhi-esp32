@@ -10,6 +10,7 @@
                 "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/8m_custom_wakeword.csv\"",
                 "CONFIG_COMPILER_OPTIMIZATION_SIZE=y",
+                "CONFIG_EXTERNAL_HARDWARE_AEC=y",
                 "CONFIG_USE_AFE_WAKE_WORD=n",
                 "CONFIG_USE_ESP_WAKE_WORD=n",
                 "CONFIG_USE_CUSTOM_WAKE_WORD=y",
