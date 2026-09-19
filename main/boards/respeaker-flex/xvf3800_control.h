@@ -26,6 +26,9 @@ public:
     void ApplyTuning();
 
 private:
+#if CONFIG_XVF3800_APPLY_TUNING
+    bool TuneFloat(const char* name, uint8_t resid, uint8_t cmd, float target);
+#endif
     i2c_master_dev_handle_t dev_ = nullptr;
 };
 

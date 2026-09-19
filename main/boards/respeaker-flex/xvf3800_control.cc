@@ -191,40 +191,53 @@ bool Xvf3800Control::Write(uint8_t resid, uint8_t cmd, const uint8_t* payload, u
     return true;
 }
 
+#if CONFIG_XVF3800_APPLY_TUNING
+// Reads the old value, writes the new one, reads it back and logs all three,
+// so a write that silently does not take effect is visible.
+bool Xvf3800Control::TuneFloat(const char* name, uint8_t resid, uint8_t cmd, float target) {
+    uint8_t buf[8];
+    if (!Read(resid, cmd, buf, 4)) {
+        ESP_LOGE(TAG, "%s: skipped, cannot read the old value", name);
+        return false;
+    }
+    const float before = DecodeFloat(buf);
+    ESP_LOGW(TAG, "%s: before = %.8f", name, before);
+
+    uint8_t payload[4];
+    memcpy(payload, &target, sizeof(target));
+    if (!Write(resid, cmd, payload, sizeof(payload))) {
+        return false;
+    }
+    ESP_LOGW(TAG, "%s: wrote  = %.8f", name, target);
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (!Read(resid, cmd, buf, 4)) {
+        ESP_LOGE(TAG, "%s: cannot read back", name);
+        return false;
+    }
+    const float after = DecodeFloat(buf);
+    ESP_LOGW(TAG, "%s: after  = %.8f %s", name, after,
+             after == target ? "(applied)" : "(NOT applied)");
+    return after == target;
+}
+#endif
+
 void Xvf3800Control::ApplyTuning() {
 #if CONFIG_XVF3800_APPLY_TUNING
     if (dev_ == nullptr) {
         return;
     }
-    // One parameter per boot. SAVE_CONFIGURATION (48, 9) is deliberately not
-    // issued, so this never reaches the device's flash and a power cycle puts
-    // the old value back.
-    const float target = CONFIG_XVF3800_AGC_DESIRED_LEVEL_PPM / 1000000.0f;
-    uint8_t buf[8];
-
-    if (!Read(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, buf, kAgcDesiredLevel.bytes)) {
-        ESP_LOGE(TAG, "tuning aborted: cannot read AGC_DESIRED_LEVEL first");
-        return;
-    }
-    const float before = DecodeFloat(buf);
-    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: before = %.8f", before);
-
-    uint8_t payload[4];
-    memcpy(payload, &target, sizeof(target));
-    if (!Write(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, payload, sizeof(payload))) {
-        return;
-    }
-    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: wrote  = %.8f", target);
-
-    vTaskDelay(pdMS_TO_TICKS(20));
-    if (!Read(kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd, buf, kAgcDesiredLevel.bytes)) {
-        ESP_LOGE(TAG, "cannot read AGC_DESIRED_LEVEL back");
-        return;
-    }
-    const float after = DecodeFloat(buf);
-    ESP_LOGW(TAG, "tuning AGC_DESIRED_LEVEL: after  = %.8f %s", after,
-             after == target ? "(applied)" : "(NOT applied)");
-    ESP_LOGW(TAG, "not saved to flash, a power cycle restores %.8f", before);
+    // SAVE_CONFIGURATION (48, 9) is deliberately never issued, so none of this
+    // reaches the device's flash and a power cycle puts the old values back.
+#if CONFIG_XVF3800_SET_AGC_MAX_GAIN
+    TuneFloat(kAgcMaxGain.name, kAgcMaxGain.resid, kAgcMaxGain.cmd,
+              CONFIG_XVF3800_AGC_MAX_GAIN_MILLI / 1000.0f);
+#endif
+#if CONFIG_XVF3800_SET_AGC_DESIRED_LEVEL
+    TuneFloat(kAgcDesiredLevel.name, kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd,
+              CONFIG_XVF3800_AGC_DESIRED_LEVEL_PPM / 1000000.0f);
+#endif
+    ESP_LOGW(TAG, "tuning is volatile, a power cycle restores the saved values");
 #endif
 }
 

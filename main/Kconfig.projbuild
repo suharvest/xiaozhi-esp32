@@ -1025,16 +1025,40 @@ config XVF3800_APPLY_TUNING
         SAVE_CONFIGURATION is never issued, so nothing reaches the device's
         flash: a power cycle restores whatever was there before.
 
+config XVF3800_SET_AGC_DESIRED_LEVEL
+    bool "Write PP_AGCDESIREDLEVEL"
+    default y
+    depends on XVF3800_APPLY_TUNING
+
 config XVF3800_AGC_DESIRED_LEVEL_PPM
     int "AGC Target Output Power, In Parts Per Million"
     default 20000
     range 1 1000000
-    depends on XVF3800_APPLY_TUNING
+    depends on XVF3800_SET_AGC_DESIRED_LEVEL
     help
         PP_AGCDESIREDLEVEL is the target power of the output signal, valid
         from 1e-8 to 1.0. Kconfig has no floats, so it is given here in parts
         per million: 20000 means 0.02, which is a target RMS amplitude of
         sqrt(0.02) = 0.141, about 4635 on the int16 scale.
+
+config XVF3800_SET_AGC_MAX_GAIN
+    bool "Write PP_AGCMAXGAIN"
+    default n
+    depends on XVF3800_APPLY_TUNING
+
+config XVF3800_AGC_MAX_GAIN_MILLI
+    int "Maximum AGC Gain, In Thousandths"
+    default 128000
+    range 1000 1000000
+    depends on XVF3800_SET_AGC_MAX_GAIN
+    help
+        PP_AGCMAXGAIN is a linear gain factor, valid from 1.0 to 1000.0.
+        Kconfig has no floats, so it is given here in thousandths: 128000
+        means 128.0.
+
+        Raise this when the reported AGC_GAIN has reached AGC_MAX_GAIN and the
+        output still sits below AGC_DESIRED_LEVEL: the loop has no headroom
+        left to close the gap.
 
 config AUDIO_I2S_SLAVE_ROLE
     bool "ESP Is The I2S Slave"
