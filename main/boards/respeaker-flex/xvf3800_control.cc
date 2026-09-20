@@ -237,6 +237,14 @@ void Xvf3800Control::ApplyTuning() {
     TuneFloat(kAgcDesiredLevel.name, kAgcDesiredLevel.resid, kAgcDesiredLevel.cmd,
               CONFIG_XVF3800_AGC_DESIRED_LEVEL_PPM / 1000000.0f);
 #endif
+#if CONFIG_XVF3800_SET_MIN_NN
+    TuneFloat(kMinNn.name, kMinNn.resid, kMinNn.cmd,
+              CONFIG_XVF3800_MIN_NN_MILLI / 1000.0f);
+#endif
+#if CONFIG_XVF3800_SET_MIN_NS
+    TuneFloat(kMinNs.name, kMinNs.resid, kMinNs.cmd,
+              CONFIG_XVF3800_MIN_NS_MILLI / 1000.0f);
+#endif
     ESP_LOGW(TAG, "tuning is volatile, a power cycle restores the saved values");
 #endif
 }

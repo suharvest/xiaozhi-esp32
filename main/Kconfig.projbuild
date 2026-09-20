@@ -1060,6 +1060,44 @@ config XVF3800_AGC_MAX_GAIN_MILLI
         output still sits below AGC_DESIRED_LEVEL: the loop has no headroom
         left to close the gap.
 
+config XVF3800_SET_MIN_NN
+    bool "Write PP_MIN_NN"
+    default n
+    depends on XVF3800_APPLY_TUNING
+
+config XVF3800_MIN_NN_MILLI
+    int "Non-Stationary Noise Suppression Gain Floor, In Thousandths"
+    default 200
+    range 0 1000
+    depends on XVF3800_SET_MIN_NN
+    help
+        PP_MIN_NN is the gain floor for non-stationary noise suppression,
+        valid from 0.0 to 1.0, where a smaller value suppresses harder.
+        Kconfig has no floats, so it is given here in thousandths: 200 means
+        0.20.
+
+        Lower this when raising the AGC gain also raised the noise floor by
+        the same factor, which leaves the signal-to-noise ratio unchanged.
+        Too low eats quiet speech, which shows up as a wake word score that
+        drops instead of rising.
+
+config XVF3800_SET_MIN_NS
+    bool "Write PP_MIN_NS"
+    default n
+    depends on XVF3800_APPLY_TUNING
+
+config XVF3800_MIN_NS_MILLI
+    int "Stationary Noise Suppression Gain Floor, In Thousandths"
+    default 150
+    range 0 1000
+    depends on XVF3800_SET_MIN_NS
+    help
+        PP_MIN_NS is the gain floor for stationary noise suppression, valid
+        from 0.0 to 1.0, where a smaller value suppresses harder. In
+        thousandths: 150 means 0.15.
+
+        The steady background hum. Adjust it after PP_MIN_NN, one at a time.
+
 config AUDIO_I2S_SLAVE_ROLE
     bool "ESP Is The I2S Slave"
     default n
