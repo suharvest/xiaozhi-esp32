@@ -59,6 +59,12 @@ Application::~Application() {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
     }
+#if CONFIG_WAKE_WORD_REARM_WITHOUT_PROTOCOL
+    if (wake_rearm_timer_ != nullptr) {
+        esp_timer_stop(wake_rearm_timer_);
+        esp_timer_delete(wake_rearm_timer_);
+    }
+#endif
     vEventGroupDelete(event_group_);
 }
 
@@ -990,8 +996,45 @@ void Application::HandleStopListeningEvent() {
     }
 }
 
+#if CONFIG_WAKE_WORD_REARM_WITHOUT_PROTOCOL
+void Application::ScheduleWakeWordRearm() {
+    if (wake_rearm_timer_ == nullptr) {
+        esp_timer_create_args_t args = {
+            .callback = [](void* arg) {
+                auto* self = static_cast<Application*>(arg);
+                // Hand the re-arm to the main task. The detector disarms
+                // itself on a hit, so the bit has to be set again explicitly.
+                self->Schedule(
+                    [self]() { self->audio_service_.EnableWakeWordDetection(true); });
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "wake_rearm",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &wake_rearm_timer_) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create the wake word re-arm timer");
+            wake_rearm_timer_ = nullptr;
+            audio_service_.EnableWakeWordDetection(true);
+            return;
+        }
+    }
+    esp_timer_stop(wake_rearm_timer_);
+    esp_timer_start_once(wake_rearm_timer_, CONFIG_WAKE_WORD_REARM_DELAY_MS * 1000ULL);
+}
+#endif
+
 void Application::HandleWakeWordDetectedEvent() {
     if (!protocol_) {
+#if CONFIG_WAKE_WORD_REARM_WITHOUT_PROTOCOL
+        // No transport to hand the utterance to, but the detector still has to
+        // come back so the wake word can be measured more than once per boot.
+        static int wake_count = 0;
+        ESP_LOGW(TAG, "wake #%d (no protocol, re-arming in %dms): %s", ++wake_count,
+                 CONFIG_WAKE_WORD_REARM_DELAY_MS,
+                 audio_service_.GetLastWakeWord().c_str());
+        ScheduleWakeWordRearm();
+#endif
         return;
     }
 

@@ -153,6 +153,10 @@ private:
     std::unique_ptr<Protocol> protocol_;
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
+#if CONFIG_WAKE_WORD_REARM_WITHOUT_PROTOCOL
+    esp_timer_handle_t wake_rearm_timer_ = nullptr;
+    void ScheduleWakeWordRearm();
+#endif
     DeviceStateMachine state_machine_;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;

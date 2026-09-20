@@ -1221,6 +1221,30 @@ config WAKE_WORD_IN_WIFI_CONFIGURING
         troubleshooted on a device that is not provisioned yet or whose Wi-Fi
         connection failed.
 
+config WAKE_WORD_REARM_WITHOUT_PROTOCOL
+    bool "Re-Arm The Wake Word When There Is No Protocol"
+    default n
+    help
+        With no protocol client the wake word handler returns immediately, and
+        because the detector disarms itself on every hit, the device can only
+        be woken once per boot. That makes the detection score impossible to
+        sample repeatedly, and a single score is far too noisy to tune
+        against.
+
+        Enabling this re-arms the detector after each hit instead, so the wake
+        word can be exercised as many times as needed. It only changes the
+        path taken when no protocol exists; once a transport is attached the
+        handler runs exactly as before.
+
+config WAKE_WORD_REARM_DELAY_MS
+    int "Delay Before Re-Arming The Wake Word (ms)"
+    default 1000
+    range 0 10000
+    depends on WAKE_WORD_REARM_WITHOUT_PROTOCOL
+    help
+        Wait this long after a hit before listening again, so the tail or the
+        reverberation of the same utterance does not trigger a second one.
+
 config VAD_BARGE_IN
     bool "Interrupt Speaking on Voice Activity"
     default y
