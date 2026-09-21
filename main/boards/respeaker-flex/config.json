@@ -16,7 +16,7 @@
                 "CONFIG_USE_CUSTOM_WAKE_WORD=y",
                 "CONFIG_CUSTOM_WAKE_WORD=\"ni hao xiao zhi\"",
                 "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"你好小智\"",
-                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=12",
                 "CONFIG_SKIP_WIFI_PROVISIONING=y",
                 "CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING=y",
                 "CONFIG_AUDIO_I2S_INPUT_SHIFT=16",
