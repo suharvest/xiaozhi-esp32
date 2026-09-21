@@ -45,7 +45,7 @@ private:
     void ApplyMode(const std::string& wake, const std::string& vad);
     void SendConfig();
     void SendPing(uint32_t now_ms);
-    void SendModeActual();
+    void SendStats();
     // order_barrier marks asr_eos and abort, which must not overtake audio
     // that was queued before them (spec §5.2).
     bool SendCtrl(const std::string& json, bool order_barrier);
@@ -58,6 +58,8 @@ private:
     bool handshaked_ = false;
     uint32_t last_config_ms_ = 0;
     uint32_t last_ping_ms_ = 0;
+    uint32_t last_stats_ms_ = 0;
+    bool stats_due_ = false;  // set by abort, so the flushed depth is reported at once
     int missed_pongs_ = 0;
 
     // Mode actually in effect, capped by what this board can do.

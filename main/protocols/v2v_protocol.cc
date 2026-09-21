@@ -17,6 +17,7 @@ namespace {
 constexpr uint32_t kRxPollMs = 50;         // also drives the candidate timeout
 constexpr uint32_t kConfigRetryMs = 1000;  // spec §3.1
 constexpr uint32_t kPingIntervalMs = 2000; // spec §5.3
+constexpr uint32_t kStatsIntervalMs = 500;  // spec §5.3
 constexpr int kMaxMissedPongs = 3;         // 6 s without a reply means gone
 constexpr size_t kRxChunk = 512;
 
@@ -93,6 +94,12 @@ void V2vProtocol::RxTask() {
                 last_config_ms_ = now;
             }
             continue;
+        }
+
+        if (stats_due_ || now - last_stats_ms_ >= kStatsIntervalMs) {
+            stats_due_ = false;
+            last_stats_ms_ = now;
+            SendStats();
         }
 
         if (now - last_ping_ms_ >= kPingIntervalMs) {
@@ -181,7 +188,7 @@ void V2vProtocol::HandleCtrlDown(const std::string& json) {
                 on_audio_channel_opened_();
             }
         }
-        SendModeActual();
+        SendStats();
         cJSON_Delete(root);
         return;
     }
@@ -190,7 +197,15 @@ void V2vProtocol::HandleCtrlDown(const std::string& json) {
     std::string translated;
     if (type == "tts_started") {
         translated = "{\"type\":\"tts\",\"state\":\"start\"}";
-    } else if (type == "tts_done" || type == "abort") {
+    } else if (type == "tts_done") {
+        // Sending finished, playing has not: the queue drains on its own.
+        translated = "{\"type\":\"tts\",\"state\":\"stop\"}";
+    } else if (type == "abort") {
+        // Stop and throw the queue away (spec §3.3), then report the flushed
+        // depth on the very next tick: the host zeroes its own estimate
+        // immediately and a stale snapshot would keep is_playing true.
+        Application::GetInstance().DiscardPlayback();
+        stats_due_ = true;
         translated = "{\"type\":\"tts\",\"state\":\"stop\"}";
     } else if (type == "asr_partial" || type == "asr_final") {
         const std::string text = JsonString(root, "text");
@@ -242,8 +257,13 @@ void V2vProtocol::SendConfig() {
     SendCtrl(json, false);
 }
 
-void V2vProtocol::SendModeActual() {
-    std::string json = "{\"type\":\"x_usb.stats\",\"mode_actual\":{\"wake\":\"";
+void V2vProtocol::SendStats() {
+    // buffer_ms is how much audio is still waiting to be played, not a running
+    // total: it is the host's only view of playback progress.
+    const int buffer_ms = Application::GetInstance().GetPlaybackBufferMs();
+    std::string json = "{\"type\":\"x_usb.stats\",\"buffer_ms\":";
+    json += std::to_string(buffer_ms);
+    json += ",\"mode_actual\":{\"wake\":\"";
     json += mode_wake_;
     json += "\",\"vad\":\"";
     json += mode_vad_;

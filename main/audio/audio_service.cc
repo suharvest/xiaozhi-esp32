@@ -856,6 +856,21 @@ bool AudioService::IsIdle() {
     return audio_encode_queue_.empty() && IsPlaybackDrainedLocked() && audio_testing_queue_.empty();
 }
 
+int AudioService::GetPlaybackBufferMs() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    size_t samples = 0;
+    for (const auto& task : audio_playback_queue_) {
+        samples += task->pcm.size();
+    }
+    const int rate = codec_ != nullptr ? codec_->output_sample_rate() : 16000;
+    int ms = rate > 0 ? static_cast<int>(samples * 1000 / static_cast<size_t>(rate)) : 0;
+    // Packets that have arrived but not been decoded yet are queued audio too.
+    for (const auto& packet : audio_decode_queue_) {
+        ms += packet->frame_duration;
+    }
+    return ms;
+}
+
 bool AudioService::IsPlaybackIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return IsPlaybackDrainedLocked();

@@ -68,6 +68,11 @@ public:
 
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+    // Audio accepted but not played yet, in milliseconds. Reported to the host
+    // as x_usb.stats buffer_ms, which is a remaining depth, not a total.
+    int GetPlaybackBufferMs() { return audio_service_.GetPlaybackBufferMs(); }
+    // Drops everything queued for playback (spec §3.3 abort).
+    void DiscardPlayback() { audio_service_.ResetDecoder(); }
 
     /**
      * Local interception switches. Which side handles the wake word and which

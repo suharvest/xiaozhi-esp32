@@ -123,6 +123,11 @@ public:
     const std::string& GetLastWakeWord() const;
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
+    // Milliseconds of audio accepted but not played yet: the decode queue plus
+    // the playback queue. This is what the host uses as its only view of the
+    // device's playback progress, so it is a remaining-depth figure, never a
+    // running total.
+    int GetPlaybackBufferMs();
     bool IsPlaybackIdle();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
