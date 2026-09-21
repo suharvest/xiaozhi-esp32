@@ -213,6 +213,34 @@ int main() {
         Report("plain text prefix skipped", ok, "frames=" + std::to_string(got.size()));
     }
 
+    printf("\n== 2.1 even LEN only applies to audio ==\n");
+    {
+        // AUDIO_UP with an odd LEN is a corrupt header; the good frame that
+        // follows must still be decoded.
+        std::vector<uint8_t> odd;
+        const std::vector<uint8_t> three = FromHex("11 22 33");
+        Encode(kTypeAudioUp, 0x07, three.data(), three.size(), odd);
+        std::vector<uint8_t> in = odd;
+        in.insert(in.end(), v72.begin(), v72.end());
+        std::vector<Frame> got;
+        Decoder dec;
+        dec.Feed(in.data(), in.size(), 0, got);
+        const bool ok = got.size() == 1 && got[0].type == kTypeLog;
+        Report("odd LEN on AUDIO_UP rejected", ok, "frames=" + std::to_string(got.size()));
+    }
+    {
+        // Odd LEN on a non-audio type is legal: CTRL_UP with 3 bytes.
+        std::vector<uint8_t> ctrl;
+        const std::vector<uint8_t> three = Bytes("{}\n");
+        Encode(kTypeCtrlUp, 0x08, three.data(), three.size(), ctrl);
+        std::vector<Frame> got;
+        Decoder dec;
+        dec.Feed(ctrl.data(), ctrl.size(), 0, got);
+        const bool ok = got.size() == 1 && got[0].type == kTypeCtrlUp &&
+                        got[0].payload.size() == 3;
+        Report("odd LEN on CTRL_UP accepted", ok, "frames=" + std::to_string(got.size()));
+    }
+
     printf("\n== buffer cap ==\n");
     {
         // More than 8 KiB of junk with no magic must not grow without bound.

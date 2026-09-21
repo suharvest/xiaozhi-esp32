@@ -143,7 +143,12 @@ void Decoder::Feed(const uint8_t* data, size_t len, uint32_t now_ms, std::vector
         const uint8_t type = f[2];
         const uint16_t plen = static_cast<uint16_t>(f[4] | (f[5] << 8));
 
-        if (!magic_ok || !IsKnownType(type) || plen > kMaxPayload) {
+        // Only the two audio types carry samples, so only they must have an
+        // even LEN; LOG and the JSON control frames are any length (spec §2.1,
+        // and golden vector 7.2 is LEN=5).
+        const bool is_audio = (type == kTypeAudioUp || type == kTypeAudioDown);
+        if (!magic_ok || !IsKnownType(type) || plen > kMaxPayload ||
+            (is_audio && (plen & 1) != 0)) {
             RestartSearch();
             continue;
         }
