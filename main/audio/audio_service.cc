@@ -382,6 +382,7 @@ void AudioService::AudioOutputTask() {
         auto task = std::move(audio_playback_queue_.front());
         audio_playback_queue_.pop_front();
         output_in_flight_ = true;
+        output_in_flight_samples_ = task->pcm.size();
         audio_queue_cv_.notify_all();
         lock.unlock();
 
@@ -406,6 +407,7 @@ void AudioService::AudioOutputTask() {
         }
 #endif
         output_in_flight_ = false;
+        output_in_flight_samples_ = 0;
         notify_drained = MarkPlaybackDrainedLocked();
         audio_queue_cv_.notify_all();
         lock.unlock();
@@ -707,12 +709,34 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
                     audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
             });
         } else {
+            // The producer outran playback. Nothing can be done here, but the
+            // host has to be told, otherwise it keeps sending into a wall.
+            dropped_downlink_++;
+#if CONFIG_AUDIO_DOWNLINK_DEBUG
+            ESP_LOGW(TAG, "downlink dropped: decode=%u playback=%u inflight=%u",
+                     (unsigned)audio_decode_queue_.size(),
+                     (unsigned)audio_playback_queue_.size(),
+                     (unsigned)output_in_flight_samples_);
+#endif
             return false;
         }
     }
     if (service_stopped_.load()) {
         return false;
     }
+#if CONFIG_AUDIO_DOWNLINK_DEBUG
+    {
+        size_t queued = output_in_flight_samples_;
+        for (const auto& t : audio_playback_queue_) queued += t->pcm.size();
+        for (const auto& p : audio_decode_queue_) queued += p->payload.size() / sizeof(int16_t);
+        queued += packet->payload.size() / sizeof(int16_t);
+        const int rate = codec_ != nullptr ? codec_->output_sample_rate() : 16000;
+        ESP_LOGI(TAG, "downlink +%ub decode=%u playback=%u inflight=%u depth=%dms",
+                 (unsigned)packet->payload.size(), (unsigned)audio_decode_queue_.size(),
+                 (unsigned)audio_playback_queue_.size(), (unsigned)output_in_flight_samples_,
+                 rate > 0 ? (int)(queued * 1000 / (size_t)rate) : 0);
+    }
+#endif
     playback_drained_notified_ = false;
     audio_decode_queue_.push_back(std::move(packet));
     audio_queue_cv_.notify_all();
@@ -862,13 +886,28 @@ int AudioService::GetPlaybackBufferMs() {
     for (const auto& task : audio_playback_queue_) {
         samples += task->pcm.size();
     }
+    // The task currently being written to the codec has left the queue but has
+    // not been heard yet.
+    samples += output_in_flight_samples_;
     const int rate = codec_ != nullptr ? codec_->output_sample_rate() : 16000;
-    int ms = rate > 0 ? static_cast<int>(samples * 1000 / static_cast<size_t>(rate)) : 0;
-    // Packets that have arrived but not been decoded yet are queued audio too.
-    for (const auto& packet : audio_decode_queue_) {
-        ms += packet->frame_duration;
+    if (rate <= 0) {
+        return 0;
     }
-    return ms;
+    // Packets that arrived but have not been decoded yet are queued audio too.
+    // Their length comes from the payload, not from frame_duration: on the raw
+    // PCM path the host picks the frame length and frame_duration is only a
+    // nominal value.
+    for (const auto& packet : audio_decode_queue_) {
+        samples += packet->payload.size() / sizeof(int16_t);
+    }
+    return static_cast<int>(samples * 1000 / static_cast<size_t>(rate));
+}
+
+uint32_t AudioService::TakeDroppedDownlink() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    const uint32_t out = dropped_downlink_;
+    dropped_downlink_ = 0;
+    return out;
 }
 
 bool AudioService::IsPlaybackIdle() {

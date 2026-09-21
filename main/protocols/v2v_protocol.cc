@@ -126,6 +126,11 @@ void V2vProtocol::RxTask() {
 }
 
 void V2vProtocol::HandleFrame(const usb_frame::Frame& frame) {
+    // Any well formed frame proves the host is alive. Waiting specifically for
+    // a PONG makes the link look dead whenever heavy downlink traffic delays
+    // the reply, and a frame that decoded correctly is just as good a proof.
+    missed_pongs_ = 0;
+
     switch (frame.type) {
         case usb_frame::kTypePing: {
             // Echo the payload back untouched.
@@ -134,7 +139,7 @@ void V2vProtocol::HandleFrame(const usb_frame::Frame& frame) {
             break;
         }
         case usb_frame::kTypePong:
-            missed_pongs_ = 0;
+            // Counted already by the liveness reset above.
             break;
         case usb_frame::kTypeAudioDown: {
             if (!audio_channel_opened_ || !on_incoming_audio_) {
@@ -260,9 +265,27 @@ void V2vProtocol::SendConfig() {
 void V2vProtocol::SendStats() {
     // buffer_ms is how much audio is still waiting to be played, not a running
     // total: it is the host's only view of playback progress.
-    const int buffer_ms = Application::GetInstance().GetPlaybackBufferMs();
+    auto& app = Application::GetInstance();
+    const int buffer_ms = app.GetPlaybackBufferMs();
+    // All the counters are increments since the previous report, per §5.3.
+    const auto tx = usb_transport::UsbTxQueue::GetInstance().TakeStats();
     std::string json = "{\"type\":\"x_usb.stats\",\"buffer_ms\":";
     json += std::to_string(buffer_ms);
+    json += ",\"dropped_audio\":";
+    json += std::to_string(tx.dropped_audio);
+    json += ",\"dropped_ctrl\":";
+    json += std::to_string(tx.dropped_ctrl);
+    json += ",\"dropped_log\":";
+    json += std::to_string(tx.dropped_log);
+    json += ",\"queue_full\":";
+    json += std::to_string(tx.queue_full);
+    json += ",\"write_errors\":";
+    json += std::to_string(tx.write_errors);
+    // Downlink we had to refuse: the host outran our playback queue.
+    json += ",\"dropped_downlink\":";
+    json += std::to_string(app.TakeDroppedDownlink());
+    json += ",\"tx_depth\":";
+    json += std::to_string(tx.depth);
     json += ",\"mode_actual\":{\"wake\":\"";
     json += mode_wake_;
     json += "\",\"vad\":\"";

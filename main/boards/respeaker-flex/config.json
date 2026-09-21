@@ -21,6 +21,7 @@
                 "CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING=y",
                 "CONFIG_USE_V2V_USB_PROTOCOL=y",
                 "CONFIG_AUDIO_PCM_PASSTHROUGH=y",
+                "CONFIG_AUDIO_DOWNLINK_DEBUG=y",
                 "CONFIG_AUDIO_I2S_INPUT_SHIFT=16",
                 "CONFIG_AUDIO_I2S_SLAVE_ROLE=y",
                 "CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET=0",

@@ -128,6 +128,9 @@ public:
     // device's playback progress, so it is a remaining-depth figure, never a
     // running total.
     int GetPlaybackBufferMs();
+    // Downlink packets refused because the decode queue was full, since the
+    // last call. The host has no other way to learn that it outran us.
+    uint32_t TakeDroppedDownlink();
     bool IsPlaybackIdle();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
@@ -195,6 +198,11 @@ private:
     bool decode_in_flight_ = false;
     bool output_in_flight_ = false;
     bool playback_drained_notified_ = true;
+    // Samples already popped from the playback queue and being written to the
+    // codec. They have left both queues but have not been heard yet, so they
+    // still belong in the reported buffer depth.
+    size_t output_in_flight_samples_ = 0;
+    uint32_t dropped_downlink_ = 0;
     uint32_t playback_generation_ = 0;
     // For server AEC
     std::deque<uint32_t> timestamp_queue_;

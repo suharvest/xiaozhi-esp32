@@ -1111,6 +1111,18 @@ config USE_V2V_USB_PROTOCOL
         connection, so it also works on boards that skip Wi-Fi provisioning
         altogether.
 
+config AUDIO_DOWNLINK_DEBUG
+    bool "Log The Playback Queue Depth On Every Downlink Packet"
+    default n
+    help
+        Print the decode queue length, the playback queue length, the samples
+        currently being written to the codec and the resulting depth every
+        time a downlink packet arrives, plus a line whenever one is refused.
+
+        For working out whether a reported buffer depth of zero means the
+        device is not buffering or that the accounting misses audio that has
+        already left the queues.
+
 config AUDIO_PCM_PASSTHROUGH
     bool "Send And Receive Raw PCM Instead Of Opus"
     default n

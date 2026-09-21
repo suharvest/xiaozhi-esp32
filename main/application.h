@@ -73,6 +73,8 @@ public:
     int GetPlaybackBufferMs() { return audio_service_.GetPlaybackBufferMs(); }
     // Drops everything queued for playback (spec §3.3 abort).
     void DiscardPlayback() { audio_service_.ResetDecoder(); }
+    // Downlink packets refused since the last call, for x_usb.stats.
+    uint32_t TakeDroppedDownlink() { return audio_service_.TakeDroppedDownlink(); }
 
     /**
      * Local interception switches. Which side handles the wake word and which
