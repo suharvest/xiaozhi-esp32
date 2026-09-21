@@ -49,6 +49,11 @@ public:
     // already in the queue becomes undroppable (spec §5.2).
     bool Post(uint8_t type, const void* payload, size_t len, bool order_barrier = false);
 
+    // Restarts the sequence counter. Spec §6 and §7.6 item 6: a reconnect or a
+    // fresh handshake starts over at 0, otherwise the peer records the first
+    // frame as a phantom SEQ jump.
+    void ResetSeq();
+
     // Reads and clears the incremental counters.
     TxStats TakeStats();
 

@@ -241,6 +241,26 @@ int main() {
         Report("odd LEN on CTRL_UP accepted", ok, "frames=" + std::to_string(got.size()));
     }
 
+    printf("\n== 7.6 item 4: the timeout needs a driver ==\n");
+    {
+        // Half a candidate frame, then the link goes quiet. Only a periodic
+        // tick can decide the candidate was a false positive.
+        std::vector<uint8_t> head(v73.begin(), v73.begin() + 20);
+        std::vector<Frame> got;
+        Decoder dec;
+        dec.Feed(head.data(), head.size(), 0, got);
+        for (uint32_t t = 50; t <= 300; t += 50) {
+            dec.Tick(t, got);  // no new bytes at all
+        }
+        const bool timed_out = dec.resyncs() >= 1;
+        // Once the stale candidate is gone a real frame decodes normally.
+        dec.Feed(v72.data(), v72.size(), 350, got);
+        const bool ok = timed_out && got.size() == 1 && got[0].type == kTypeLog;
+        Report("tick alone expires a stale candidate", ok,
+               "resyncs=" + std::to_string(dec.resyncs()) +
+                   " frames=" + std::to_string(got.size()));
+    }
+
     printf("\n== buffer cap ==\n");
     {
         // More than 8 KiB of junk with no magic must not grow without bound.

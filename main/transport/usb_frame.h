@@ -60,6 +60,11 @@ struct Frame {
 class Decoder {
 public:
     void Feed(const uint8_t* data, size_t len, uint32_t now_ms, std::vector<Frame>& out);
+    // Drives the candidate timeout when no bytes arrive. The link can fall
+    // silent with half a candidate frame buffered, and nothing would ever
+    // re-check it if the timeout were only evaluated on incoming data
+    // (spec §7.6 item 4). Call this periodically, every 50 ms or so.
+    void Tick(uint32_t now_ms, std::vector<Frame>& out) { Feed(nullptr, 0, now_ms, out); }
     void Reset();
 
     uint32_t resyncs() const { return resyncs_; }

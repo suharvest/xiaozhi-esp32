@@ -102,6 +102,11 @@ bool UsbTxQueue::Post(uint8_t type, const void* payload, size_t len, bool order_
     return true;
 }
 
+void UsbTxQueue::ResetSeq() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    seq_ = 0;
+}
+
 TxStats UsbTxQueue::TakeStats() {
     std::lock_guard<std::mutex> lock(mutex_);
     TxStats out = stats_;
