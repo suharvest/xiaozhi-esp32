@@ -37,6 +37,11 @@
  */
 
 #define OPUS_FRAME_DURATION_MS 60
+
+// Raw PCM uplink frame, fixed by the USB transport spec §2.1: 20 ms of
+// S16LE 16 kHz mono, i.e. 320 samples or 640 bytes, 50 frames per second.
+#define PCM_UPLINK_FRAME_MS 20
+#define PCM_UPLINK_FRAME_SAMPLES (16000 / 1000 * PCM_UPLINK_FRAME_MS)
 #define MAX_ENCODE_TASKS_IN_QUEUE 2
 #define MAX_PLAYBACK_TASKS_IN_QUEUE 2
 #define MAX_DECODE_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
@@ -160,6 +165,11 @@ private:
     int decoder_sample_rate_ = 0;
     int decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
     int decoder_frame_size_ = 0;
+#if CONFIG_AUDIO_PCM_PASSTHROUGH
+    // Leftover samples when the pipeline frame size is not a multiple of the
+    // 20 ms wire frame.
+    std::vector<int16_t> uplink_carry_;
+#endif
     DebugStatistics debug_statistics_;
     int64_t last_encode_drop_log_time_ = 0;
     srmodel_list_t* models_list_ = nullptr;
@@ -203,6 +213,7 @@ private:
     void OpusCodecTask();
     void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     bool InitializeAudioEngine();
+    void EnqueueEncodedPacket(AudioTaskType type, std::unique_ptr<AudioStreamPacket> packet);
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
     void CheckAndUpdateAudioPowerState();
     bool IsPlaybackDrainedLocked() const;

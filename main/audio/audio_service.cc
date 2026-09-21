@@ -443,8 +443,27 @@ void AudioService::OpusCodecTask() {
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
 
-            SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             bool decoded = false;
+#if CONFIG_AUDIO_PCM_PASSTHROUGH
+            /* Raw PCM downlink: straight into the playback queue. */
+            if ((packet->payload.size() % sizeof(int16_t)) != 0) {
+                ESP_LOGE(TAG, "PCM payload is not a whole number of samples: %u",
+                         (unsigned)packet->payload.size());
+            } else if (packet->sample_rate != codec_->output_sample_rate()) {
+                /* The board runs the output at the link rate, so there is no
+                 * resampler on this path. A mismatch would play at the wrong
+                 * pitch, so refuse instead. */
+                ESP_LOGE(TAG, "PCM rate %d does not match the output rate %d",
+                         packet->sample_rate, codec_->output_sample_rate());
+            } else {
+                const int16_t* samples =
+                    reinterpret_cast<const int16_t*>(packet->payload.data());
+                task->pcm.assign(samples,
+                                 samples + packet->payload.size() / sizeof(int16_t));
+                decoded = true;
+            }
+#else
+            SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_ != nullptr) {
                 task->pcm.resize(decoder_frame_size_);
                 esp_audio_dec_in_raw_t raw = {
@@ -481,6 +500,7 @@ void AudioService::OpusCodecTask() {
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
             }
+#endif
 
             lock.lock();
             if (decoded && generation == playback_generation_ && !service_stopped_.load()) {
@@ -503,6 +523,27 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
+#if CONFIG_AUDIO_PCM_PASSTHROUGH
+            /* Raw PCM uplink: no Opus. The wire frame is a fixed 20 ms while
+             * the pipeline hands over whatever the AFE feed size happens to
+             * be, so re-chunk through a carry buffer rather than changing the
+             * feed size and disturbing the wake word path. */
+            uplink_carry_.insert(uplink_carry_.end(), task->pcm.begin(), task->pcm.end());
+            while (uplink_carry_.size() >= PCM_UPLINK_FRAME_SAMPLES) {
+                auto pcm_packet = std::make_unique<AudioStreamPacket>();
+                pcm_packet->sample_rate = 16000;
+                pcm_packet->frame_duration = PCM_UPLINK_FRAME_MS;
+                pcm_packet->timestamp = task->timestamp;
+                const uint8_t* head = reinterpret_cast<const uint8_t*>(uplink_carry_.data());
+                pcm_packet->payload.assign(head,
+                                           head + PCM_UPLINK_FRAME_SAMPLES * sizeof(int16_t));
+                uplink_carry_.erase(uplink_carry_.begin(),
+                                    uplink_carry_.begin() + PCM_UPLINK_FRAME_SAMPLES);
+                EnqueueEncodedPacket(task->type, std::move(pcm_packet));
+            }
+            lock.lock();
+            continue;
+#endif
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
             packet->sample_rate = 16000;
@@ -553,6 +594,28 @@ void AudioService::OpusCodecTask() {
     }
 
     ESP_LOGW(TAG, "Opus codec task stopped");
+}
+
+void AudioService::EnqueueEncodedPacket(AudioTaskType type,
+                                        std::unique_ptr<AudioStreamPacket> packet) {
+    if (type == kAudioTaskTypeEncodeToSendQueue) {
+        {
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            /* Never let a full send queue stall encoding: stale realtime
+             * audio is useless to the server, so drop the oldest packet. */
+            if (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
+                audio_send_queue_.pop_front();
+            }
+            audio_send_queue_.push_back(std::move(packet));
+        }
+        if (callbacks_.on_send_queue_available) {
+            callbacks_.on_send_queue_available();
+        }
+    } else if (type == kAudioTaskTypeEncodeToTestingQueue) {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        audio_testing_queue_.push_back(std::move(packet));
+    }
+    debug_statistics_.encode_count++;
 }
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {

@@ -1098,6 +1098,18 @@ config XVF3800_MIN_NS_MILLI
 
         The steady background hum. Adjust it after PP_MIN_NN, one at a time.
 
+config AUDIO_PCM_PASSTHROUGH
+    bool "Send And Receive Raw PCM Instead Of Opus"
+    default n
+    help
+        Bypass the Opus encoder and decoder and move S16LE 16 kHz mono samples
+        as they are. For a link that is not bandwidth limited, such as USB CDC,
+        the codec only adds latency and CPU load.
+
+        Uplink is re-chunked into fixed 20 ms frames (320 samples, 640 bytes)
+        regardless of the size the audio pipeline hands over, so the wire frame
+        length stays constant. Downlink takes whatever length arrives.
+
 config AUDIO_I2S_SLAVE_ROLE
     bool "ESP Is The I2S Slave"
     default n

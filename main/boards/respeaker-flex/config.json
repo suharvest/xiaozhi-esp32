@@ -19,6 +19,7 @@
                 "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=12",
                 "CONFIG_SKIP_WIFI_PROVISIONING=y",
                 "CONFIG_WAKE_WORD_IN_WIFI_CONFIGURING=y",
+                "CONFIG_AUDIO_PCM_PASSTHROUGH=y",
                 "CONFIG_AUDIO_I2S_INPUT_SHIFT=16",
                 "CONFIG_AUDIO_I2S_SLAVE_ROLE=y",
                 "CONFIG_AUDIO_I2S_INPUT_BIT_OFFSET=0",
