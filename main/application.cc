@@ -10,6 +10,9 @@
 #include "system_info.h"
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
+#if CONFIG_USE_V2V_USB_PROTOCOL
+#include "v2v_protocol.h"
+#endif
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -172,6 +175,12 @@ void Application::Initialize() {
                 break;
         }
     });
+
+#if CONFIG_USE_V2V_USB_PROTOCOL
+    // The USB link is up as soon as the port enumerates, long before any
+    // network would be, and on some boards there is no network at all.
+    InitializeProtocol();
+#endif
 
     // Start network asynchronously
     board.StartNetwork();
@@ -565,6 +574,16 @@ void Application::CheckNewVersion() {
 }
 
 void Application::InitializeProtocol() {
+#if CONFIG_USE_V2V_USB_PROTOCOL
+    // The USB link needs no network and no OTA config, so it is set up here
+    // and the whole WebSocket / MQTT selection below is skipped.
+    if (!protocol_) {
+        protocol_ = std::make_unique<V2vProtocol>();
+        SetupProtocolCallbacks();
+        protocol_->Start();
+    }
+    return;
+#endif
     auto display = Board::GetInstance().GetDisplay();
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);

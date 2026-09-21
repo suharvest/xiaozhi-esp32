@@ -1098,6 +1098,19 @@ config XVF3800_MIN_NS_MILLI
 
         The steady background hum. Adjust it after PP_MIN_NN, one at a time.
 
+config USE_V2V_USB_PROTOCOL
+    bool "Talk To The Host Over USB Instead Of The Network"
+    default n
+    select AUDIO_PCM_PASSTHROUGH
+    help
+        Use the V2vProtocol implementation, which carries control messages and
+        raw PCM over the USB-Serial-JTAG link to a host agent instead of using
+        WebSocket or MQTT over Wi-Fi.
+
+        The protocol is created during start-up rather than after a network
+        connection, so it also works on boards that skip Wi-Fi provisioning
+        altogether.
+
 config AUDIO_PCM_PASSTHROUGH
     bool "Send And Receive Raw PCM Instead Of Opus"
     default n
