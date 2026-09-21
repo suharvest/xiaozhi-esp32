@@ -41,6 +41,7 @@ set(SOURCES "audio/audio_codec.cc"
             "assets.cc"
             "transport/usb_frame.cc"
             "transport/usb_tx_queue.cc"
+            "transport/usb_log_sink.cc"
             "main.cc"
             )
 
