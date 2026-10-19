@@ -348,9 +348,12 @@ lv_obj_t* SettingsUi::MakeIconButton(lv_obj_t* parent, const char* glyph, Action
     lv_obj_set_style_border_width(button, 1, 0);
     lv_obj_set_style_border_color(button, SurfaceBorderColor(), 0);
     lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_text_color(button, ThemeTextColor(), 0);
     lv_obj_set_style_text_color(button, AccentInkColor(), LV_STATE_PRESSED);
     ApplyPressFeedback(button, CardColor());
-    lv_obj_center(MakeIconLabel(button, glyph, false));
+    lv_obj_t* icon = MakeIconLabel(button, glyph, false);
+    lv_obj_set_style_text_color(icon, ThemeTextColor(), 0);
+    lv_obj_center(icon);
     Bind(button, action);
     return button;
 }
