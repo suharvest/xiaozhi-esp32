@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <string>
+#include <deque>
+#include <mutex>
 #include <vector>
 
 // Small HTTP server that lets LAN clients push content onto the screen.
@@ -73,6 +75,8 @@ private:
     static esp_err_t RawThunk(httpd_req_t* req);
     static esp_err_t FaceStatusThunk(httpd_req_t* req);
     static esp_err_t FaceConfigThunk(httpd_req_t* req);
+    static esp_err_t WakeStatusThunk(httpd_req_t* req);
+    static esp_err_t WakeThunk(httpd_req_t* req);
     static void OnChoiceClicked(lv_event_t* event);
     static void OnCloseClicked(lv_event_t* event);
     static void OnBackdropClicked(lv_event_t* event);
@@ -85,6 +89,8 @@ private:
     esp_err_t HandleRaw(httpd_req_t* req);
     esp_err_t HandleFaceStatus(httpd_req_t* req);
     esp_err_t HandleFaceConfig(httpd_req_t* req);
+    esp_err_t HandleWakeStatus(httpd_req_t* req);
+    esp_err_t HandleWake(httpd_req_t* req);
     bool ReadBody(httpd_req_t* req, std::string* body);
 
     // All UI helpers must run with the display lock held.
@@ -119,6 +125,13 @@ private:
     std::vector<std::string> choice_options_;
     volatile int choice_selected_ = -1;
     volatile bool choice_pending_ = false;
+    struct WakeRequestRecord {
+        std::string id;
+        std::string fingerprint;
+        int64_t accepted_us;
+    };
+    std::deque<WakeRequestRecord> wake_request_history_;
+    std::mutex wake_request_mutex_;
 };
 
 #endif  // RETERMINAL_D1001_PUSH_PANEL_H

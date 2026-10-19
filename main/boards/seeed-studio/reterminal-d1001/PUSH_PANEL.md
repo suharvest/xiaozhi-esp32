@@ -2,6 +2,12 @@
 
 设备联网后在 **8080 端口**提供一个 HTTP 服务，局域网内任何客户端都可以把内容推到屏幕上：Markdown 渲染、让用户在屏上做选择并取回结果。面板以底部悬浮卡片显示，不遮挡状态栏、表情和屏底对话文本。
 
+## 远程唤醒（可选）
+
+`GET /api/wake/status` 查询能力，`POST /api/wake` 提交唤醒请求。远程唤醒默认关闭，通过 user-only MCP 工具 `self.remote_wake.configure` 配置 `enabled`（布尔值）和 `token`（16–128 个安全字符）；token 只写入设备本地设置，不会从状态接口或日志回显。启用后两个接口都使用 `Authorization: Bearer <token>`。请求体为 `{"request_id":"...","mode":"context|speak","text":"...","ttl_ms":15000}`，`ttl_ms` 必须是 1–15000 的整数。`context` 最多 25 字节，`speak` 最多 512 字节；HTTP 202 仅表示已排队，设备忙时返回 409，重复且内容相同的 `request_id` 在短窗口内幂等。`speak` 依赖启用 `CONFIG_SEND_WAKE_WORD_DATA` 的本地服务端 `[device_call]` TTS 路径。
+
+`context` 适合云端或本地服务生成简短唤醒提示；`speak` 只承诺本地服务端的 `[device_call]` TTS，不代表远端云端口可直接播放。
+
 设备 IP 可在设置 → Wi-Fi 页查看，或从路由器 / 串口日志（`sta ip:`）获取。
 
 ## 接口

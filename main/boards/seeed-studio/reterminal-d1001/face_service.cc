@@ -303,7 +303,7 @@ void FaceService::WatchLoop() {
             state = DetectState::kIdle;
             continue;
         }
-        if (mode == 2) {
+        if (mode == 2 || mode == 3) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (endpoint_.empty()) {
                 continue;
@@ -332,14 +332,52 @@ void FaceService::WatchLoop() {
         if (face_present) {
             if (mode == 1) {
                 hit = true;
-            } else {
+                names = "有人";
+            } else if (mode == 2) {
+                // 智能问候：熟人叫名字主动问候，陌生人也唤醒打招呼
                 std::vector<FaceHit> hits;
                 std::string error;
                 if (RecognizeOnce(hits, &error)) {
                     names.clear();
-                    hit = AnyQualifiedHit(hits, &names);
+                    bool has_known = false;
+                    for (const auto& h : hits) {
+                        if (h.score >= threshold_.load() && h.name != "unknown") {
+                            if (has_known) names += ", ";
+                            names += h.name;
+                            has_known = true;
+                        }
+                    }
+                    if (has_known) {
+                        hit = true;
+                    } else if (!hits.empty()) {
+                        names = "朋友";
+                        hit = true;
+                    }
                 } else {
                     ESP_LOGD(TAG, "recognize failed: %s", error.c_str());
+                }
+            } else if (mode == 3) {
+                // 哨兵模式：熟人免打扰，陌生人警戒
+                std::vector<FaceHit> hits;
+                std::string error;
+                if (RecognizeOnce(hits, &error)) {
+                    bool has_known = false;
+                    for (const auto& h : hits) {
+                        if (h.score >= threshold_.load() && h.name != "unknown") {
+                            has_known = true;
+                            break;
+                        }
+                    }
+                    if (has_known) {
+                        hit = false;
+                        ESP_LOGD(TAG, "sentry mode: familiar face detected, dnd silent");
+                    } else {
+                        names = "陌生人";
+                        hit = true;
+                        ESP_LOGI(TAG, "sentry mode: stranger detected, alerting!");
+                    }
+                } else {
+                    ESP_LOGD(TAG, "sentry recognize failed: %s", error.c_str());
                 }
             }
         }
@@ -385,7 +423,7 @@ std::string FaceService::GetEndpoint() {
 
 void FaceService::SetModeAndEndpoint(int mode, const std::string& endpoint) {
     Settings settings("face", true);
-    if (mode >= 0 && mode <= 2) {
+    if (mode >= 0 && mode <= 3) {
         settings.SetInt("mode", mode);
         mode_ = mode;
     }
@@ -398,7 +436,7 @@ void FaceService::SetModeAndEndpoint(int mode, const std::string& endpoint) {
 }
 
 int FaceService::ToggleMode() {
-    int next = (mode_.load() + 1) % 3;
+    int next = (mode_.load() + 1) % 4;
     Settings settings("face", true);
     settings.SetInt("mode", next);
     mode_ = next;
@@ -437,7 +475,7 @@ bool FaceService::ApplyConfigJson(const std::string& body, std::string* error) {
             target = value;
         }
     };
-    set_int("mode", mode_, 0, 2);
+    set_int("mode", mode_, 0, 3);
     set_int("interval_s", interval_s_, 1, 3600);
     set_int("threshold", threshold_, 0, 100);
     set_int("duration_s", duration_s_, 0, 60);
@@ -482,7 +520,7 @@ void FaceService::RegisterMcpTools() {
 
     mcp_server.AddTool(
         "self.face.param_get",
-        "获取人脸识别的当前配置：mode(0关/1本地检测到人脸即唤醒/2检测后送识别、认识的人才唤醒)、interval_s 采集间隔、"
+        "获取人脸识别的当前配置：mode(0不感知/1人形感知:有人即唤醒/2智能问候:熟人叫名字/3哨兵模式:熟人免打扰陌生人警戒)、interval_s 采集间隔、"
         "threshold 置信度阈值(0-100)、duration_s 持续确认秒数、cooldown_s 冷却秒数、"
         "known_only(1=只有已知人脸才唤醒)。",
         PropertyList(),
@@ -491,10 +529,10 @@ void FaceService::RegisterMcpTools() {
     mcp_server.AddTool(
         "self.face.param_set",
         "配置人脸识别参数。用户想开启/关闭看到人自动打招呼、调整灵敏度或频率时使用。\n"
-        "参数均可选，-1 表示保持不变：mode(0关/1检测唤醒/2识别唤醒)、interval_s、"
+        "参数均可选，-1 表示保持不变：mode(0不感知/1人形感知/2智能问候/3哨兵模式)、interval_s、"
         "threshold、duration_s、cooldown_s、known_only。",
         PropertyList({
-            Property("mode", kPropertyTypeInteger, -1, -1, 2),
+            Property("mode", kPropertyTypeInteger, -1, -1, 3),
             Property("interval_s", kPropertyTypeInteger, -1, -1, 3600),
             Property("threshold", kPropertyTypeInteger, -1, -1, 100),
             Property("duration_s", kPropertyTypeInteger, -1, -1, 60),

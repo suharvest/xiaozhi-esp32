@@ -44,9 +44,15 @@ public:
     // `error` on capture/network/parse failure.
     bool RecognizeOnce(std::vector<FaceHit>& hits, std::string* error = nullptr);
 
-    // Cycles 0 (off) -> 1 (local face detect wakes) -> 2 (detect locally,
-    // then recognize remotely; only known faces wake); persists and returns
-    // the new mode.
+    enum Mode {
+        kModeOff = 0,           // 不感知：关闭视觉，不唤醒
+        kModeHumanMotion = 1,   // 人形感知：本地人脸检测，有人即唤醒
+        kModeSmartGreeting = 2, // 智能问候：熟人叫名字主动问候，陌生人也唤醒
+        kModeSentry = 3,        // 哨兵模式：熟人免打扰，陌生人警戒
+    };
+
+    // Cycles 0 (off) -> 1 (human motion) -> 2 (smart greeting) -> 3 (sentry);
+    // persists and returns the new mode.
     int ToggleMode();
     int GetMode() const { return mode_.load(); }
     std::string GetEndpoint();

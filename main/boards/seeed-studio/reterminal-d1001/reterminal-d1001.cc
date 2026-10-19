@@ -917,6 +917,8 @@ public:
         return battery_ != nullptr && battery_->GetLevel(level, charging, discharging);
     }
 
+    virtual bool SuppressCommonDeviceTools() const override { return true; }
+
     virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }
 
     virtual Display* GetDisplay() override { return display_; }

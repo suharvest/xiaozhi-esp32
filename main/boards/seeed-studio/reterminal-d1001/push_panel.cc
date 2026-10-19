@@ -1,9 +1,12 @@
 #include "push_panel.h"
+#include "application.h"
+#include "settings.h"
 
 #include "application.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cstring>
@@ -19,6 +22,79 @@ namespace {
 constexpr size_t kMaxBodyBytes = 32 * 1024;
 constexpr int kDefaultChoiceTimeoutS = 60;
 constexpr int kHeaderHeight = 48;
+constexpr size_t kRemoteWakeMaxBody = 2048;
+constexpr size_t kRemoteWakeContextMax = 25;
+constexpr size_t kRemoteWakeSpeakMax = 512;
+constexpr int64_t kRemoteWakeDedupeUs = 15000000;
+std::string RemoteWakeToken() {
+    Settings s("remote_wake", false);
+    return s.GetString("token", "");
+}
+bool RemoteWakeEnabled() {
+    Settings s("remote_wake", false);
+    return s.GetBool("enabled", false) && !s.GetString("token", "").empty();
+}
+bool HasRemoteWakeAuth(httpd_req_t* req) {
+    std::string expected = RemoteWakeToken();
+    size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (expected.empty() || len < 7 || len > 255)
+        return false;
+    std::string got(len + 1, '\0');
+    if (httpd_req_get_hdr_value_str(req, "Authorization", got.data(), got.size()) != ESP_OK)
+        return false;
+    got.resize(len);
+    return got.compare(0, 7, "Bearer ") == 0 && got.substr(7) == expected;
+}
+bool ValidUtf8(const std::string& s) {
+    for (size_t i = 0; i < s.size();) {
+        const uint8_t c = static_cast<uint8_t>(s[i++]);
+        if (c == 0)
+            return false;
+        if (c <= 0x7f)
+            continue;
+        size_t n = c >= 0xc2 && c <= 0xdf   ? 1
+                   : c >= 0xe0 && c <= 0xef ? 2
+                   : c >= 0xf0 && c <= 0xf4 ? 3
+                                            : 0;
+        if (n == 0 || i + n > s.size())
+            return false;
+        uint32_t cp = c & ((1u << (6 - n)) - 1u);
+        for (size_t j = 0; j < n; ++j) {
+            const uint8_t d = static_cast<uint8_t>(s[i++]);
+            if ((d & 0xc0) != 0x80)
+                return false;
+            cp = (cp << 6) | (d & 0x3f);
+        }
+        if ((n == 2 && cp < 0x800) || (n == 3 && cp < 0x10000) || (cp >= 0xd800 && cp <= 0xdfff) ||
+            cp > 0x10ffff)
+            return false;
+    }
+    return true;
+}
+bool ContainsJsonNulEscape(const std::string& body) {
+    for (size_t pos = 0; (pos = body.find("u0000", pos)) != std::string::npos; ++pos) {
+        size_t slashes = 0;
+        for (size_t p = pos; p > 0 && body[p - 1] == '\\'; --p)
+            ++slashes;
+        if ((slashes & 1u) != 0)
+            return true;
+    }
+    return false;
+}
+const char* RemoteWakeState(DeviceState state) {
+    switch (state) {
+        case kDeviceStateIdle:
+            return "idle";
+        case kDeviceStateSpeaking:
+            return "speaking";
+        case kDeviceStateListening:
+            return "listening";
+        case kDeviceStateConnecting:
+            return "connecting";
+        default:
+            return "busy";
+    }
+}
 
 // Same accent as the settings overlay's primary actions.
 lv_color_t AccentColor() {
@@ -148,9 +224,20 @@ void PushPanel::Start() {
         {.uri = "/camera/raw", .method = HTTP_GET, .handler = RawThunk, .user_ctx = this},
         {.uri = "/face/status", .method = HTTP_GET, .handler = FaceStatusThunk, .user_ctx = this},
         {.uri = "/face/config", .method = HTTP_POST, .handler = FaceConfigThunk, .user_ctx = this},
+        {.uri = "/api/wake/status",
+         .method = HTTP_GET,
+         .handler = WakeStatusThunk,
+         .user_ctx = this},
+        {.uri = "/api/wake", .method = HTTP_POST, .handler = WakeThunk, .user_ctx = this},
     };
     for (const auto& h : handlers) {
-        httpd_register_uri_handler(server_, &h);
+        esp_err_t route_err = httpd_register_uri_handler(server_, &h);
+        if (route_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register route %s: %s", h.uri, esp_err_to_name(route_err));
+            httpd_stop(server_);
+            server_ = nullptr;
+            return;
+        }
     }
     ESP_LOGI(TAG, "push panel listening on port %d", config.server_port);
 }
@@ -271,6 +358,140 @@ esp_err_t PushPanel::HandleFaceConfig(httpd_req_t* req) {
     }
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_send(req, "OK\n", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t PushPanel::WakeStatusThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleWakeStatus(req);
+}
+esp_err_t PushPanel::WakeThunk(httpd_req_t* req) {
+    return static_cast<PushPanel*>(req->user_ctx)->HandleWake(req);
+}
+
+esp_err_t PushPanel::HandleWakeStatus(httpd_req_t* req) {
+    const bool enabled = RemoteWakeEnabled();
+    const bool authenticated = !enabled || HasRemoteWakeAuth(req);
+    if (!authenticated) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"unauthorized\",\"authenticated\":false}");
+    }
+    cJSON* r = cJSON_CreateObject();
+    cJSON_AddStringToObject(r, "state",
+                            RemoteWakeState(Application::GetInstance().GetDeviceState()));
+    cJSON_AddBoolToObject(r, "enabled", enabled);
+    cJSON_AddBoolToObject(r, "authenticated", authenticated);
+    if (!enabled)
+        cJSON_AddStringToObject(r, "reason", "not_configured");
+    cJSON* c = cJSON_AddObjectToObject(r, "capabilities");
+    cJSON_AddNumberToObject(c, "max_context_bytes", kRemoteWakeContextMax);
+    cJSON_AddNumberToObject(c, "max_speak_bytes", kRemoteWakeSpeakMax);
+#if CONFIG_SEND_WAKE_WORD_DATA
+    cJSON_AddBoolToObject(c, "context", enabled);
+    cJSON_AddBoolToObject(c, "speak", enabled);
+    cJSON_AddStringToObject(c, "speak_backend", "local_server_device_call_tts");
+#else
+    cJSON_AddBoolToObject(c, "context", false);
+    cJSON_AddBoolToObject(c, "speak", false);
+    cJSON_AddStringToObject(c, "reason", "send_wake_word_data_disabled");
+#endif
+    char* out = cJSON_PrintUnformatted(r);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t e = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    cJSON_Delete(r);
+    return e;
+}
+
+esp_err_t PushPanel::HandleWake(httpd_req_t* req) {
+    if (!RemoteWakeEnabled()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "remote wake disabled");
+        return ESP_FAIL;
+    }
+    if (!HasRemoteWakeAuth(req)) {
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "unauthorized");
+        return ESP_FAIL;
+    }
+#if !CONFIG_SEND_WAKE_WORD_DATA
+    httpd_resp_set_status(req, "501 Not Implemented");
+    httpd_resp_sendstr(req, "wake word data is disabled");
+    return ESP_FAIL;
+#else
+    if (req->content_len == 0 || req->content_len > kRemoteWakeMaxBody) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body");
+        return ESP_FAIL;
+    }
+    std::string body(req->content_len, '\0');
+    size_t off = 0;
+    while (off < body.size()) {
+        int n = httpd_req_recv(req, body.data() + off, body.size() - off);
+        if (n <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body");
+            return ESP_FAIL;
+        }
+        off += n;
+    }
+    const char* end = nullptr;
+    cJSON* root = cJSON_ParseWithLengthOpts(body.data(), body.size(), &end, 0);
+    cJSON* id = root ? cJSON_GetObjectItem(root, "request_id") : nullptr;
+    cJSON* mode = root ? cJSON_GetObjectItem(root, "mode") : nullptr;
+    cJSON* text = root ? cJSON_GetObjectItem(root, "text") : nullptr;
+    cJSON* ttl = root ? cJSON_GetObjectItem(root, "ttl_ms") : nullptr;
+    if (ContainsJsonNulEscape(body) || !root || !cJSON_IsObject(root) ||
+        end != body.data() + body.size() || !cJSON_IsString(id) || !cJSON_IsString(mode) ||
+        !cJSON_IsString(text) || !cJSON_IsNumber(ttl) || ttl->valuedouble != ttl->valueint ||
+        ttl->valueint < 1 || ttl->valueint > 15000 || strlen(id->valuestring) == 0 ||
+        strlen(id->valuestring) > 96 ||
+        (strcmp(mode->valuestring, "context") && strcmp(mode->valuestring, "speak")) ||
+        strlen(text->valuestring) == 0) {
+        if (root)
+            cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid wake request");
+        return ESP_FAIL;
+    }
+    int ttl_ms = ttl->valueint;
+    std::string rid = id->valuestring, m = mode->valuestring, payload = text->valuestring;
+    cJSON_Delete(root);
+    if (!ValidUtf8(payload) ||
+        payload.size() > (m == "context" ? kRemoteWakeContextMax : kRemoteWakeSpeakMax)) {
+        httpd_resp_set_status(req, "413 Content Too Large");
+        httpd_resp_sendstr(req, "text too long or invalid UTF-8");
+        return ESP_FAIL;
+    }
+    int64_t now = esp_timer_get_time();
+    const std::string fingerprint = m + "\n" + payload;
+    {
+        std::lock_guard<std::mutex> lock(wake_request_mutex_);
+        while (!wake_request_history_.empty() &&
+               now - wake_request_history_.front().accepted_us >= kRemoteWakeDedupeUs)
+            wake_request_history_.pop_front();
+        for (const auto& record : wake_request_history_)
+            if (record.id == rid) {
+                httpd_resp_set_type(req, "application/json");
+                if (record.fingerprint == fingerprint) {
+                    httpd_resp_set_status(req, "202 Accepted");
+                    return httpd_resp_sendstr(req, "{\"status\":\"duplicate\"}");
+                }
+                httpd_resp_set_status(req, "409 Conflict");
+                return httpd_resp_sendstr(req, "{\"error\":\"request_id_conflict\"}");
+            }
+    }
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle ||
+        !Application::GetInstance().RequestRemoteWake(
+            rid, m == "speak" ? "[device_call] " + payload : payload, now + ttl_ms * 1000LL)) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"device_busy\"}");
+    }
+    {
+        std::lock_guard<std::mutex> lock(wake_request_mutex_);
+        wake_request_history_.push_back({rid, fingerprint, now});
+        while (wake_request_history_.size() > 32)
+            wake_request_history_.pop_front();
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"accepted\"}");
+#endif
 }
 
 esp_err_t PushPanel::UsageThunk(httpd_req_t* req) {

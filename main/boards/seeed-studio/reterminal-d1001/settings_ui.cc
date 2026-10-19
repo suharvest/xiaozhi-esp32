@@ -489,6 +489,8 @@ void SettingsUi::Close() {
         return;
     }
     ESP_LOGI(TAG, "Closing settings overlay");
+    lv_async_call_cancel(AsyncThunk, this);
+    async_scheduled_ = false;
     scan_generation_++;
     pending_actions_.clear();
     lv_obj_delete(root_);
@@ -899,34 +901,67 @@ void SettingsUi::ShowFacePage() {
 
     lv_obj_t* body = BuildPage("人脸识别", Action::Close, false);
 
-    static const char* kModeNames[3] = {"关闭", "检测唤醒", "识别唤醒"};
-    static const char* kModeHints[3] = {"不采集", "本地检测到人脸即唤醒", "认识的人才唤醒"};
+    static const char* kModeNames[4] = {"不感知", "人形感知", "智能问候", "哨兵模式"};
+    static const char* kModeHints[4] = {
+        "关闭视觉，不唤醒",
+        "有人即唤醒，不认人脸",
+        "熟人叫名字，主动问候",
+        "熟人免打扰，陌生人警戒"
+    };
+    static const char* kModeIcons[4] = {
+        MATERIAL_SYMBOLS_CANCEL,
+        MATERIAL_SYMBOLS_PERSON,
+        MATERIAL_SYMBOLS_ROBOT_2,
+        MATERIAL_SYMBOLS_NOTIFICATIONS,
+    };
+
     lv_obj_t* grid = lv_obj_create(body);
     lv_obj_remove_style_all(grid);
     lv_obj_set_width(grid, LV_PCT(100));
     lv_obj_set_height(grid, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(grid, kGap, 0);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(grid, 12, 0);
+    lv_obj_set_style_pad_column(grid, 12, 0);
     lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
-    for (int i = 0; i < 3; i++) {
-        bool selected = i == pending_face_mode_;
+
+    for (int i = 0; i < 4; i++) {
+        bool selected = (i == pending_face_mode_);
         lv_obj_t* tile = lv_button_create(grid);
-        lv_obj_set_size(tile, LV_PCT(31), 132);
+        lv_obj_set_size(tile, LV_PCT(48), 108);
         lv_obj_set_style_radius(tile, kCardRadius, 0);
         lv_obj_set_style_shadow_width(tile, 0, 0);
         lv_obj_set_style_bg_color(tile, selected ? lv_color_hex(kAccentColor) : CardColor(), 0);
+        lv_obj_set_style_border_width(tile, selected ? 2 : 0, 0);
+        lv_obj_set_style_border_color(tile, lv_color_hex(kAccentColor), 0);
         if (selected) {
             lv_obj_set_style_text_color(tile, lv_color_hex(0xFFFFFF), 0);
         }
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_all(tile, 16, 0);
         lv_obj_set_style_pad_row(tile, 6, 0);
-        lv_obj_t* name = lv_label_create(tile);
+
+        lv_obj_t* hrow = lv_obj_create(tile);
+        lv_obj_remove_style_all(hrow);
+        lv_obj_set_size(hrow, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hrow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(hrow, 8, 0);
+
+        MakeIconLabel(hrow, kModeIcons[i], false);
+
+        lv_obj_t* name = lv_label_create(hrow);
         lv_label_set_text(name, kModeNames[i]);
+        lv_obj_set_flex_grow(name, 1);
+
+        if (selected) {
+            MakeIconLabel(hrow, MATERIAL_SYMBOLS_CHECK, false);
+        }
+
         lv_obj_t* hint = lv_label_create(tile);
         lv_label_set_text(hint, kModeHints[i]);
-        lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
+        lv_obj_set_style_text_opa(hint, selected ? LV_OPA_90 : LV_OPA_60, 0);
+
         Bind(tile, Action::FacePick, i);
     }
 
@@ -952,7 +987,7 @@ void SettingsUi::ShowFacePage() {
     }
 
     lv_obj_t* label = lv_label_create(body);
-    lv_label_set_text(label, "识别服务地址（识别唤醒模式使用）");
+    lv_label_set_text(label, "识别服务地址（智能问候/哨兵模式使用）");
 
     textarea_ = lv_textarea_create(body);
     lv_obj_set_width(textarea_, LV_PCT(100));
