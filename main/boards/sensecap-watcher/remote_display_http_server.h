@@ -4,6 +4,9 @@
 #include <esp_http_server.h>
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <deque>
+#include <mutex>
 
 class SscmaCamera;  // forward decl — avoids pulling the heavy camera header here
 
@@ -34,6 +37,8 @@ private:
     static esp_err_t HandleStartCast(httpd_req_t* req);
     static esp_err_t HandleStopCast(httpd_req_t* req);
     static esp_err_t HandleStatus(httpd_req_t* req);
+    static esp_err_t HandleWakeStatus(httpd_req_t* req);
+    static esp_err_t HandleWake(httpd_req_t* req);
     static esp_err_t HandleFaceEmbed(httpd_req_t* req);
     static esp_err_t HandleFaceBatchUpdate(httpd_req_t* req);
     // GET /api/face/current-speaker?fresh=0|1 — backend-direct identity pull.
@@ -46,6 +51,13 @@ private:
     // Rate limit for /api/face/embed: timestamp (us) of the last *accepted* call.
     std::atomic<int64_t> last_face_call_us_{0};
     httpd_handle_t server_ = nullptr;
+    struct WakeRequestRecord {
+        std::string id;
+        std::string fingerprint;
+        int64_t accepted_us;
+    };
+    std::deque<WakeRequestRecord> wake_request_history_;
+    std::mutex wake_request_mutex_;
     static RemoteDisplayHttpServer* instance_;
 };
 

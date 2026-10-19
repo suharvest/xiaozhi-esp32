@@ -1137,7 +1137,7 @@ void SscmaCamera::InitializeMcpTools() {
 
     auto& mcp_server = McpServer::GetInstance();
     // 设置/查询模型参数配置（不带参数=查询，与 self.vision.mode 同款模式）
-    mcp_server.AddTool("self.model.param_set",
+    mcp_server.AddUserOnlyTool("self.model.param_set",
         "配置或查询视觉模型检测参数。不带任何参数调用=查询当前配置。\n"
         "参数(均为可选，未提供的保持不变)：\n"
         "  `threshold`: 置信度阈值 (0-100)。提高可减少误报，但可能漏检；\n"
@@ -1223,7 +1223,7 @@ void SscmaCamera::InitializeMcpTools() {
     // Unified proactive-wake switch: one tool covering all four mutually
     // exclusive modes (replaces the old self.model.enable / self.face.enable /
     // self.face.familiar_mode trio).
-    mcp_server.AddTool("self.vision.mode",
+    mcp_server.AddUserOnlyTool("self.vision.mode",
         "设置或查询摄像头主动唤醒模式（四种互斥；不带 mode 参数=查询）。\n"
         "  0=关闭  1=人脸检测（只判断有没有人，不识别身份）\n"
         "  2=人脸识别（熟人报名字，陌生人报 person detected）  3=熟人免打扰（仅陌生人唤醒）\n"
@@ -1776,7 +1776,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // face-recognition mode (mode 2/3) survives reboot.
 
     // Tool: List all faces
-    mcp_server.AddTool("self.face.list",
+    mcp_server.AddUserOnlyTool("self.face.list",
         "列出本地数据库中所有已录入的人脸。\n"
         "使用场景：当用户问'有哪些人脸'、'你认识谁'时调用。\n"
         "返回：已录入人脸的名称列表",
@@ -1797,7 +1797,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // Tool: query the current conversation speaker (for permission-gated commands).
     // State is owned board-locally by FaceRecognition; the camera task freezes it
     // at conversation start and clears it at conversation end.
-    mcp_server.AddTool("self.conversation.speaker",
+    mcp_server.AddUserOnlyTool("self.conversation.speaker",
         "返回当前对话的说话人身份（基于人脸识别）。仅用于闲聊类问题：用户问"
         "「你知道在跟谁说话吗」时调用。\n"
         "禁止：不要在出库/入库/移库等任何仓库操作前调用本工具——那些操作的身份"
@@ -1833,7 +1833,7 @@ void SscmaCamera::InitializeFaceMcpTools() {
     // IdentifyOnce()/identify_op_mutex_ with the backend pull, so the two never
     // race a frame (one gets kBusy). allow_preview=true: runs on the main loop,
     // where SetPreviewImage is safe, so the user sees their photo.
-    mcp_server.AddTool("self.face.identify",
+    mcp_server.AddUserOnlyTool("self.face.identify",
         "现场拍一张照做人脸识别，仅用于回答「你是谁」这类问题（体验用途，不用于任何鉴权）。\n"
         "使用场景：仅当用户明确问「你能认出我吗 / 我是谁 / 看看这是谁」时调用。\n"
         "禁止：不要在出库/入库/移库等任何仓库操作前调用本工具做身份确认——那些操作"

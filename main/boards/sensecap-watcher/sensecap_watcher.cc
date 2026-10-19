@@ -16,13 +16,18 @@
 #include "remote_display_http_server.h"
 #include "face_serial_handler.h"
 #include "mcp_server.h"
+#include "settings.h"
+#include "watcher_settings_ui.h"
 #include <wifi_manager.h>
+#include <ssid_manager.h>
 
 #include <esp_log.h>
 #include <esp_check.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_spd2010.h>
+#include <esp_lcd_touch_spd2010.h>
+#include <esp_lvgl_port_touch.h>
 #include <esp_adc/adc_oneshot.h>
 #include <driver/spi_master.h>
 #include <driver/i2c_master.h>
@@ -118,6 +123,50 @@ class CustomLcdDisplay : public SpiLcdDisplay {
             // 针对圆形屏幕调整底部对话框位置，避免被圆角遮挡
             lv_obj_set_style_pad_bottom(bottom_bar_, 30, 0);
             lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.75); // 限制宽度，避免文字贴边
+
+            // 监听主屏手势与滑动作操作，调出快捷设置或感知模式
+            lv_obj_t* screen = lv_screen_active();
+            lv_obj_add_event_cb(screen, [](lv_event_t* e) {
+                auto* self = static_cast<CustomLcdDisplay*>(lv_event_get_user_data(e));
+                if (!self->gesture_cb_) return;
+                lv_event_code_t code = lv_event_get_code(e);
+                if (code == LV_EVENT_GESTURE) {
+                    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+                    self->screen_touch_tracking_ = false;
+                    auto* indev = lv_indev_active();
+                    if (indev) lv_indev_wait_release(indev);
+                    self->gesture_cb_(dir);
+                } else if (code == LV_EVENT_PRESSED) {
+                    lv_indev_get_point(lv_indev_active(), &self->screen_touch_start_);
+                    self->screen_touch_tracking_ = true;
+                } else if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_INDEV_RESET) {
+                    self->screen_touch_tracking_ = false;
+                } else if (code == LV_EVENT_RELEASED && self->screen_touch_tracking_) {
+                    self->screen_touch_tracking_ = false;
+                    lv_point_t end_pos;
+                    lv_indev_get_point(lv_indev_active(), &end_pos);
+                    int dx = end_pos.x - self->screen_touch_start_.x;
+                    int dy = end_pos.y - self->screen_touch_start_.y;
+                    if (dy > 45 && std::abs(dx) < 40) {
+                        auto* indev = lv_indev_active();
+                        if (indev) lv_indev_wait_release(indev);
+                        self->gesture_cb_(LV_DIR_BOTTOM);
+                    } else if (dx < -50 && std::abs(dy) < 40) {
+                        auto* indev = lv_indev_active();
+                        if (indev) lv_indev_wait_release(indev);
+                        self->gesture_cb_(LV_DIR_LEFT);
+                    } else if (dx > 50 && std::abs(dy) < 40) {
+                        auto* indev = lv_indev_active();
+                        if (indev) lv_indev_wait_release(indev);
+                        self->gesture_cb_(LV_DIR_RIGHT);
+                    }
+                }
+            }, LV_EVENT_ALL, this);
+        }
+
+        using GestureCallback = std::function<void(lv_dir_t)>;
+        void SetGestureCallback(GestureCallback cb) {
+            gesture_cb_ = std::move(cb);
         }
 
         // Refresh the vision mode indicator alongside the standard status bar.
@@ -182,12 +231,18 @@ class CustomLcdDisplay : public SpiLcdDisplay {
     private:
         lv_obj_t* mode_label_ = nullptr;     // vision mode indicator
         const char* mode_icon_ = nullptr;    // cached icon to avoid redundant redraws
+        GestureCallback gesture_cb_;
+        lv_point_t screen_touch_start_ = {0, 0};
+        bool screen_touch_tracking_ = false;
 };
 
 class SensecapWatcher : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
-    LcdDisplay* display_;
+    CustomLcdDisplay* display_ = nullptr;
+    std::unique_ptr<WatcherSettingsUi> settings_ui_;
+    i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
+    esp_lcd_touch_handle_t touch_handle_ = nullptr;
     std::unique_ptr<Knob> knob_;
     esp_io_expander_handle_t io_exp_handle;
     SemaphoreHandle_t io_exp_mutex_ = nullptr;  // I2C 操作互斥锁
@@ -307,6 +362,12 @@ private:
     }
 
     void OnKnobRotate(bool clockwise) {
+        if (settings_ui_ && settings_ui_->IsOpen()) {
+            settings_ui_->OnKnobRotate(clockwise);
+            power_save_timer_->WakeUp();
+            return;
+        }
+
         auto codec = GetAudioCodec();
         int current_volume = codec->output_volume();
         int new_volume = current_volume + (clockwise ? -5 : 5); 
@@ -366,6 +427,11 @@ private:
         iot_button_register_cb(btns, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<SensecapWatcher*>(usr_data);
             self->power_save_timer_->WakeUp();
+
+            if (self->settings_ui_ && self->settings_ui_->IsOpen()) {
+                self->settings_ui_->OnKnobClick();
+                return;
+            }
 
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
@@ -474,6 +540,116 @@ private:
             area->x2 = ((x2 >> 2) << 2) + 3;
         }, LV_EVENT_INVALIDATE_AREA, NULL);
         
+    }
+
+    void InitializeTouch() {
+        ESP_LOGI(TAG, "Initializing SPD2010 touch controller");
+        gpio_reset_pin(BSP_TOUCH_I2C_SDA);
+        gpio_reset_pin(BSP_TOUCH_I2C_SCL);
+
+        i2c_master_bus_config_t touch_i2c_bus_cfg = {
+            .i2c_port = (i2c_port_t)BSP_TOUCH_I2C_NUM,
+            .sda_io_num = BSP_TOUCH_I2C_SDA,
+            .scl_io_num = BSP_TOUCH_I2C_SCL,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {
+                .enable_internal_pullup = 1,
+            },
+        };
+        esp_err_t ret = i2c_new_master_bus(&touch_i2c_bus_cfg, &touch_i2c_bus_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create touch I2C bus: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        esp_lcd_panel_io_i2c_config_t tp_io_config = {};
+        tp_io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_SPD2010_ADDRESS;
+        tp_io_config.scl_speed_hz = 100000;
+        tp_io_config.control_phase_bytes = 1;
+        tp_io_config.flags.disable_control_phase = 1;
+
+        esp_lcd_panel_io_handle_t tp_io_handle = nullptr;
+        ret = esp_lcd_new_panel_io_i2c(touch_i2c_bus_, &tp_io_config, &tp_io_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create touch panel IO: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        const esp_lcd_touch_config_t tp_cfg = {
+            .x_max = DISPLAY_WIDTH,
+            .y_max = DISPLAY_HEIGHT,
+            .rst_gpio_num = GPIO_NUM_NC,
+            .int_gpio_num = GPIO_NUM_NC,
+            .levels = {
+                .reset = 0,
+                .interrupt = 0,
+            },
+            .flags = {
+                .swap_xy = DISPLAY_SWAP_XY,
+                .mirror_x = DISPLAY_MIRROR_X,
+                .mirror_y = DISPLAY_MIRROR_Y,
+            },
+        };
+        ret = esp_lcd_touch_new_i2c_spd2010(tp_io_handle, &tp_cfg, &touch_handle_);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create touch driver: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_lcd_touch_read_data(touch_handle_);
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        const lvgl_port_touch_cfg_t touch_port_cfg = {
+            .disp = lv_display_get_default(),
+            .handle = touch_handle_,
+        };
+        lv_indev_t* touch_indev = lvgl_port_add_touch(&touch_port_cfg);
+        if (touch_indev == nullptr) {
+            ESP_LOGE(TAG, "Failed to add touch device to LVGL");
+            return;
+        }
+        ESP_LOGI(TAG, "Touch panel initialized successfully");
+    }
+
+    void InitializeSettingsUi() {
+        settings_ui_ = std::make_unique<WatcherSettingsUi>(display_, [this]() {
+            ESP_LOGI(TAG, "Settings UI closed");
+        });
+        settings_ui_->SetBacklight(GetBacklight());
+        settings_ui_->SetCamera(camera_);
+        settings_ui_->SetActivityCallback([this]() {
+            if (power_save_timer_) {
+                power_save_timer_->WakeUp();
+            }
+        });
+        settings_ui_->SetBatteryInfoProvider(
+            [this]() { return (int)BatterygetPercent(false); },
+            [this]() { return BatterygetVoltage(); }
+        );
+
+        display_->SetGestureCallback([this](lv_dir_t dir) {
+            power_save_timer_->WakeUp();
+            if (settings_ui_ == nullptr) return;
+            if (settings_ui_->IsOpen()) {
+                settings_ui_->HandleTouchGesture(dir);
+                return;
+            }
+
+            if (dir == LV_DIR_BOTTOM) {
+                ESP_LOGI(TAG, "Swipe DOWN detected -> Open QuickSettings");
+                settings_ui_->Open(WatcherSettingsPage::QuickSettings);
+            } else if (dir == LV_DIR_LEFT) {
+                ESP_LOGI(TAG, "Swipe LEFT detected -> Open VisionMode");
+                settings_ui_->Open(WatcherSettingsPage::VisionMode);
+            } else if (dir == LV_DIR_RIGHT) {
+                ESP_LOGI(TAG, "Swipe RIGHT detected -> Open Parameters");
+                settings_ui_->Open(WatcherSettingsPage::Parameters);
+            }
+        });
     }
 
     uint16_t BatterygetVoltage(void) {
@@ -806,6 +982,115 @@ private:
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_static_ip));
 
+        const esp_console_cmd_t cmd_wifi_set = {
+            .command = "wifi_set",
+            .help = "Set WiFi credentials and reboot: wifi_set <ssid> [password]",
+            .hint = NULL,
+            .func = [](int argc, char** argv) -> int {
+                if (argc < 2) {
+                    printf("Usage: wifi_set <ssid> [password]\n");
+                    return 1;
+                }
+                std::string ssid = argv[1];
+                std::string password = (argc >= 3) ? argv[2] : "";
+                SsidManager::GetInstance().AddSsid(ssid, password);
+                printf("WiFi credentials saved for '%s'. Rebooting...\n", ssid.c_str());
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+                return 0;
+            },
+            .argtable = NULL
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_wifi_set));
+
+        // Register local-only remote wake configuration command.
+        const esp_console_cmd_t cmd_remote_wake = {
+            .command = "remote_wake",
+            .help = "Configure LAN remote wake. Usage: remote_wake status|enable [token]|disable|clear",
+            .hint = NULL,
+            .func = NULL,
+            .argtable = NULL,
+            .func_w_context = [](void *context, int argc, char** argv) -> int {
+                constexpr const char* kNamespace = "remote_wake";
+                constexpr const char* kTokenKey = "token";
+                constexpr const char* kEnabledKey = "enabled";
+                constexpr const char* kTokenChars =
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-";
+                auto valid_token = [kTokenChars](const std::string& token) {
+                    return token.size() >= 16 && token.size() <= 128 &&
+                           token.find_first_not_of(kTokenChars) == std::string::npos;
+                };
+
+                if (argc < 2) {
+                    printf("Usage: remote_wake status|enable [token]|disable|clear\n");
+                    return 1;
+                }
+
+                const char* subcmd = argv[1];
+                Settings settings(kNamespace, false);
+                if (strcmp(subcmd, "status") == 0) {
+                    if (argc != 2) {
+                        printf("Usage: remote_wake status\n");
+                        return 1;
+                    }
+                    const bool enabled = settings.GetBool(kEnabledKey, false);
+                    const bool token_configured = !settings.GetString(kTokenKey, "").empty();
+                    printf("{\"enabled\":%s,\"token_configured\":%s}\n",
+                           enabled ? "true" : "false",
+                           token_configured ? "true" : "false");
+                    return 0;
+                }
+
+                if (strcmp(subcmd, "enable") == 0) {
+                    if (argc > 3) {
+                        printf("Usage: remote_wake enable [token]\n");
+                        return 1;
+                    }
+                    const std::string current_token = settings.GetString(kTokenKey, "");
+                    const std::string token = argc == 3 ? argv[2] : current_token;
+                    if (!valid_token(token)) {
+                        printf("remote_wake enable requires a valid token (16..128 ASCII characters)\n");
+                        return 1;
+                    }
+                    Settings writable(kNamespace, true);
+                    if (argc == 3) {
+                        writable.SetString(kTokenKey, token);
+                    }
+                    writable.SetBool(kEnabledKey, true);
+                    printf("{\"success\":true,\"enabled\":true,\"token_configured\":true}\n");
+                    return 0;
+                }
+
+                if (strcmp(subcmd, "disable") == 0) {
+                    if (argc != 2) {
+                        printf("Usage: remote_wake disable\n");
+                        return 1;
+                    }
+                    Settings writable(kNamespace, true);
+                    writable.SetBool(kEnabledKey, false);
+                    printf("{\"success\":true,\"enabled\":false}\n");
+                    return 0;
+                }
+
+                if (strcmp(subcmd, "clear") == 0) {
+                    if (argc != 2) {
+                        printf("Usage: remote_wake clear\n");
+                        return 1;
+                    }
+                    Settings writable(kNamespace, true);
+                    writable.SetString(kTokenKey, "");
+                    writable.SetBool(kEnabledKey, false);
+                    printf("{\"success\":true,\"enabled\":false,\"token_configured\":false}\n");
+                    return 0;
+                }
+
+                printf("Unknown remote_wake subcommand\n");
+                return 1;
+            },
+            .context = this
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_remote_wake));
+
         // Register face database CRUD commands
         FaceSerialHandler::GetInstance().RegisterCommands();
 
@@ -933,7 +1218,7 @@ private:
 
     void RegisterScreenCastTool() {
         auto& mcp_server = McpServer::GetInstance();
-        mcp_server.AddTool("self.screen_cast",
+        mcp_server.AddUserOnlyTool("self.screen_cast",
             "控制投屏功能的开启与关闭。\n"
             "当用户说'开启投屏'、'打开投屏'时，使用 enable=1 开启。\n"
             "当用户说'关闭投屏'、'停止投屏'时，使用 enable=0 关闭。\n"
@@ -967,7 +1252,7 @@ private:
         // 查询本机 WiFi IP 地址。
         // 使用场景：当用户问"你的IP地址是多少"、"设备IP"、"局域网地址"时调用。
         // 返回：{"ip":"192.168.x.x","connected":true} 或 {"ip":"","connected":false}
-        mcp_server.AddTool("self.get_ip_address",
+        mcp_server.AddUserOnlyTool("self.get_ip_address",
             "获取本设备的 WiFi 局域网 IP 地址。\n"
             "使用场景：当用户问'你的IP地址是多少'、'设备IP'、'局域网地址'、'怎么连你'时调用。\n"
             "返回：JSON，包含 ip(IPv4 地址字符串) 和 connected(是否已联网)。",
@@ -1048,9 +1333,13 @@ public:
         InitializeKnob();
         Initializespd2010Display();
         GetBacklight()->RestoreBrightness();  // 对于不带摄像头的版本，InitializeCamera需要3s, 所以先恢复背光亮度
+        InitializeTouch();
         InitializeCamera();
+        InitializeSettingsUi();
         InitializeRemoteDisplay();
     }
+
+    virtual bool SuppressCommonDeviceTools() const override { return true; }
 
     virtual AudioCodec* GetAudioCodec() override {
         static SensecapAudioCodec audio_codec(
