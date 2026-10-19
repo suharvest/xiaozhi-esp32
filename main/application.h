@@ -131,6 +131,9 @@ public:
 
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
+    // Queue a board-owned remote wake request. This path is idle-only.
+    bool RequestRemoteWake(const std::string& request_id, const std::string& text,
+                           int64_t deadline_us);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
@@ -188,6 +191,8 @@ private:
     int clock_ticks_ = 0;
     std::atomic<int64_t> last_incoming_audio_time_{0};  // Track last audio/TTS data while speaking
     OpusForwardCallback opus_forward_callback_;
+    std::mutex remote_wake_mutex_;
+    bool remote_wake_pending_ = false;
     TaskHandle_t activation_task_handle_ = nullptr;
 
     // MQTT/UDP uplink health probe: MQTT carries audio over raw UDP, which
@@ -220,8 +225,8 @@ private:
     void HandleActivationDoneEvent();
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
-    void BeginWakeWordInvoke(const std::string& wake_word);
-    void ContinueWakeWordInvoke(const std::string& wake_word);
+    void BeginWakeWordInvoke(const std::string& wake_word, int64_t deadline_us = 0);
+    void ContinueWakeWordInvoke(const std::string& wake_word, int64_t deadline_us = 0);
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
 

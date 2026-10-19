@@ -1086,7 +1086,9 @@ void Application::HandleWakeWordDetectedEvent() {
     }
 }
 
-void Application::BeginWakeWordInvoke(const std::string& wake_word) {
+void Application::BeginWakeWordInvoke(const std::string& wake_word, int64_t deadline_us) {
+    if (deadline_us != 0 && esp_timer_get_time() > deadline_us)
+        return;
     // The wake-word cache keeps filling while the channel connects (bridge in
     // the AFE engine); encoding is deferred to ContinueWakeWordInvoke so the
     // snapshot includes speech spoken during the connect gap.
@@ -1104,16 +1106,21 @@ void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     if (!protocol_->IsAudioChannelOpened()) {
         // Schedule to let the state change be processed first (UI update),
         // then continue with OpenAudioChannel which may block for ~1 second
-        Schedule([this, wake_word]() { ContinueWakeWordInvoke(wake_word); });
+        Schedule(
+            [this, wake_word, deadline_us]() { ContinueWakeWordInvoke(wake_word, deadline_us); });
         return;
     }
     // Channel already opened, continue directly
-    ContinueWakeWordInvoke(wake_word);
+    ContinueWakeWordInvoke(wake_word, deadline_us);
 }
 
-void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+void Application::ContinueWakeWordInvoke(const std::string& wake_word, int64_t deadline_us) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
+        return;
+    }
+    if (deadline_us != 0 && esp_timer_get_time() > deadline_us) {
+        SetDeviceState(kDeviceStateIdle);
         return;
     }
 
@@ -1131,13 +1138,35 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
         }
     }
 
+    if (deadline_us != 0 && esp_timer_get_time() > deadline_us) {
+        protocol_->CloseAudioChannel(false);
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    }
+
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
+    auto wake_deadline_expired = [this, deadline_us]() {
+        if (deadline_us != 0 && esp_timer_get_time() > deadline_us) {
+            while (audio_service_.PopWakeWordPacket()) {
+            }
+            protocol_->CloseAudioChannel(false);
+            SetDeviceState(kDeviceStateIdle);
+            return true;
+        }
+        return false;
+    };
+    if (wake_deadline_expired())
+        return;
     // Snapshot the cache now (wake phrase + connect-gap speech) and send it
     audio_service_.EncodeWakeWord();
     while (auto packet = audio_service_.PopWakeWordPacket()) {
+        if (wake_deadline_expired())
+            return;
         protocol_->SendAudio(std::move(packet));
     }
+    if (wake_deadline_expired())
+        return;
     // Set the chat state to wake word detected
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
@@ -1392,6 +1421,27 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
             }
         });
     }
+}
+
+bool Application::RequestRemoteWake(const std::string& request_id, const std::string& text,
+                                    int64_t deadline_us) {
+    std::lock_guard<std::mutex> lock(remote_wake_mutex_);
+    if (remote_wake_pending_ || !protocol_ || request_id.empty() || text.empty() ||
+        GetDeviceState() != kDeviceStateIdle) {
+        return false;
+    }
+    remote_wake_pending_ = true;
+    // HTTP handlers run outside the application task. Re-check idle immediately
+    // before entering the same BeginWakeWordInvoke path used by face events.
+    Schedule([this, text, deadline_us]() {
+        if (protocol_ && GetDeviceState() == kDeviceStateIdle &&
+            esp_timer_get_time() <= deadline_us) {
+            BeginWakeWordInvoke(text, deadline_us);
+        }
+        std::lock_guard<std::mutex> lock(remote_wake_mutex_);
+        remote_wake_pending_ = false;
+    });
+    return true;
 }
 
 bool Application::CanEnterSleepMode() {

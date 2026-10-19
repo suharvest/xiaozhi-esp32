@@ -151,7 +151,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "Missing message type, data: %s", std::string(data, len).c_str());
+                ESP_LOGE(TAG, "Missing WebSocket message type (length=%zu)", len);
             }
             cJSON_Delete(root);
         }

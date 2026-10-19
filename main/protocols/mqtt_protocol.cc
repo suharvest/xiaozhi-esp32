@@ -113,7 +113,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {
         cJSON* root = cJSON_Parse(payload.c_str());
         if (root == nullptr) {
-            ESP_LOGE(TAG, "Failed to parse json message %s", payload.c_str());
+            ESP_LOGE(TAG, "Failed to parse MQTT JSON message (length=%zu)", payload.size());
             return;
         }
         cJSON* type = cJSON_GetObjectItem(root, "type");
