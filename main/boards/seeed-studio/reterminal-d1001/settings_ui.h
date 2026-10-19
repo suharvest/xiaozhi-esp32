@@ -101,6 +101,7 @@ private:
     enum class Action {
         Close,
         ShowDisplay,
+        ThemePick,
         WifiRescan,
         WifiSavedList,
         WifiManualSsid,

@@ -138,7 +138,6 @@ public:
         lv_obj_add_event_cb(status_actions_, OnStatusGesture, LV_EVENT_ALL, this);
 
         settings_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_SETTINGS, OnSettingsClicked);
-        rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
         volume_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_VOLUME_UP, OnVolumeClicked);
         face_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_PERSON, OnFaceClicked);
         {
@@ -155,7 +154,6 @@ public:
         // re-pointed at the new ones before anything can draw with a dangling
         // pointer.
         ApplyStatusIconStyle(settings_icon_);
-        ApplyStatusIconStyle(rotation_icon_);
         ApplyStatusIconStyle(volume_icon_);
         ApplyStatusIconStyle(face_icon_);
         {
@@ -314,7 +312,7 @@ private:
     }
 
     static void OnSettingsClicked(lv_event_t* event) {
-        Dispatch(event, SettingsPage::Wifi);
+        Dispatch(event, SettingsPage::Display);
     }
 
     static void OnRotationClicked(lv_event_t* event) {
@@ -355,7 +353,7 @@ private:
             if (indev != nullptr && lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM) {
                 self->gesture_tracking_ = false;
                 lv_indev_wait_release(indev);
-                Dispatch(event, SettingsPage::Wifi);
+                Dispatch(event, SettingsPage::Display);
             }
             return;
         }
@@ -383,7 +381,7 @@ private:
             if (dy >= kPullOpenDistance && dy * 2 > adx * 3) {
                 self->gesture_tracking_ = false;
                 lv_indev_wait_release(indev);
-                Dispatch(event, SettingsPage::Wifi);
+                Dispatch(event, SettingsPage::Display);
             }
             return;
         }
@@ -413,7 +411,6 @@ private:
     lv_obj_t* network_hotspot_ = nullptr;
     lv_obj_t* status_actions_ = nullptr;
     lv_obj_t* settings_icon_ = nullptr;
-    lv_obj_t* rotation_icon_ = nullptr;
     lv_obj_t* volume_icon_ = nullptr;
     lv_obj_t* face_icon_ = nullptr;
     lv_point_t gesture_start_ = {};

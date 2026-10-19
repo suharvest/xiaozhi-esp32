@@ -4,6 +4,7 @@
 #include "audio/audio_codec.h"
 #include "board.h"
 #include "settings.h"
+#include "display/lvgl_display/lvgl_theme.h"
 
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -449,6 +450,7 @@ lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with
 
     lv_obj_t* title_label = lv_label_create(header_);
     lv_label_set_text(title_label, title);
+    lv_obj_set_style_text_color(title_label, ThemeTextColor(), 0);
     lv_obj_set_flex_grow(title_label, 1);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
 
@@ -553,6 +555,7 @@ lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action 
     if (font != nullptr) {
         lv_obj_set_style_text_font(kb, font, LV_PART_ITEMS);
     }
+    lv_obj_set_style_text_color(kb, ThemeTextColor(), LV_PART_ITEMS);
     const lv_color_t card = CardColor();
     const lv_color_t function_key = RaisedSurfaceColor();
     const lv_color_t pressed = lv_color_mix(AccentColor(), card, 64);
@@ -731,6 +734,7 @@ void SettingsUi::Open(SettingsPage page) {
     lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_move_foreground(root_);
@@ -1364,9 +1368,59 @@ void SettingsUi::ShowDisplaySettings() {
         pending_rotation_ = current;
     }
 
-    lv_obj_t* body = BuildPage("屏幕方向", Action::Close, false);
+    lv_obj_t* body = BuildPage("显示与系统", Action::Close, false);
     lv_obj_t* content = MakeScrollArea(body);
-    MakeSectionLabel(content, "方向");
+
+    MakeSectionLabel(content, "外观风格");
+    {
+        lv_obj_t* theme_grid = lv_obj_create(content);
+        lv_obj_remove_style_all(theme_grid);
+        lv_obj_set_width(theme_grid, LV_PCT(100));
+        lv_obj_set_height(theme_grid, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(theme_grid, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(theme_grid, kGap, 0);
+        lv_obj_set_scrollbar_mode(theme_grid, LV_SCROLLBAR_MODE_OFF);
+
+        bool is_dark = !IsLightTheme();
+        const char* theme_titles[2] = {"明亮模式", "暗黑模式"};
+        const char* theme_subs[2] = {"浅色背景", "深色背景"};
+        const char* theme_glyphs[2] = {MATERIAL_SYMBOLS_BRIGHTNESS_6, MATERIAL_SYMBOLS_EYEGLASSES};
+
+        for (int i = 0; i < 2; i++) {
+            bool selected = (i == 1) == is_dark;
+            lv_obj_t* tile = lv_button_create(theme_grid);
+            lv_obj_set_flex_grow(tile, 1);
+            lv_obj_set_height(tile, 120);
+            lv_obj_set_style_radius(tile, kCardRadius, 0);
+            lv_obj_set_style_shadow_width(tile, 0, 0);
+            lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
+            lv_obj_set_style_bg_opa(tile, LV_OPA_90, 0);
+            lv_obj_set_style_border_width(tile, selected ? 2 : 1, 0);
+            lv_obj_set_style_border_color(tile, selected ? AccentColor() : SurfaceBorderColor(), 0);
+            lv_obj_set_style_border_opa(tile, selected ? LV_OPA_COVER : LV_OPA_60, 0);
+            ApplyPressFeedback(tile, selected ? AccentWashStrongColor() : CardColor());
+            lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_row(tile, 6, 0);
+
+            lv_obj_t* icon = MakeIconLabel(tile, theme_glyphs[i], true);
+            lv_obj_set_style_text_color(icon, selected ? AccentInkColor() : ThemeTextColor(), 0);
+
+            lv_obj_t* label = lv_label_create(tile);
+            lv_label_set_text(label, theme_titles[i]);
+            lv_obj_set_style_text_color(label, selected ? AccentInkColor() : ThemeTextColor(), 0);
+
+            lv_obj_t* sub = lv_label_create(tile);
+            lv_label_set_text(sub, theme_subs[i]);
+            lv_obj_set_style_text_color(sub, selected ? AccentInkColor() : ThemeTextColor(), 0);
+            lv_obj_set_style_text_opa(sub, selected ? LV_OPA_90 : LV_OPA_60, 0);
+
+            Bind(tile, Action::ThemePick, i);
+        }
+    }
+
+    MakeSectionLabel(content, "屏幕方向");
 
     lv_obj_t* grid = lv_obj_create(content);
     lv_obj_remove_style_all(grid);
@@ -1597,6 +1651,26 @@ void SettingsUi::HandleAction(Action action, int index) {
         case Action::ShowDisplay:
             ShowDisplaySettings();
             return;
+        case Action::ThemePick: {
+            bool pick_dark = (index == 1);
+            bool is_current_dark = !IsLightTheme();
+            if (pick_dark == is_current_dark) {
+                return;
+            }
+            const char* theme_name = pick_dark ? "dark" : "light";
+            auto* next_theme = LvglThemeManager::GetInstance().GetTheme(theme_name);
+            if (next_theme != nullptr && display_ != nullptr) {
+                display_->SetTheme(next_theme);
+                Settings settings("display", true);
+                settings.SetString("theme", theme_name);
+                if (root_ != nullptr) {
+                    lv_obj_set_style_bg_color(root_, ScreenBackground(), 0);
+                    lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
+                }
+                ShowDisplaySettings();
+            }
+            return;
+        }
         case Action::WifiRescan:
             ShowWifiPage();
             return;
