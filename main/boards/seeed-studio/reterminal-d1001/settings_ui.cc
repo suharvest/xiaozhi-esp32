@@ -40,15 +40,13 @@ constexpr uint32_t kPanelInMs = 320;
 constexpr uint32_t kPanelOutMs = 240;
 constexpr uint32_t kPageInMs = 240;
 constexpr int32_t kPressScale = 250;  // 1/256 units -> 0.977
-constexpr int kKnobGrow = 14;
-constexpr int kKnobGrowPressed = 18;
 
 // SenseCraft palette. The green is used as a surface, never as small text on a
 // light background: filled green surfaces carry ink-colored content, while
 // accent text/icons switch to a deeper green on the light theme.
 constexpr uint32_t kSenseCraftGreen = 0x8CC020;
 constexpr uint32_t kSenseCraftInk = 0x172126;
-constexpr uint32_t kAccentInkLight = 0x3B5A11;
+constexpr uint32_t kAccentInkLight = 0x243E06;
 constexpr uint32_t kAccentInkDark = 0x9ED13A;
 constexpr uint32_t kDangerColor = 0xC02B38;
 constexpr uint32_t kSuccessColor = 0x2E7D32;
@@ -211,6 +209,7 @@ SettingsUi::~SettingsUi() {
         lv_obj_delete(root_);
         root_ = nullptr;
     }
+    retired_pages_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +305,19 @@ lv_obj_t* SettingsUi::MakeIconLabel(lv_obj_t* parent, const char* glyph, bool la
 }
 
 void SettingsUi::RefreshIconFonts() {
-    for (const auto& entry : icon_labels_) {
-        const lv_font_t* font = IconFont(entry.second);
-        if (font != nullptr) {
-            lv_obj_set_style_text_font(entry.first, font, 0);
+    auto refresh = [this](const std::vector<std::pair<lv_obj_t*, bool>>& labels) {
+        for (const auto& entry : labels) {
+            const lv_font_t* font = IconFont(entry.second);
+            if (font != nullptr) {
+                lv_obj_set_style_text_font(entry.first, font, 0);
+            }
         }
+    };
+    refresh(icon_labels_);
+    // Retired pages are still visible during the cross-fade, so their icon
+    // labels must also move to the new font before the old one is freed.
+    for (const auto& page : retired_pages_) {
+        refresh(page->icon_labels);
     }
 }
 
@@ -358,26 +365,72 @@ lv_obj_t* SettingsUi::MakeSectionLabel(lv_obj_t* parent, const char* text) {
     return label;
 }
 
-void SettingsUi::ClearPage() {
-    if (body_ != nullptr) {
-        lv_obj_delete(body_);
-        body_ = nullptr;
+void SettingsUi::RetireCurrentPage() {
+    if (header_ == nullptr && body_ == nullptr) {
+        return;
     }
-    if (header_ != nullptr) {
-        lv_obj_delete(header_);
-        header_ = nullptr;
-    }
+    auto page = std::unique_ptr<RetiredPage>(new RetiredPage{
+        this, header_, body_, std::move(event_ctx_), std::move(icon_labels_)});
+    header_ = nullptr;
+    body_ = nullptr;
     textarea_ = nullptr;
     keyboard_ = nullptr;
     volume_slider_ = nullptr;
     volume_value_ = nullptr;
     volume_icon_ = nullptr;
-    icon_labels_.clear();
-    event_ctx_.clear();
+    AnimateRetired(page.get());
+    retired_pages_.push_back(std::move(page));
+}
+
+void SettingsUi::AnimateRetired(RetiredPage* page) {
+    if (page == nullptr) {
+        return;
+    }
+    lv_obj_t* targets[] = {page->header, page->body};
+    lv_obj_t* completion_target = page->body != nullptr ? page->body : page->header;
+    for (lv_obj_t* target : targets) {
+        if (target == nullptr) {
+            continue;
+        }
+        lv_anim_t anim;
+        lv_anim_init(&anim);
+        lv_anim_set_var(&anim, target);
+        lv_anim_set_duration(&anim, 160);
+        lv_anim_set_path_cb(&anim, lv_anim_path_ease_in);
+        lv_anim_set_values(&anim, LV_OPA_COVER, LV_OPA_TRANSP);
+        lv_anim_set_exec_cb(&anim, AnimOpa);
+        if (target == completion_target) {
+            lv_anim_set_completed_cb(&anim, RetiredDoneThunk);
+            lv_anim_set_user_data(&anim, page);
+        }
+        lv_anim_start(&anim);
+    }
+}
+
+void SettingsUi::RetiredDoneThunk(lv_anim_t* anim) {
+    auto* page = static_cast<RetiredPage*>(anim->user_data);
+    if (page == nullptr || page->ui == nullptr) {
+        return;
+    }
+    SettingsUi* ui = page->ui;
+    if (page->body != nullptr) {
+        lv_obj_delete(page->body);
+        page->body = nullptr;
+    }
+    if (page->header != nullptr) {
+        lv_obj_delete(page->header);
+        page->header = nullptr;
+    }
+    for (auto it = ui->retired_pages_.begin(); it != ui->retired_pages_.end(); ++it) {
+        if (it->get() == page) {
+            ui->retired_pages_.erase(it);
+            break;
+        }
+    }
 }
 
 lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with_refresh) {
-    ClearPage();
+    RetireCurrentPage();
 
     header_ = lv_obj_create(root_);
     lv_obj_remove_style_all(header_);
@@ -426,7 +479,7 @@ void SettingsUi::AnimatePageIn(lv_obj_t* header, lv_obj_t* body) {
         lv_anim_init(&opa);
         lv_anim_set_var(&opa, target);
         lv_anim_set_delay(&opa, i == 0 ? 0 : 20);
-        lv_anim_set_duration(&opa, 220);
+        lv_anim_set_duration(&opa, kPageInMs);
         lv_anim_set_path_cb(&opa, lv_anim_path_ease_out);
         lv_anim_set_values(&opa, LV_OPA_TRANSP, LV_OPA_COVER);
         lv_anim_set_exec_cb(&opa, AnimOpa);
@@ -436,7 +489,7 @@ void SettingsUi::AnimatePageIn(lv_obj_t* header, lv_obj_t* body) {
         lv_anim_init(&slide);
         lv_anim_set_var(&slide, target);
         lv_anim_set_delay(&slide, i == 0 ? 0 : 20);
-        lv_anim_set_duration(&slide, 260);
+        lv_anim_set_duration(&slide, kPageInMs);
         lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
         lv_anim_set_values(&slide, 14, 0);
         lv_anim_set_exec_cb(&slide, AnimTranslateY);
@@ -476,7 +529,13 @@ lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action 
 
     lv_obj_t* kb = lv_keyboard_create(parent);
     lv_obj_set_width(kb, LV_PCT(100));
-    lv_obj_set_height(kb, kKeyboardHeight);
+    // Landscape (800 px tall) cannot afford the full portrait keyboard: keep
+    // the form scrollable instead of pushing its fields off screen.
+    int keyboard_height = LV_VER_RES / 3;
+    if (keyboard_height > kKeyboardHeight) {
+        keyboard_height = kKeyboardHeight;
+    }
+    lv_obj_set_height(kb, keyboard_height);
     lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(kb, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(kb, 4, LV_PART_MAIN);
@@ -571,13 +630,15 @@ lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const cha
     lv_label_set_text(title_label, title);
     lv_obj_set_width(title_label, LV_PCT(100));
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_color(title_label, ThemeTextColor(), 0);
 
     if (subtitle != nullptr && subtitle[0] != '\0') {
         lv_obj_t* subtitle_label = lv_label_create(texts);
         lv_label_set_text(subtitle_label, subtitle);
         lv_obj_set_width(subtitle_label, LV_PCT(100));
         lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_opa(subtitle_label, LV_OPA_60, 0);
+        lv_obj_set_style_text_color(subtitle_label, ThemeTextColor(), 0);
+        lv_obj_set_style_text_opa(subtitle_label, LV_OPA_70, 0);
     }
 
     if (trailing_icon != nullptr) {
@@ -608,8 +669,7 @@ lv_obj_t* SettingsUi::MakeTextButton(lv_obj_t* parent, const char* icon, const c
         lv_obj_set_style_bg_color(button, PressedSurfaceColor(), LV_STATE_PRESSED);
         lv_obj_set_style_border_color(button, AccentColor(), LV_STATE_PRESSED);
     }
-    lv_obj_set_style_translate_y(button, 1, LV_STATE_PRESSED);
-    lv_obj_set_style_transform_scale(button, 250, LV_STATE_PRESSED);
+    ApplyPressMotion(button);
     lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(button, 12, 0);
@@ -706,7 +766,7 @@ void SettingsUi::AnimateOpen() {
     lv_anim_t anim;
     lv_anim_init(&anim);
     lv_anim_set_var(&anim, root_);
-    lv_anim_set_duration(&anim, 320);
+    lv_anim_set_duration(&anim, kPanelInMs);
     lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
     lv_anim_set_values(&anim, -height, 0);
     lv_anim_set_exec_cb(&anim, AnimRootY);
@@ -738,7 +798,7 @@ void SettingsUi::AnimateClose() {
     lv_anim_t anim;
     lv_anim_init(&anim);
     lv_anim_set_var(&anim, root_);
-    lv_anim_set_duration(&anim, 240);
+    lv_anim_set_duration(&anim, kPanelOutMs);
     lv_anim_set_path_cb(&anim, lv_anim_path_ease_in);
     lv_anim_set_values(&anim, lv_obj_get_y(root_), -height);
     lv_anim_set_exec_cb(&anim, AnimRootY);
@@ -768,6 +828,7 @@ void SettingsUi::FinishClose() {
     volume_icon_ = nullptr;
     icon_labels_.clear();
     event_ctx_.clear();
+    retired_pages_.clear();
     closing_ = false;
     if (close_cb_) {
         close_cb_();
@@ -984,7 +1045,7 @@ void SettingsUi::ShowSavedList() {
         lv_obj_set_style_bg_color(connect, AccentColor(), 0);
         lv_obj_set_style_bg_color(connect, lv_color_darken(AccentColor(), 24), LV_STATE_PRESSED);
         lv_obj_set_style_text_color(connect, lv_color_hex(kSenseCraftInk), 0);
-        lv_obj_set_style_transform_scale(connect, 250, LV_STATE_PRESSED);
+        ApplyPressMotion(connect);
         lv_obj_center(MakeIconLabel(connect, MATERIAL_SYMBOLS_LINK, false));
         Bind(connect, Action::WifiConnectSaved, (int)i);
 
@@ -996,7 +1057,7 @@ void SettingsUi::ShowSavedList() {
         lv_obj_set_style_bg_color(remove, lv_color_darken(lv_color_hex(kDangerColor), 24),
                                   LV_STATE_PRESSED);
         lv_obj_set_style_text_color(remove, lv_color_white(), 0);
-        lv_obj_set_style_transform_scale(remove, 250, LV_STATE_PRESSED);
+        ApplyPressMotion(remove);
         lv_obj_center(MakeIconLabel(remove, MATERIAL_SYMBOLS_DELETE, false));
         Bind(remove, Action::WifiDeleteSaved, (int)i);
     }
@@ -1099,6 +1160,7 @@ bool SettingsUi::SaveRotation(int degrees) {
 
 void SettingsUi::ShowStaticIpPage() {
     lv_obj_t* body = BuildPage("静态 IP", Action::WifiRescan, false);
+    lv_obj_t* form = MakeScrollArea(body);
 
     Settings settings("wifi", false);
     bool enabled = settings.GetInt("static_en", 0) != 0;
@@ -1106,14 +1168,14 @@ void SettingsUi::ShowStaticIpPage() {
     const char* hints[4] = {"IP 地址 (192.168.1.50)", "网关", "子网掩码 (255.255.255.0)",
                             "DNS (可空, 默认网关)"};
 
-    MakeSectionLabel(body, "网络参数");
-    lv_obj_t* state = lv_label_create(body);
+    MakeSectionLabel(form, "网络参数");
+    lv_obj_t* state = lv_label_create(form);
     lv_label_set_text(state, enabled ? "当前: 静态 IP" : "当前: DHCP 自动获取");
     lv_obj_set_style_text_opa(state, LV_OPA_60, 0);
     lv_obj_set_style_pad_left(state, 4, 0);
 
     for (int i = 0; i < 4; i++) {
-        lv_obj_t* ta = MakeTextArea(body, hints[i], 15);
+        lv_obj_t* ta = MakeTextArea(form, hints[i], 15);
         std::string value = settings.GetString(keys[i], "");
         if (!value.empty()) {
             lv_textarea_set_text(ta, value.c_str());
@@ -1133,7 +1195,7 @@ void SettingsUi::ShowStaticIpPage() {
         static_ta_[i] = ta;
     }
 
-    lv_obj_t* row = lv_obj_create(body);
+    lv_obj_t* row = lv_obj_create(form);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, LV_PCT(100), kButtonHeight);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -1146,7 +1208,7 @@ void SettingsUi::ShowStaticIpPage() {
                                     Action::WifiStaticSave, 0, true);
     lv_obj_set_width(save, LV_PCT(58));
 
-    keyboard_ = MakeKeyboard(body, static_ta_[0], Action::WifiStaticSave);
+    keyboard_ = MakeKeyboard(body, static_ta_[0], Action::WifiStaticSave, false);
 }
 
 void SettingsUi::ShowFacePage() {
@@ -1157,15 +1219,12 @@ void SettingsUi::ShowFacePage() {
         face_get_(mode, endpoint);
     }
     // Only seed the selection from the saved config on first entry; a tile
-    // tap rebuilds the page and must keep the user's pick.
+    // tap rebuilds the page and must keep the user pick.
     if (pending_face_mode_ < 0) {
         pending_face_mode_ = mode;
     }
 
     lv_obj_t* body = BuildPage("人脸识别", Action::Close, false);
-    // The mode list and the parameter rows scroll; the endpoint field and the
-    // keyboard stay pinned above the bottom so editing never requires hunting
-    // for the input after the keyboard covers the page.
     lv_obj_t* content = MakeScrollArea(body);
     MakeSectionLabel(content, "视觉模式");
 
@@ -1219,6 +1278,7 @@ void SettingsUi::ShowFacePage() {
 
         lv_obj_t* name = lv_label_create(hrow);
         lv_label_set_text(name, kModeNames[i]);
+        lv_obj_set_style_text_color(name, selected ? AccentInkColor() : ThemeTextColor(), 0);
         lv_obj_set_flex_grow(name, 1);
 
         if (selected) {
@@ -1228,7 +1288,8 @@ void SettingsUi::ShowFacePage() {
 
         lv_obj_t* hint = lv_label_create(tile);
         lv_label_set_text(hint, kModeHints[i]);
-        lv_obj_set_style_text_opa(hint, selected ? LV_OPA_80 : LV_OPA_50, 0);
+        lv_obj_set_style_text_color(hint, selected ? AccentInkColor() : ThemeTextColor(), 0);
+        lv_obj_set_style_text_opa(hint, selected ? LV_OPA_90 : LV_OPA_70, 0);
 
         Bind(tile, Action::FacePick, i);
     }
@@ -1241,8 +1302,6 @@ void SettingsUi::ShowFacePage() {
         int cooldown = settings.GetInt("cooldown_s", 8);
         int threshold = settings.GetInt("threshold", 60);
         int known_only = settings.GetInt("known_only", 1);
-        // Only the two everyday knobs live on screen; interval, threshold and
-        // known_only stay reachable over MCP (self.face.param_set) or HTTP.
         (void)interval;
         (void)threshold;
         (void)known_only;
@@ -1255,19 +1314,43 @@ void SettingsUi::ShowFacePage() {
                      2, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
     }
 
-    lv_obj_t* label = lv_label_create(body);
+    MakeSectionLabel(content, "服务配置");
+    lv_obj_t* label = lv_label_create(content);
     lv_label_set_text(label, "识别服务地址（智能问候/哨兵模式使用）");
+    lv_obj_set_style_text_color(label, ThemeTextColor(), 0);
     lv_obj_set_style_text_opa(label, LV_OPA_60, 0);
     lv_obj_set_style_pad_left(label, 4, 0);
 
-    textarea_ = MakeTextArea(body, "http://192.168.x.x:8001/recognize", 96);
+    textarea_ = MakeTextArea(content, "http://192.168.x.x:8001/recognize", 96);
     if (!endpoint.empty()) {
         lv_textarea_set_text(textarea_, endpoint.c_str());
     }
 
-    MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "保存", Action::FaceSave, 0, true);
+    MakeTextButton(content, MATERIAL_SYMBOLS_CHECK, "保存设置", Action::FaceSave, 0, true);
 
+    // Keyboard at bottom, hidden by default; focused on textarea_ reveals it
     keyboard_ = MakeKeyboard(body, textarea_, Action::FaceSave, false);
+    lv_obj_add_flag(keyboard_, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_add_event_cb(
+        textarea_,
+        [](lv_event_t* e) {
+            auto* self = static_cast<SettingsUi*>(lv_event_get_user_data(e));
+            if (self != nullptr && self->keyboard_ != nullptr) {
+                lv_obj_clear_flag(self->keyboard_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_scroll_to_view(self->textarea_, LV_ANIM_ON);
+            }
+        },
+        LV_EVENT_FOCUSED, this);
+    lv_obj_add_event_cb(
+        textarea_,
+        [](lv_event_t* e) {
+            auto* self = static_cast<SettingsUi*>(lv_event_get_user_data(e));
+            if (self != nullptr && self->keyboard_ != nullptr) {
+                lv_obj_add_flag(self->keyboard_, LV_OBJ_FLAG_HIDDEN);
+            }
+        },
+        LV_EVENT_DEFOCUSED, this);
 }
 
 void SettingsUi::ShowDisplaySettings() {
@@ -1279,9 +1362,10 @@ void SettingsUi::ShowDisplaySettings() {
     }
 
     lv_obj_t* body = BuildPage("屏幕方向", Action::Close, false);
-    MakeSectionLabel(body, "方向");
+    lv_obj_t* content = MakeScrollArea(body);
+    MakeSectionLabel(content, "方向");
 
-    lv_obj_t* grid = lv_obj_create(body);
+    lv_obj_t* grid = lv_obj_create(content);
     lv_obj_remove_style_all(grid);
     lv_obj_set_width(grid, LV_PCT(100));
     lv_obj_set_height(grid, LV_SIZE_CONTENT);
@@ -1316,10 +1400,11 @@ void SettingsUi::ShowDisplaySettings() {
         char text[24];
         snprintf(text, sizeof(text), "%d°%s", degrees, degrees == current ? "  (当前)" : "");
         lv_label_set_text(label, text);
+        lv_obj_set_style_text_color(label, selected ? AccentInkColor() : ThemeTextColor(), 0);
         Bind(tile, Action::RotationPick, i);
     }
 
-    MakeSectionLabel(body, "电源管理");
+    MakeSectionLabel(content, "电源管理");
     {
         Settings settings("power", false);
         int dim_s = settings.GetInt("dim_s", 60);
@@ -1328,14 +1413,14 @@ void SettingsUi::ShowDisplaySettings() {
         snprintf(dim_text, sizeof(dim_text), dim_s == 0 ? "关" : "%d 分钟", dim_s / 60);
         char off_text[24];
         snprintf(off_text, sizeof(off_text), off_s == 0 ? "关" : "%d 分钟", off_s / 60);
-        MakeListItem(body, MATERIAL_SYMBOLS_REPEAT, "自动息屏", dim_text, Action::SleepDimCycle, 0,
-                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-        MakeListItem(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "无操作关机", off_text,
+        MakeListItem(content, MATERIAL_SYMBOLS_REPEAT, "自动息屏", dim_text, Action::SleepDimCycle,
+                     0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        MakeListItem(content, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "无操作关机", off_text,
                      Action::SleepOffCycle, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
     }
 
-    MakeTextButton(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave, 0,
-                   true);
+    MakeTextButton(content, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave,
+                   0, true);
 }
 
 // ---------------------------------------------------------------------------

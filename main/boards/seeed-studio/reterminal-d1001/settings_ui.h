@@ -132,6 +132,17 @@ private:
         int index;
     };
 
+    // A page that is fading out behind the new one. Its widgets stay alive
+    // until the animation completes so the transition never flashes the bare
+    // background.
+    struct RetiredPage {
+        SettingsUi* ui;
+        lv_obj_t* header;
+        lv_obj_t* body;
+        std::vector<std::unique_ptr<EventCtx>> event_ctx;
+        std::vector<std::pair<lv_obj_t*, bool>> icon_labels;
+    };
+
     static void EventThunk(lv_event_t* event);
     static void VolumeSliderThunk(lv_event_t* event);
     static void AsyncThunk(void* arg);
@@ -163,7 +174,9 @@ private:
     lv_obj_t* MakeTextButton(lv_obj_t* parent, const char* icon, const char* text, Action action,
                              int index, bool primary);
     lv_obj_t* MakeScrollArea(lv_obj_t* parent);
-    void ClearPage();
+    void RetireCurrentPage();
+    void AnimateRetired(RetiredPage* page);
+    static void RetiredDoneThunk(lv_anim_t* anim);
     void AnimatePageIn(lv_obj_t* header, lv_obj_t* body);
     void AnimateOpen();
     void AnimateClose();
@@ -215,6 +228,7 @@ private:
     uint32_t scan_generation_ = 0;
     std::vector<std::unique_ptr<EventCtx>> event_ctx_;
     std::vector<std::pair<lv_obj_t*, bool>> icon_labels_;
+    std::vector<std::unique_ptr<RetiredPage>> retired_pages_;
     std::vector<std::pair<Action, int>> pending_actions_;
     bool async_scheduled_ = false;
 };

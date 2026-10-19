@@ -235,6 +235,10 @@ private:
     // neighboring pads overlapped, which made the rotation entry lose most
     // taps to the volume entry or the Wi-Fi hotspot.
     static constexpr int kStatusIconTouchWidth = 48;
+    // A pull that travels this far down, while staying mostly vertical, opens
+    // the overlay. Fired while the finger is still down so the release does
+    // not also dispatch the underlying button's click.
+    static constexpr int kPullOpenDistance = 40;
 
     static void SetHidden(lv_obj_t* obj, bool hidden) {
         if (obj == nullptr) {
@@ -256,6 +260,8 @@ private:
         lv_obj_set_style_bg_color(button, lv_color_mix(kAccentColor(), ScreenBackgroundColor(), 42),
                                   LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(button, LV_OPA_40, LV_STATE_PRESSED);
+        lv_obj_set_style_transform_pivot_x(button, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(button, LV_PCT(50), 0);
         lv_obj_set_style_transform_scale(button, 250, LV_STATE_PRESSED);
         lv_obj_set_scrollbar_mode(button, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
@@ -332,8 +338,11 @@ private:
     }
 
     // The status strip is only 48 px tall, so a pull-down swipe is detected
-    // both through LVGL's gesture event and through the raw press/release
-    // delta; the latter keeps the entry reliable on the small touch band.
+    // both through LVGL's gesture event and through the raw press delta. The
+    // delta is evaluated while the finger is still down: calling
+    // lv_indev_wait_release() from RELEASED is too late to suppress the click
+    // that LVGL emits right after it, so a pull that started on an entry would
+    // also fire that entry's action.
     static void OnStatusGesture(lv_event_t* event) {
         auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
         if (self == nullptr) {
@@ -357,8 +366,25 @@ private:
             }
             return;
         }
-        if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_INDEV_RESET) {
+        if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_INDEV_RESET ||
+            code == LV_EVENT_SCROLL_BEGIN) {
             self->gesture_tracking_ = false;
+            return;
+        }
+        if (code == LV_EVENT_PRESSING && self->gesture_tracking_ && indev != nullptr) {
+            lv_point_t pos;
+            lv_indev_get_point(indev, &pos);
+            int dx = pos.x - self->gesture_start_.x;
+            int dy = pos.y - self->gesture_start_.y;
+            int adx = dx < 0 ? -dx : dx;
+            // A deliberate downward pull: mostly vertical and past the
+            // threshold. Scaling by 1.5 keeps a diagonal scroll from opening
+            // the overlay.
+            if (dy >= kPullOpenDistance && dy * 2 > adx * 3) {
+                self->gesture_tracking_ = false;
+                lv_indev_wait_release(indev);
+                Dispatch(event, SettingsPage::Wifi);
+            }
             return;
         }
         if (code == LV_EVENT_RELEASED && self->gesture_tracking_) {
@@ -370,7 +396,11 @@ private:
             lv_indev_get_point(indev, &end);
             int dx = end.x - self->gesture_start_.x;
             int dy = end.y - self->gesture_start_.y;
-            if (dy > 42 && dx > -56 && dx < 56) {
+            int adx = dx < 0 ? -dx : dx;
+            // Fallback for firmwares where PRESSING is not emitted for a short
+            // pull. wait_release cannot cancel this release's click, but the
+            // overlay's own IsOpen() guard keeps the page that was opened here.
+            if (dy >= kPullOpenDistance && dy * 2 > adx * 3) {
                 lv_indev_wait_release(indev);
                 Dispatch(event, SettingsPage::Wifi);
             }
