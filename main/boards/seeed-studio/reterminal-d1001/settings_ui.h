@@ -157,6 +157,20 @@ private:
     // Styling helpers.
     const lv_font_t* IconFont(bool large) const;
     lv_color_t CardColor() const;
+    // Theme state is read from Display::GetTheme(), not from the active
+    // screen: LcdDisplay::SetTheme() leaves the screen background untouched
+    // until the next SetupUI(), so style lookups go stale after a switch.
+    bool IsLightTheme() const;
+    lv_color_t ScreenBackground() const;
+    lv_color_t ThemeTextColor() const;
+    lv_color_t AccentInkColor() const;
+    lv_color_t SurfaceColor() const;
+    lv_color_t SurfaceBorderColor() const;
+    lv_color_t RaisedSurfaceColor() const;
+    lv_color_t AccentWashStrongColor() const;
+    lv_color_t PressedSurfaceColor() const;
+    lv_color_t TrackColor() const;
+    lv_color_t IconBadgeNeutralColor() const;
     lv_obj_t* MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large);
     lv_obj_t* MakeIconBadge(lv_obj_t* parent, const char* glyph, bool large);
     lv_obj_t* MakeIconButton(lv_obj_t* parent, const char* glyph, Action action);

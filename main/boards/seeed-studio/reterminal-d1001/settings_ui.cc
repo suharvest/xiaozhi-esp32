@@ -47,53 +47,26 @@ constexpr int32_t kPressScale = 250;  // 1/256 units -> 0.977
 // accent text/icons switch to a deeper green on the light theme.
 constexpr uint32_t kSenseCraftGreen = 0x8CC020;
 constexpr uint32_t kSenseCraftInk = 0x172126;
-constexpr uint32_t kAccentInkLight = 0x243E06;
-constexpr uint32_t kAccentInkDark = 0x9ED13A;
 constexpr uint32_t kDangerColor = 0xC02B38;
 constexpr uint32_t kSuccessColor = 0x2E7D32;
 
-bool IsLightTheme() {
-    return lv_color_brightness(lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN)) > 128;
-}
+// Settings overlay palettes. The overlay owns its background and surfaces, so
+// both themes are spelled out instead of being derived from screen styles.
+constexpr uint32_t kLightScreenBackground = 0xF2F4F7;
+constexpr uint32_t kLightSurface = 0xFFFFFF;
+constexpr uint32_t kLightSurfaceBorder = 0xD0D7DE;
+constexpr uint32_t kLightText = 0x1F2328;
+constexpr uint32_t kLightAccentInk = 0x1C3B14;
+constexpr uint32_t kLightBadge = 0xEAEFF2;
 
-lv_color_t ScreenBackground() {
-    return lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
-}
+constexpr uint32_t kDarkScreenBackground = 0x121517;
+constexpr uint32_t kDarkSurface = 0x1C2128;
+constexpr uint32_t kDarkSurfaceBorder = 0x30363D;
+constexpr uint32_t kDarkText = 0xF0F6FC;
+constexpr uint32_t kDarkAccentInk = 0x9ED13A;
+constexpr uint32_t kDarkBadge = 0x283238;
 
 lv_color_t AccentColor() { return lv_color_hex(kSenseCraftGreen); }
-
-lv_color_t AccentInkColor() {
-    return lv_color_hex(IsLightTheme() ? kAccentInkLight : kAccentInkDark);
-}
-
-// Card surface: lifted on the dark theme, subtly recessed on the light one.
-lv_color_t SurfaceColor() {
-    lv_color_t bg = ScreenBackground();
-    return IsLightTheme() ? lv_color_darken(bg, 10) : lv_color_lighten(bg, 26);
-}
-
-lv_color_t SurfaceBorderColor() {
-    lv_color_t surface = SurfaceColor();
-    return IsLightTheme() ? lv_color_darken(surface, 18) : lv_color_lighten(surface, 22);
-}
-
-lv_color_t RaisedSurfaceColor() {
-    lv_color_t surface = SurfaceColor();
-    return IsLightTheme() ? lv_color_darken(surface, 10) : lv_color_lighten(surface, 18);
-}
-
-lv_color_t AccentWashStrongColor() { return lv_color_mix(AccentColor(), SurfaceColor(), 54); }
-
-lv_color_t PressedSurfaceColor() { return lv_color_mix(AccentColor(), SurfaceColor(), 46); }
-
-lv_color_t TrackColor() {
-    lv_color_t surface = SurfaceColor();
-    return IsLightTheme() ? lv_color_darken(surface, 22) : lv_color_lighten(surface, 18);
-}
-
-lv_color_t ThemeTextColor() {
-    return lv_obj_get_style_text_color(lv_screen_active(), LV_PART_MAIN);
-}
 
 // Shared press motion. The pivot must be centered explicitly: LVGL's default
 // is the object's top-left corner, which makes the shrink look like the card
@@ -293,6 +266,61 @@ const lv_font_t* SettingsUi::IconFont(bool large) const {
 }
 
 lv_color_t SettingsUi::CardColor() const { return SurfaceColor(); }
+
+bool SettingsUi::IsLightTheme() const {
+    // LcdDisplay::SetTheme() updates the active screen's text colour but not
+    // its background, so reading the screen style reports the theme that was
+    // active at SetupUI() time. Display::GetTheme() is the live source of
+    // truth and is what survives a runtime theme switch.
+    Theme* theme = display_ != nullptr ? display_->GetTheme() : nullptr;
+    if (theme != nullptr) {
+        return theme->name() == "light";
+    }
+    Settings settings("display", false);
+    return settings.GetString("theme", "light") == "light";
+}
+
+lv_color_t SettingsUi::ScreenBackground() const {
+    return lv_color_hex(IsLightTheme() ? kLightScreenBackground : kDarkScreenBackground);
+}
+
+lv_color_t SettingsUi::ThemeTextColor() const {
+    return lv_color_hex(IsLightTheme() ? kLightText : kDarkText);
+}
+
+lv_color_t SettingsUi::AccentInkColor() const {
+    return lv_color_hex(IsLightTheme() ? kLightAccentInk : kDarkAccentInk);
+}
+
+lv_color_t SettingsUi::SurfaceColor() const {
+    return lv_color_hex(IsLightTheme() ? kLightSurface : kDarkSurface);
+}
+
+lv_color_t SettingsUi::SurfaceBorderColor() const {
+    return lv_color_hex(IsLightTheme() ? kLightSurfaceBorder : kDarkSurfaceBorder);
+}
+
+lv_color_t SettingsUi::RaisedSurfaceColor() const {
+    lv_color_t surface = SurfaceColor();
+    return IsLightTheme() ? lv_color_darken(surface, 10) : lv_color_lighten(surface, 18);
+}
+
+lv_color_t SettingsUi::AccentWashStrongColor() const {
+    return lv_color_mix(AccentColor(), SurfaceColor(), 54);
+}
+
+lv_color_t SettingsUi::PressedSurfaceColor() const {
+    return lv_color_mix(AccentColor(), SurfaceColor(), 46);
+}
+
+lv_color_t SettingsUi::TrackColor() const {
+    lv_color_t surface = SurfaceColor();
+    return IsLightTheme() ? lv_color_darken(surface, 22) : lv_color_lighten(surface, 18);
+}
+
+lv_color_t SettingsUi::IconBadgeNeutralColor() const {
+    return lv_color_hex(IsLightTheme() ? kLightBadge : kDarkBadge);
+}
 
 lv_obj_t* SettingsUi::MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large) {
     lv_obj_t* label = lv_label_create(parent);
@@ -735,7 +763,7 @@ void SettingsUi::Open(SettingsPage page) {
     root_ = lv_obj_create(screen);
     lv_obj_remove_style_all(root_);
     lv_obj_set_size(root_, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(root_, lv_obj_get_style_bg_color(screen, LV_PART_MAIN), 0);
+    lv_obj_set_style_bg_color(root_, ScreenBackground(), 0);
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
@@ -1387,15 +1415,15 @@ void SettingsUi::ShowDisplaySettings() {
 
         bool is_dark = !IsLightTheme();
         const char* theme_titles[2] = {"明亮模式", "暗黑模式"};
-        const char* theme_subs[2] = {"浅色背景", "深色背景"};
-        const char* theme_glyphs[2] = {MATERIAL_SYMBOLS_BRIGHTNESS_6, MATERIAL_SYMBOLS_BRIGHTNESS_6};
+        const char* theme_glyphs[2] = {MATERIAL_SYMBOLS_BRIGHTNESS_6,
+                                       MATERIAL_SYMBOLS_BRIGHTNESS_6};
 
         for (int i = 0; i < 2; i++) {
             bool selected = (i == 1) == is_dark;
             lv_obj_t* tile = lv_button_create(theme_grid);
             lv_obj_remove_style_all(tile);
             lv_obj_set_flex_grow(tile, 1);
-            lv_obj_set_height(tile, 76);
+            lv_obj_set_height(tile, 66);
             lv_obj_set_style_radius(tile, kCardRadius, 0);
             lv_obj_set_style_shadow_width(tile, 0, 0);
             lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
@@ -1415,31 +1443,23 @@ void SettingsUi::ShowDisplaySettings() {
             lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
 
             lv_obj_t* badge = MakeIconBadge(tile, theme_glyphs[i], false);
-            lv_obj_set_style_bg_color(badge, selected ? AccentColor() : (IsLightTheme() ? lv_color_hex(0xE6EAE0) : lv_color_hex(0x283238)), 0);
+            lv_obj_set_size(badge, 40, 40);
+            lv_obj_set_style_bg_color(badge, selected ? AccentColor() : IconBadgeNeutralColor(), 0);
             lv_obj_t* badge_icon = lv_obj_get_child(badge, 0);
             if (badge_icon != nullptr) {
-                lv_obj_set_style_text_color(badge_icon, selected ? lv_color_hex(kSenseCraftInk) : ThemeTextColor(), 0);
+                lv_obj_set_style_text_color(
+                    badge_icon, selected ? lv_color_hex(kSenseCraftInk) : ThemeTextColor(), 0);
             }
 
-            lv_obj_t* col = lv_obj_create(tile);
-            lv_obj_remove_style_all(col);
-            lv_obj_set_flex_grow(col, 1);
-            lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
-                                  LV_FLEX_ALIGN_START);
-            lv_obj_set_style_pad_row(col, 2, 0);
-            lv_obj_set_height(col, LV_SIZE_CONTENT);
-            lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
-
-            lv_obj_t* label = lv_label_create(col);
+            // One line only: badge on the left, label in the middle, check on
+            // the right. The previous stacked title/subtitle pair squeezed two
+            // 30 px lines into a 76 px card.
+            lv_obj_t* label = lv_label_create(tile);
             lv_label_set_text(label, theme_titles[i]);
             lv_obj_set_style_text_color(label, selected ? AccentInkColor() : ThemeTextColor(), 0);
-
-            lv_obj_t* sub = lv_label_create(col);
-            lv_label_set_text(sub, theme_subs[i]);
-            lv_obj_set_style_text_color(sub, selected ? AccentInkColor() : ThemeTextColor(), 0);
-            lv_obj_set_style_text_opa(sub, selected ? LV_OPA_90 : LV_OPA_60, 0);
+            lv_obj_set_flex_grow(label, 1);
+            lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
 
             if (selected) {
                 lv_obj_t* check = MakeIconLabel(tile, MATERIAL_SYMBOLS_CHECK, false);
@@ -1478,27 +1498,25 @@ void SettingsUi::ShowDisplaySettings() {
         lv_obj_set_style_border_color(tile, selected ? AccentColor() : SurfaceBorderColor(), 0);
         lv_obj_set_style_border_opa(tile, selected ? LV_OPA_COVER : LV_OPA_60, 0);
         ApplyPressFeedback(tile, selected ? AccentWashStrongColor() : CardColor());
-        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_all(tile, 6, 0);
-        lv_obj_set_style_pad_row(tile, 2, 0);
+        lv_obj_set_style_pad_row(tile, 0, 0);
         lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(tile, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
 
+        // Degree and "current" share one label, so the 58 px tile cannot stack
+        // them into two lines.
         lv_obj_t* label = lv_label_create(tile);
-        char deg_text[16];
-        snprintf(deg_text, sizeof(deg_text), "%d°", degrees);
+        char deg_text[24];
+        snprintf(deg_text, sizeof(deg_text), "%d°%s", degrees, is_current ? " (当前)" : "");
         lv_label_set_text(label, deg_text);
         lv_obj_set_style_text_color(label, selected ? AccentInkColor() : ThemeTextColor(), 0);
-
-        if (is_current) {
-            lv_obj_t* cur_sub = lv_label_create(tile);
-            lv_label_set_text(cur_sub, "当前");
-            lv_obj_set_style_text_color(cur_sub, selected ? AccentInkColor() : ThemeTextColor(), 0);
-            lv_obj_set_style_text_opa(cur_sub, selected ? LV_OPA_90 : LV_OPA_60, 0);
-        }
+        lv_obj_set_width(label, LV_PCT(100));
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
         Bind(tile, Action::RotationPick, i);
     }
@@ -1736,16 +1754,26 @@ void SettingsUi::HandleAction(Action action, int index) {
             }
             const char* theme_name = pick_dark ? "dark" : "light";
             auto* next_theme = LvglThemeManager::GetInstance().GetTheme(theme_name);
-            if (next_theme != nullptr && display_ != nullptr) {
-                display_->SetTheme(next_theme);
+            if (next_theme == nullptr || display_ == nullptr) {
+                return;
+            }
+            display_->SetTheme(next_theme);
+            {
                 Settings settings("display", true);
                 settings.SetString("theme", theme_name);
-                if (root_ != nullptr) {
-                    lv_obj_set_style_bg_color(root_, ScreenBackground(), 0);
-                    lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
-                }
-                ShowDisplaySettings();
             }
+            // LcdDisplay::SetTheme() repaints the display chrome but leaves the
+            // active screen background at the value written by SetupUI(). Sync
+            // it explicitly so nothing beneath the overlay keeps the old theme
+            // while the page is rebuilt.
+            lv_obj_t* screen = lv_screen_active();
+            lv_obj_set_style_bg_color(screen, ScreenBackground(), 0);
+            lv_obj_set_style_text_color(screen, ThemeTextColor(), 0);
+            if (root_ != nullptr) {
+                lv_obj_set_style_bg_color(root_, ScreenBackground(), 0);
+                lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
+            }
+            ShowDisplaySettings();
             return;
         }
         case Action::WifiRescan:
