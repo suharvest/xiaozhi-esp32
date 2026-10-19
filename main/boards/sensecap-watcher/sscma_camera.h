@@ -116,7 +116,7 @@ public:
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
-    virtual std::string Explain(const std::string& question);
+    virtual std::expected<std::string, std::string> Explain(const std::string& question) override;
 
     // Configured standby mode (persisted face_recognition_en_), used by the
     // watcher status-bar mode indicator. Stable across device state.

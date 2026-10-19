@@ -119,7 +119,8 @@ bool FaceService::RecognizeOnce(std::vector<FaceHit>& hits, std::string* error) 
         http->Write(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
     }
     http->Write("", 0);
-    int status = http->GetStatusCode();
+    auto status_res = http->GetStatusCode();
+    int status = status_res.value_or(0);
     std::string body = http->ReadAll();
     http->Close();
     if (status != 200) {

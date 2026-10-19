@@ -1153,53 +1153,37 @@ void SscmaCamera::InitializeMcpTools() {
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             Settings settings("model", true);
-            try {
-                const Property& threshold_prop = properties["threshold"];
-                int threshold = threshold_prop.value<int>();
-                if (threshold != -1) {
-                    settings.SetInt("threshold", threshold);
-                    this->detect_threshold = threshold;
-                    ESP_LOGI(TAG, "Set detection threshold to %d", threshold);
+            for (const auto& p : properties) {
+                if (p.name() == "threshold") {
+                    int threshold = p.value<int>();
+                    if (threshold != -1) {
+                        settings.SetInt("threshold", threshold);
+                        this->detect_threshold = threshold;
+                        ESP_LOGI(TAG, "Set detection threshold to %d", threshold);
+                    }
+                } else if (p.name() == "interval") {
+                    int interval = p.value<int>();
+                    if (interval != -1) {
+                        settings.SetInt("interval", interval);
+                        this->detect_invoke_interval_sec = interval;
+                        FaceRecognition::GetInstance().SetCooldownInterval(interval);
+                        ESP_LOGI(TAG, "Set detection interval to %d", interval);
+                    }
+                } else if (p.name() == "duration") {
+                    int duration = p.value<int>();
+                    if (duration != -1) {
+                        settings.SetInt("duration", duration);
+                        this->detect_duration_sec = duration;
+                        FaceRecognition::GetInstance().SetValidationDuration(duration);
+                    }
+                } else if (p.name() == "target") {
+                    int target = p.value<int>();
+                    if (target != -1) {
+                        settings.SetInt("target", target);
+                        this->detect_target = target;
+                        ESP_LOGI(TAG, "Set detection target to %d", target);
+                    }
                 }
-            } catch (const std::runtime_error&) {
-                // threshold parameter not provided, skip
-            }
-            
-            try {
-                const Property& interval_prop = properties["interval"];
-                int interval = interval_prop.value<int>();
-                if (interval != -1) {
-                    settings.SetInt("interval", interval);
-                    this->detect_invoke_interval_sec = interval;
-                    FaceRecognition::GetInstance().SetCooldownInterval(interval);
-                    ESP_LOGI(TAG, "Set detection interval to %d", interval);
-                }
-            } catch (const std::runtime_error&) {
-                // interval parameter not provided, skip
-            }
-
-            try {
-                const Property& duration_prop = properties["duration"];
-                int duration = duration_prop.value<int>();
-                if (duration != -1) {
-                    settings.SetInt("duration", duration);
-                    this->detect_duration_sec = duration;
-                    FaceRecognition::GetInstance().SetValidationDuration(duration);
-                }
-            } catch (const std::runtime_error&) {
-                // duration parameter not provided, skip
-            }
-            
-            try {
-                const Property& target_prop = properties["target"];
-                int target = target_prop.value<int>();
-                if (target != -1) {
-                    settings.SetInt("target", target);
-                    this->detect_target = target;
-                    ESP_LOGI(TAG, "Set detection target to %d", target);
-                }
-            } catch (const std::runtime_error&) {
-                // target_type parameter not provided, skip
             }
 
             // Always echo the resulting config — this is also the query path
@@ -1322,7 +1306,7 @@ void SscmaCamera::MarshalPreviewFrame(const uint8_t* rgb565, uint16_t w, uint16_
     }
     memcpy(data, rgb565, image_size);
     Application::GetInstance().Schedule([data, image_size, w, h, stride]() {
-        auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+        auto display = static_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
         if (display == nullptr) {
             heap_caps_free(data);  // no display: avoid leaking the copy
             return;
@@ -1491,18 +1475,18 @@ bool SscmaCamera::SetVFlip(bool enabled) {
  * @note 函数会等待之前的编码线程完成后再开始新的处理
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
-std::string SscmaCamera::Explain(const std::string& question) {
+std::expected<std::string, std::string> SscmaCamera::Explain(const std::string& question) {
     if (explain_url_.empty()) {
-        return "{\"success\": false, \"message\": \"Image explain URL or token is not set\"}";
+        return std::unexpected("Image explain URL or token is not set");
     }
 
     auto network = Board::GetInstance().GetNetwork();
     if (!network) {
-        return "{\"success\": false, \"message\": \"Network not available\"}";
+        return std::unexpected("Network not available");
     }
     auto http = network->CreateHttp(3);
     if (!http) {
-        return "{\"success\": false, \"message\": \"Failed to create HTTP client\"}";
+        return std::unexpected("Failed to create HTTP client");
     }
     // 构造multipart/form-data请求体
     std::string boundary = "----ESP32_CAMERA_BOUNDARY";
@@ -1553,9 +1537,10 @@ std::string SscmaCamera::Explain(const std::string& question) {
     // 结束块
     http->Write("", 0);
 
-    if (http->GetStatusCode() != 200) {
-        ESP_LOGE(TAG, "Failed to upload photo, status code: %d", http->GetStatusCode());
-        return "{\"success\": false, \"message\": \"Failed to upload photo\"}";
+    auto status_code = http->GetStatusCode();
+    if (!status_code || *status_code != 200) {
+        ESP_LOGE(TAG, "Failed to upload photo, status code: %d", status_code.value_or(0));
+        return std::unexpected("Failed to upload photo");
     }
 
     std::string result = http->ReadAll();
@@ -1636,7 +1621,8 @@ int SscmaCamera::RemoteRecognize(const std::string& base_url, const std::string&
         free(json_str);
         return -3;
     }
-    int status_code = http->GetStatusCode();
+    auto status_code_res = http->GetStatusCode();
+    int status_code = status_code_res.value_or(0);
     if (status_code != 200) {
         ESP_LOGE(TAG, "RemoteRecognize: HTTP %d", status_code);
         heap_caps_free(base64_buf);

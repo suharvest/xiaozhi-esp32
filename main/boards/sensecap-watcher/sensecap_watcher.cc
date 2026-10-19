@@ -1228,25 +1228,25 @@ private:
                 Property("enable", kPropertyTypeInteger, 0, 1)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                try {
-                    const Property& enable_prop = properties["enable"];
-                    int en = enable_prop.value<int>();
-                    ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
-                    if (en == 1) {
-                        return StartScreenCast();
-                    } else {
-                        return StopScreenCast();
+                for (const auto& p : properties) {
+                    if (p.name() == "enable") {
+                        int en = p.value<int>();
+                        ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
+                        if (en == 1) {
+                            return StartScreenCast();
+                        } else {
+                            return StopScreenCast();
+                        }
                     }
-                } catch (const std::runtime_error& e) {
-                    // 没传参数 → 查询状态
-                    ESP_LOGW(TAG, "screen_cast tool: no enable param, caught: %s", e.what());
-                    auto* remote = RemoteDisplay::GetInstance();
-                    bool casting = remote && remote->IsRunning();
-                    auto config = RemoteDisplay::LoadConfig();
-                    return std::string("{\"casting\":") + (casting ? "true" : "false") +
-                           ",\"enabled\":" + (config.enabled ? "true" : "false") +
-                           ",\"configured\":" + (!config.server_url.empty() ? "true" : "false") + "}";
                 }
+                // 没传参数 → 查询状态
+                ESP_LOGI(TAG, "screen_cast tool: query status");
+                auto* remote = RemoteDisplay::GetInstance();
+                bool casting = remote && remote->IsRunning();
+                auto config = RemoteDisplay::LoadConfig();
+                return std::string("{\"casting\":") + (casting ? "true" : "false") +
+                       ",\"enabled\":" + (config.enabled ? "true" : "false") +
+                       ",\"configured\":" + (!config.server_url.empty() ? "true" : "false") + "}";
             });
 
         // 查询本机 WiFi IP 地址。
