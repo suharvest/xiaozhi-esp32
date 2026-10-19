@@ -1533,28 +1533,32 @@ void SettingsUi::ShowDisplaySettings() {
 
         auto make_power_item = [&](const char* icon, const char* title, const char* value, Action action) {
             lv_obj_t* card = MakeCard(content);
-            lv_obj_set_height(card, 72);
+            lv_obj_set_height(card, 68);
             lv_obj_set_style_pad_hor(card, 16, 0);
             lv_obj_set_style_pad_ver(card, 0, 0);
             lv_obj_set_style_pad_column(card, 12, 0);
+            lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
             lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
             Bind(card, action, 0);
 
-            MakeIconBadge(card, icon, false);
+            lv_obj_t* badge = MakeIconBadge(card, icon, false);
+            lv_obj_set_size(badge, 40, 40);
+            lv_obj_set_style_bg_color(badge, IconBadgeNeutralColor(), 0);
+            lv_obj_t* badge_icon = lv_obj_get_child(badge, 0);
+            if (badge_icon != nullptr) {
+                lv_obj_set_style_text_color(badge_icon, ThemeTextColor(), 0);
+            }
 
-            lv_obj_t* texts = lv_obj_create(card);
-            lv_obj_remove_style_all(texts);
-            lv_obj_remove_flag(texts, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_flex_grow(texts, 1);
-            lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_style_pad_row(texts, 2, 0);
-            lv_obj_set_scrollbar_mode(texts, LV_SCROLLBAR_MODE_OFF);
-
-            lv_obj_t* title_label = lv_label_create(texts);
+            lv_obj_t* title_label = lv_label_create(card);
             lv_label_set_text(title_label, title);
             lv_obj_set_style_text_color(title_label, ThemeTextColor(), 0);
+            lv_obj_set_flex_grow(title_label, 1);
+            lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_LEFT, 0);
 
-            lv_obj_t* val_label = lv_label_create(texts);
+            lv_obj_t* val_label = lv_label_create(card);
             lv_label_set_text(val_label, value);
             lv_obj_set_style_text_color(val_label, ThemeTextColor(), 0);
             lv_obj_set_style_text_opa(val_label, LV_OPA_70, 0);
