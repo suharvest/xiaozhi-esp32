@@ -42,61 +42,65 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
-    AddTool("self.get_device_status",
-        "Provides the real-time information of the device, including the current status of the audio speaker, screen, battery, network, etc.\n"
-        "Use this tool for: \n"
-        "1. Answering questions about current condition (e.g. what is the current volume of the audio speaker?)\n"
-        "2. As the first step to control the device (e.g. turn up / down the volume of the audio speaker, etc.)",
-        PropertyList(),
-        [&board](const PropertyList& properties) -> ReturnValue {
-            return board.GetDeviceStatusJson();
-        });
+    if (!board.SuppressCommonDeviceTools()) {
+        AddTool("self.get_device_status",
+            "Provides the real-time information of the device, including the current status of the audio speaker, screen, battery, network, etc.\n"
+            "Use this tool for: \n"
+            "1. Answering questions about current condition (e.g. what is the current volume of the audio speaker?)\n"
+            "2. As the first step to control the device (e.g. turn up / down the volume of the audio speaker, etc.)",
+            PropertyList(),
+            [&board](const PropertyList& properties) -> ReturnValue {
+                return board.GetDeviceStatusJson();
+            });
 
-    AddTool("self.audio_speaker.set_volume", 
-        "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",
-        PropertyList({
-            Property("volume", kPropertyTypeInteger, 0, 100)
-        }), 
-        [&board](const PropertyList& properties) -> ReturnValue {
-            auto codec = board.GetAudioCodec();
-            codec->SetOutputVolume(properties["volume"].value<int>());
-            return true;
-        });
-    
-    auto backlight = board.GetBacklight();
-    if (backlight) {
-        AddTool("self.screen.set_brightness",
-            "Set the brightness of the screen.",
+        AddTool("self.audio_speaker.set_volume", 
+            "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",
             PropertyList({
-                Property("brightness", kPropertyTypeInteger, 0, 100)
-            }),
-            [backlight](const PropertyList& properties) -> ReturnValue {
-                uint8_t brightness = static_cast<uint8_t>(properties["brightness"].value<int>());
-                backlight->SetBrightness(brightness, true);
+                Property("volume", kPropertyTypeInteger, 0, 100)
+            }), 
+            [&board](const PropertyList& properties) -> ReturnValue {
+                auto codec = board.GetAudioCodec();
+                codec->SetOutputVolume(properties["volume"].value<int>());
                 return true;
             });
+        
+        auto backlight = board.GetBacklight();
+        if (backlight) {
+            AddTool("self.screen.set_brightness",
+                "Set the brightness of the screen.",
+                PropertyList({
+                    Property("brightness", kPropertyTypeInteger, 0, 100)
+                }),
+                [backlight](const PropertyList& properties) -> ReturnValue {
+                    uint8_t brightness = static_cast<uint8_t>(properties["brightness"].value<int>());
+                    backlight->SetBrightness(brightness, true);
+                    return true;
+                });
+        }
+
+#ifdef HAVE_LVGL
+        auto display = board.GetDisplay();
+        if (display && display->GetTheme() != nullptr) {
+            AddTool("self.screen.set_theme",
+                "Set the theme of the screen. The theme can be `light` or `dark`.",
+                PropertyList({
+                    Property("theme", kPropertyTypeString)
+                }),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    auto theme_name = properties["theme"].value<std::string>();
+                    auto& theme_manager = LvglThemeManager::GetInstance();
+                    auto theme = theme_manager.GetTheme(theme_name);
+                    if (theme != nullptr) {
+                        display->SetTheme(theme);
+                        return true;
+                    }
+                    return false;
+                });
+        }
+#endif
     }
 
 #ifdef HAVE_LVGL
-    auto display = board.GetDisplay();
-    if (display && display->GetTheme() != nullptr) {
-        AddTool("self.screen.set_theme",
-            "Set the theme of the screen. The theme can be `light` or `dark`.",
-            PropertyList({
-                Property("theme", kPropertyTypeString)
-            }),
-            [display](const PropertyList& properties) -> ReturnValue {
-                auto theme_name = properties["theme"].value<std::string>();
-                auto& theme_manager = LvglThemeManager::GetInstance();
-                auto theme = theme_manager.GetTheme(theme_name);
-                if (theme != nullptr) {
-                    display->SetTheme(theme);
-                    return true;
-                }
-                return false;
-            });
-    }
-
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -126,6 +130,32 @@ void McpServer::AddCommonTools() {
 }
 
 void McpServer::AddUserOnlyTools() {
+    AddUserOnlyTool(
+        "self.remote_wake.configure",
+        "Configure the LAN remote wake HTTP endpoint. Set a non-empty bearer token and "
+        "enabled=true to enable it; token is never returned.",
+        PropertyList({
+            Property("token", kPropertyTypeString),
+            Property("enabled", kPropertyTypeBoolean),
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            const auto token = properties["token"].value<std::string>();
+            const bool enabled = properties["enabled"].value<bool>();
+            if (!token.empty() &&
+                (token.size() < 16 || token.size() > 128 ||
+                 token.find_first_not_of(
+                     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-") !=
+                     std::string::npos)) {
+                return std::string(
+                    "{\"enabled\":false,\"error\":\"token must be 16..128 ASCII characters\"}");
+            }
+            Settings settings("remote_wake", true);
+            settings.SetString("token", token);
+            settings.SetBool("enabled", enabled && !token.empty());
+            return std::string("{\"enabled\":") + ((enabled && !token.empty()) ? "true" : "false") +
+                   ",\"token_configured\":" + (!token.empty() ? "true" : "false") + "}";
+        });
+
     // System tools
     AddUserOnlyTool("self.get_system_info",
         "Get the system information",
@@ -321,7 +351,7 @@ void McpServer::AddUserOnlyTool(const std::string& name, const std::string& desc
 void McpServer::ParseMessage(const std::string& message) {
     cJSON* json = cJSON_Parse(message.c_str());
     if (json == nullptr) {
-        ESP_LOGE(TAG, "Failed to parse MCP message: %s", message.c_str());
+        ESP_LOGE(TAG, "Failed to parse MCP message (length=%zu)", message.size());
         return;
     }
     ParseMessage(json);
