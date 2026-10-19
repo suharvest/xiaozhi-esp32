@@ -1388,13 +1388,14 @@ void SettingsUi::ShowDisplaySettings() {
         bool is_dark = !IsLightTheme();
         const char* theme_titles[2] = {"明亮模式", "暗黑模式"};
         const char* theme_subs[2] = {"浅色背景", "深色背景"};
-        const char* theme_glyphs[2] = {MATERIAL_SYMBOLS_BRIGHTNESS_6, MATERIAL_SYMBOLS_EYEGLASSES};
+        const char* theme_glyphs[2] = {MATERIAL_SYMBOLS_BRIGHTNESS_6, MATERIAL_SYMBOLS_BRIGHTNESS_6};
 
         for (int i = 0; i < 2; i++) {
             bool selected = (i == 1) == is_dark;
             lv_obj_t* tile = lv_button_create(theme_grid);
+            lv_obj_remove_style_all(tile);
             lv_obj_set_flex_grow(tile, 1);
-            lv_obj_set_height(tile, 68);
+            lv_obj_set_height(tile, 76);
             lv_obj_set_style_radius(tile, kCardRadius, 0);
             lv_obj_set_style_shadow_width(tile, 0, 0);
             lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
@@ -1407,19 +1408,27 @@ void SettingsUi::ShowDisplaySettings() {
             lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                                   LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_hor(tile, 16, 0);
+            lv_obj_set_style_pad_ver(tile, 0, 0);
             lv_obj_set_style_pad_column(tile, 12, 0);
             lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_add_flag(tile, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+            lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
 
-            lv_obj_t* icon = MakeIconLabel(tile, theme_glyphs[i], true);
-            lv_obj_set_style_text_color(icon, selected ? AccentInkColor() : ThemeTextColor(), 0);
+            lv_obj_t* badge = MakeIconBadge(tile, theme_glyphs[i], false);
+            lv_obj_set_style_bg_color(badge, selected ? AccentColor() : (IsLightTheme() ? lv_color_hex(0xE6EAE0) : lv_color_hex(0x283238)), 0);
+            lv_obj_t* badge_icon = lv_obj_get_child(badge, 0);
+            if (badge_icon != nullptr) {
+                lv_obj_set_style_text_color(badge_icon, selected ? lv_color_hex(kSenseCraftInk) : ThemeTextColor(), 0);
+            }
 
             lv_obj_t* col = lv_obj_create(tile);
             lv_obj_remove_style_all(col);
+            lv_obj_set_flex_grow(col, 1);
             lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
                                   LV_FLEX_ALIGN_START);
             lv_obj_set_style_pad_row(col, 2, 0);
+            lv_obj_set_height(col, LV_SIZE_CONTENT);
             lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
 
@@ -1431,6 +1440,11 @@ void SettingsUi::ShowDisplaySettings() {
             lv_label_set_text(sub, theme_subs[i]);
             lv_obj_set_style_text_color(sub, selected ? AccentInkColor() : ThemeTextColor(), 0);
             lv_obj_set_style_text_opa(sub, selected ? LV_OPA_90 : LV_OPA_60, 0);
+
+            if (selected) {
+                lv_obj_t* check = MakeIconLabel(tile, MATERIAL_SYMBOLS_CHECK, false);
+                lv_obj_set_style_text_color(check, AccentInkColor(), 0);
+            }
 
             Bind(tile, Action::ThemePick, i);
         }
@@ -1450,10 +1464,12 @@ void SettingsUi::ShowDisplaySettings() {
     for (int i = 0; i < 4; i++) {
         int degrees = kRotationChoices[i];
         bool selected = degrees == pending_rotation_;
+        bool is_current = degrees == current;
 
         lv_obj_t* tile = lv_button_create(grid);
+        lv_obj_remove_style_all(tile);
         lv_obj_set_flex_grow(tile, 1);
-        lv_obj_set_height(tile, 68);
+        lv_obj_set_height(tile, 58);
         lv_obj_set_style_radius(tile, kCardRadius, 0);
         lv_obj_set_style_shadow_width(tile, 0, 0);
         lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
@@ -1465,18 +1481,25 @@ void SettingsUi::ShowDisplaySettings() {
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(tile, 3, 0);
+        lv_obj_set_style_pad_all(tile, 6, 0);
+        lv_obj_set_style_pad_row(tile, 2, 0);
         lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(tile, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+        lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
 
-        lv_obj_t* rotation_icon = MakeIconLabel(tile, MATERIAL_SYMBOLS_REPEAT, false);
-        lv_obj_set_style_text_color(rotation_icon, selected ? AccentInkColor() : ThemeTextColor(),
-                                    0);
         lv_obj_t* label = lv_label_create(tile);
-        char text[24];
-        snprintf(text, sizeof(text), "%d°%s", degrees, degrees == current ? " (当前)" : "");
-        lv_label_set_text(label, text);
+        char deg_text[16];
+        snprintf(deg_text, sizeof(deg_text), "%d°", degrees);
+        lv_label_set_text(label, deg_text);
         lv_obj_set_style_text_color(label, selected ? AccentInkColor() : ThemeTextColor(), 0);
+
+        if (is_current) {
+            lv_obj_t* cur_sub = lv_label_create(tile);
+            lv_label_set_text(cur_sub, "当前");
+            lv_obj_set_style_text_color(cur_sub, selected ? AccentInkColor() : ThemeTextColor(), 0);
+            lv_obj_set_style_text_opa(cur_sub, selected ? LV_OPA_90 : LV_OPA_60, 0);
+        }
+
         Bind(tile, Action::RotationPick, i);
     }
 
@@ -1489,18 +1512,49 @@ void SettingsUi::ShowDisplaySettings() {
         snprintf(dim_text, sizeof(dim_text), dim_s == 0 ? "关" : "%d 分钟", dim_s / 60);
         char off_text[24];
         snprintf(off_text, sizeof(off_text), off_s == 0 ? "关" : "%d 分钟", off_s / 60);
-        lv_obj_t* item1 = MakeListItem(content, MATERIAL_SYMBOLS_REPEAT, "自动息屏", dim_text, Action::SleepDimCycle,
-                     0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-        lv_obj_set_height(item1, 64);
-        lv_obj_t* item2 = MakeListItem(content, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "无操作关机", off_text,
-                     Action::SleepOffCycle, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
-        lv_obj_set_height(item2, 64);
+
+        auto make_power_item = [&](const char* icon, const char* title, const char* value, Action action) {
+            lv_obj_t* card = MakeCard(content);
+            lv_obj_set_height(card, 72);
+            lv_obj_set_style_pad_hor(card, 16, 0);
+            lv_obj_set_style_pad_ver(card, 0, 0);
+            lv_obj_set_style_pad_column(card, 12, 0);
+            lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+            Bind(card, action, 0);
+
+            MakeIconBadge(card, icon, false);
+
+            lv_obj_t* texts = lv_obj_create(card);
+            lv_obj_remove_style_all(texts);
+            lv_obj_remove_flag(texts, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_flex_grow(texts, 1);
+            lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(texts, 2, 0);
+            lv_obj_set_scrollbar_mode(texts, LV_SCROLLBAR_MODE_OFF);
+
+            lv_obj_t* title_label = lv_label_create(texts);
+            lv_label_set_text(title_label, title);
+            lv_obj_set_style_text_color(title_label, ThemeTextColor(), 0);
+
+            lv_obj_t* val_label = lv_label_create(texts);
+            lv_label_set_text(val_label, value);
+            lv_obj_set_style_text_color(val_label, ThemeTextColor(), 0);
+            lv_obj_set_style_text_opa(val_label, LV_OPA_70, 0);
+
+            lv_obj_t* trailing = MakeIconLabel(card, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT, false);
+            lv_obj_set_style_text_opa(trailing, LV_OPA_40, 0);
+            return card;
+        };
+
+        make_power_item(MATERIAL_SYMBOLS_SCHEDULE, "自动息屏", dim_text, Action::SleepDimCycle);
+        make_power_item(MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "无操作关机", off_text, Action::SleepOffCycle);
     }
 
     bool rotation_changed = (pending_rotation_ != current);
-    MakeTextButton(content, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW,
+    lv_obj_t* save_btn = MakeTextButton(content, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW,
                    rotation_changed ? "保存屏幕方向并重启" : "屏幕方向已是当前设置",
                    Action::RotationSave, 0, rotation_changed);
+    lv_obj_set_height(save_btn, 64);
 }
 
 // ---------------------------------------------------------------------------
