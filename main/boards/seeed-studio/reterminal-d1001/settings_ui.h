@@ -146,10 +146,17 @@ private:
     const lv_font_t* IconFont(bool large) const;
     lv_color_t CardColor() const;
     lv_obj_t* MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large);
+    lv_obj_t* MakeIconBadge(lv_obj_t* parent, const char* glyph, bool large);
+    lv_obj_t* MakeIconButton(lv_obj_t* parent, const char* glyph, Action action);
+    lv_obj_t* MakeSectionLabel(lv_obj_t* parent, const char* text);
     lv_obj_t* BuildPage(const char* title, Action back_action, bool with_refresh);
     lv_obj_t* MakeCard(lv_obj_t* parent);
     // ready_action is dispatched when the keyboard's OK key is pressed.
-    lv_obj_t* MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action);
+    lv_obj_t* MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action,
+                           bool push_to_bottom = true);
+    lv_obj_t* MakeTextArea(lv_obj_t* parent, const char* placeholder, int max_length);
+    void StyleTextArea(lv_obj_t* textarea);
+    void UpdateVolumeIcon(int volume);
     lv_obj_t* MakeListItem(lv_obj_t* parent, const char* icon, const char* title,
                            const char* subtitle, Action action, int index,
                            const char* trailing_icon);
@@ -157,6 +164,10 @@ private:
                              int index, bool primary);
     lv_obj_t* MakeScrollArea(lv_obj_t* parent);
     void ClearPage();
+    void AnimatePageIn(lv_obj_t* header, lv_obj_t* body);
+    void AnimateOpen();
+    void AnimateClose();
+    void FinishClose();
 
     void ShowWifiPage();
     void StartWifiScan();
@@ -188,6 +199,7 @@ private:
     lv_obj_t* keyboard_ = nullptr;
     lv_obj_t* volume_slider_ = nullptr;
     lv_obj_t* volume_value_ = nullptr;
+    lv_obj_t* volume_icon_ = nullptr;
 
     SettingsPage page_ = SettingsPage::Wifi;
     WifiSettingsState wifi_state_ = WifiSettingsState::Idle;
@@ -199,6 +211,7 @@ private:
     // Level restored by the mute button; only ever holds a non-zero volume.
     int volume_restore_ = 60;
     bool operation_active_ = false;
+    bool closing_ = false;
     uint32_t scan_generation_ = 0;
     std::vector<std::unique_ptr<EventCtx>> event_ctx_;
     std::vector<std::pair<lv_obj_t*, bool>> icon_labels_;

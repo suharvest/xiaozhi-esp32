@@ -24,22 +24,104 @@ constexpr int kMaxScanResults = 20;
 constexpr int kRotationChoices[] = {0, 90, 180, 270};
 
 // Layout constants for the 800x1280 panel.
-constexpr int kHeaderHeight = 96;
+constexpr int kHeaderHeight = 104;
 constexpr int kIconButtonSize = 64;
-constexpr int kRowHeight = 96;
-constexpr int kButtonHeight = 72;
-constexpr int kCardRadius = 16;
-constexpr int kSliderHeight = 56;  // fat enough to drag with a finger
-constexpr int kKeyboardHeight = 360;  // four rows of ~84 px keys
-constexpr int kGap = 16;
+constexpr int kRowHeight = 104;
+constexpr int kButtonHeight = 76;
+constexpr int kCardRadius = 20;
+constexpr int kButtonRadius = 16;
+constexpr int kSliderHeight = 20;
+constexpr int kKeyboardHeight = 380;  // four rows of ~90 px keys
+constexpr int kGap = 20;
 
-// Accent used for primary actions and the selected state. Fixed values so they
-// read the same on the light and the dark theme, both of which the device can
-// switch to at runtime.
-constexpr uint32_t kAccentColor = 0x2F6BFF;
-constexpr uint32_t kDangerColor = 0xD64545;
-constexpr uint32_t kSuccessColor = 0x2E9E5B;
+// Shared motion tokens. One set of durations and curves keeps the overlay,
+// the page swaps and the press feedback feeling like one system.
+constexpr uint32_t kPanelInMs = 320;
+constexpr uint32_t kPanelOutMs = 240;
+constexpr uint32_t kPageInMs = 240;
+constexpr int32_t kPressScale = 250;  // 1/256 units -> 0.977
+constexpr int kKnobGrow = 14;
+constexpr int kKnobGrowPressed = 18;
 
+// SenseCraft palette. The green is used as a surface, never as small text on a
+// light background: filled green surfaces carry ink-colored content, while
+// accent text/icons switch to a deeper green on the light theme.
+constexpr uint32_t kSenseCraftGreen = 0x8CC020;
+constexpr uint32_t kSenseCraftInk = 0x172126;
+constexpr uint32_t kAccentInkLight = 0x3B5A11;
+constexpr uint32_t kAccentInkDark = 0x9ED13A;
+constexpr uint32_t kDangerColor = 0xC02B38;
+constexpr uint32_t kSuccessColor = 0x2E7D32;
+
+bool IsLightTheme() {
+    return lv_color_brightness(lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN)) > 128;
+}
+
+lv_color_t ScreenBackground() {
+    return lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
+}
+
+lv_color_t AccentColor() { return lv_color_hex(kSenseCraftGreen); }
+
+lv_color_t AccentInkColor() {
+    return lv_color_hex(IsLightTheme() ? kAccentInkLight : kAccentInkDark);
+}
+
+// Card surface: lifted on the dark theme, subtly recessed on the light one.
+lv_color_t SurfaceColor() {
+    lv_color_t bg = ScreenBackground();
+    return IsLightTheme() ? lv_color_darken(bg, 10) : lv_color_lighten(bg, 26);
+}
+
+lv_color_t SurfaceBorderColor() {
+    lv_color_t surface = SurfaceColor();
+    return IsLightTheme() ? lv_color_darken(surface, 18) : lv_color_lighten(surface, 22);
+}
+
+lv_color_t RaisedSurfaceColor() {
+    lv_color_t surface = SurfaceColor();
+    return IsLightTheme() ? lv_color_darken(surface, 10) : lv_color_lighten(surface, 18);
+}
+
+lv_color_t AccentWashStrongColor() { return lv_color_mix(AccentColor(), SurfaceColor(), 54); }
+
+lv_color_t PressedSurfaceColor() { return lv_color_mix(AccentColor(), SurfaceColor(), 46); }
+
+lv_color_t TrackColor() {
+    lv_color_t surface = SurfaceColor();
+    return IsLightTheme() ? lv_color_darken(surface, 22) : lv_color_lighten(surface, 18);
+}
+
+lv_color_t ThemeTextColor() {
+    return lv_obj_get_style_text_color(lv_screen_active(), LV_PART_MAIN);
+}
+
+// Shared press motion. The pivot must be centered explicitly: LVGL's default
+// is the object's top-left corner, which makes the shrink look like the card
+// is sliding instead of being pushed in.
+void ApplyPressMotion(lv_obj_t* obj) {
+    lv_obj_set_style_transform_pivot_x(obj, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(obj, LV_PCT(50), 0);
+    lv_obj_set_style_translate_y(obj, 1, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_scale(obj, kPressScale, LV_STATE_PRESSED);
+}
+
+void ApplyPressFeedback(lv_obj_t* obj, lv_color_t base) {
+    lv_obj_set_style_bg_color(obj, lv_color_mix(AccentColor(), base, 46), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(obj, AccentColor(), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(obj, 2, LV_STATE_PRESSED);
+    ApplyPressMotion(obj);
+}
+
+void AnimRootY(void* var, int32_t value) { lv_obj_set_y(static_cast<lv_obj_t*>(var), value); }
+
+void AnimOpa(void* var, int32_t value) {
+    lv_obj_set_style_opa(static_cast<lv_obj_t*>(var), (lv_opa_t)value, 0);
+}
+
+void AnimTranslateY(void* var, int32_t value) {
+    lv_obj_set_style_translate_y(static_cast<lv_obj_t*>(var), value, 0);
+}
 
 // --- Phone-style keyboard -------------------------------------------------
 //
@@ -107,6 +189,16 @@ const char* SignalIcon(int8_t rssi) {
     return MATERIAL_SYMBOLS_WIFI_OFF;
 }
 
+const char* VolumeGlyph(int value) {
+    if (value <= 0) {
+        return MATERIAL_SYMBOLS_VOLUME_OFF;
+    }
+    if (value < 45) {
+        return MATERIAL_SYMBOLS_VOLUME_DOWN;
+    }
+    return MATERIAL_SYMBOLS_VOLUME_UP;
+}
+
 }  // namespace
 
 SettingsUi::SettingsUi(LcdDisplay* display, ConnectCallback connect_cb, CloseCallback close_cb)
@@ -115,6 +207,7 @@ SettingsUi::SettingsUi(LcdDisplay* display, ConnectCallback connect_cb, CloseCal
 SettingsUi::~SettingsUi() {
     lv_async_call_cancel(AsyncThunk, this);
     if (root_ != nullptr) {
+        lv_anim_delete(root_, nullptr);
         lv_obj_delete(root_);
         root_ = nullptr;
     }
@@ -173,6 +266,7 @@ void SettingsUi::VolumeSliderThunk(lv_event_t* event) {
     if (ui->volume_value_ != nullptr) {
         lv_label_set_text_fmt(ui->volume_value_, "%d%%", value);
     }
+    ui->UpdateVolumeIcon(value);
     lv_event_code_t code = lv_event_get_code(event);
     if (code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) {
         return;
@@ -198,15 +292,7 @@ const lv_font_t* SettingsUi::IconFont(bool large) const {
     return nullptr;
 }
 
-lv_color_t SettingsUi::CardColor() const {
-    // Derived from the screen background so cards follow the active theme:
-    // lifted on a dark background, darkened on a light one.
-    lv_color_t bg = lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
-    if (lv_color_brightness(bg) > 128) {
-        return lv_color_darken(bg, 24);
-    }
-    return lv_color_lighten(bg, 40);
-}
+lv_color_t SettingsUi::CardColor() const { return SurfaceColor(); }
 
 lv_obj_t* SettingsUi::MakeIconLabel(lv_obj_t* parent, const char* glyph, bool large) {
     lv_obj_t* label = lv_label_create(parent);
@@ -228,6 +314,50 @@ void SettingsUi::RefreshIconFonts() {
     }
 }
 
+lv_obj_t* SettingsUi::MakeIconBadge(lv_obj_t* parent, const char* glyph, bool large) {
+    const int size = large ? 52 : 42;
+    lv_obj_t* badge = lv_obj_create(parent);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, size, size);
+    lv_obj_set_style_radius(badge, large ? 16 : 13, 0);
+    lv_obj_set_style_bg_color(badge, AccentWashStrongColor(), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(badge, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* label = MakeIconLabel(badge, glyph, large);
+    lv_obj_set_style_text_color(label, AccentInkColor(), 0);
+    lv_obj_center(label);
+    return badge;
+}
+
+lv_obj_t* SettingsUi::MakeIconButton(lv_obj_t* parent, const char* glyph, Action action) {
+    lv_obj_t* button = lv_button_create(parent);
+    lv_obj_set_size(button, kIconButtonSize, kIconButtonSize);
+    lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(button, CardColor(), 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(button, 1, 0);
+    lv_obj_set_style_border_color(button, SurfaceBorderColor(), 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_text_color(button, AccentInkColor(), LV_STATE_PRESSED);
+    ApplyPressFeedback(button, CardColor());
+    lv_obj_center(MakeIconLabel(button, glyph, false));
+    Bind(button, action);
+    return button;
+}
+
+lv_obj_t* SettingsUi::MakeSectionLabel(lv_obj_t* parent, const char* text) {
+    lv_obj_t* label = lv_label_create(parent);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_color(label, AccentInkColor(), 0);
+    lv_obj_set_style_text_opa(label, LV_OPA_80, 0);
+    lv_obj_set_style_pad_left(label, 4, 0);
+    lv_obj_set_style_pad_top(label, 8, 0);
+    return label;
+}
+
 void SettingsUi::ClearPage() {
     if (body_ != nullptr) {
         lv_obj_delete(body_);
@@ -241,6 +371,7 @@ void SettingsUi::ClearPage() {
     keyboard_ = nullptr;
     volume_slider_ = nullptr;
     volume_value_ = nullptr;
+    volume_icon_ = nullptr;
     icon_labels_.clear();
     event_ctx_.clear();
 }
@@ -252,20 +383,13 @@ lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with
     lv_obj_remove_style_all(header_);
     lv_obj_set_size(header_, LV_PCT(100), kHeaderHeight);
     lv_obj_align(header_, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_pad_hor(header_, kGap, 0);
+    lv_obj_set_style_pad_hor(header_, kGap + 4, 0);
     lv_obj_set_style_pad_column(header_, kGap, 0);
     lv_obj_set_flex_flow(header_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(header_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(header_, LV_SCROLLBAR_MODE_OFF);
 
-    lv_obj_t* back = lv_button_create(header_);
-    lv_obj_set_size(back, kIconButtonSize, kIconButtonSize);
-    lv_obj_set_style_radius(back, kIconButtonSize / 2, 0);
-    lv_obj_set_style_bg_color(back, CardColor(), 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
-    lv_obj_center(MakeIconLabel(back, MATERIAL_SYMBOLS_ARROW_BACK, false));
-    Bind(back, back_action);
+    MakeIconButton(header_, MATERIAL_SYMBOLS_ARROW_BACK, back_action);
 
     lv_obj_t* title_label = lv_label_create(header_);
     lv_label_set_text(title_label, title);
@@ -273,24 +397,51 @@ lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
 
     if (with_refresh) {
-        lv_obj_t* refresh = lv_button_create(header_);
-        lv_obj_set_size(refresh, kIconButtonSize, kIconButtonSize);
-        lv_obj_set_style_radius(refresh, kIconButtonSize / 2, 0);
-        lv_obj_set_style_bg_color(refresh, CardColor(), 0);
-        lv_obj_set_style_shadow_width(refresh, 0, 0);
-        lv_obj_center(MakeIconLabel(refresh, MATERIAL_SYMBOLS_REFRESH, false));
-        Bind(refresh, Action::WifiRescan);
+        MakeIconButton(header_, MATERIAL_SYMBOLS_REFRESH, Action::WifiRescan);
     }
 
     body_ = lv_obj_create(root_);
     lv_obj_remove_style_all(body_);
     lv_obj_set_size(body_, LV_PCT(100), LV_VER_RES - kHeaderHeight);
     lv_obj_align(body_, LV_ALIGN_TOP_MID, 0, kHeaderHeight);
-    lv_obj_set_style_pad_all(body_, kGap, 0);
+    lv_obj_set_style_pad_all(body_, kGap + 4, 0);
     lv_obj_set_style_pad_row(body_, kGap, 0);
     lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(body_, LV_SCROLLBAR_MODE_OFF);
+    AnimatePageIn(header_, body_);
     return body_;
+}
+
+void SettingsUi::AnimatePageIn(lv_obj_t* header, lv_obj_t* body) {
+    lv_obj_t* targets[] = {header, body};
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t* target = targets[i];
+        if (target == nullptr) {
+            continue;
+        }
+        lv_obj_set_style_opa(target, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_translate_y(target, 14, 0);
+
+        lv_anim_t opa;
+        lv_anim_init(&opa);
+        lv_anim_set_var(&opa, target);
+        lv_anim_set_delay(&opa, i == 0 ? 0 : 20);
+        lv_anim_set_duration(&opa, 220);
+        lv_anim_set_path_cb(&opa, lv_anim_path_ease_out);
+        lv_anim_set_values(&opa, LV_OPA_TRANSP, LV_OPA_COVER);
+        lv_anim_set_exec_cb(&opa, AnimOpa);
+        lv_anim_start(&opa);
+
+        lv_anim_t slide;
+        lv_anim_init(&slide);
+        lv_anim_set_var(&slide, target);
+        lv_anim_set_delay(&slide, i == 0 ? 0 : 20);
+        lv_anim_set_duration(&slide, 260);
+        lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+        lv_anim_set_values(&slide, 14, 0);
+        lv_anim_set_exec_cb(&slide, AnimTranslateY);
+        lv_anim_start(&slide);
+    }
 }
 
 lv_obj_t* SettingsUi::MakeScrollArea(lv_obj_t* parent) {
@@ -300,20 +451,28 @@ lv_obj_t* SettingsUi::MakeScrollArea(lv_obj_t* parent) {
     lv_obj_set_flex_grow(area, 1);
     lv_obj_set_flex_flow(area, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(area, 12, 0);
+    lv_obj_set_style_pad_right(area, 8, 0);
     lv_obj_set_scroll_dir(area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(area, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(area, 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(area, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(area, AccentColor(), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(area, LV_OPA_40, LV_PART_SCROLLBAR);
     return area;
 }
 
-lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action) {
+lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action ready_action,
+                                   bool push_to_bottom) {
     // Push the keyboard to the bottom of the flex column instead of letting it
     // stretch over the whole remaining height (the default stretched every key
     // to ~200 px with the 14 px default font).
-    lv_obj_t* spacer = lv_obj_create(parent);
-    lv_obj_remove_style_all(spacer);
-    lv_obj_set_width(spacer, LV_PCT(100));
-    lv_obj_set_flex_grow(spacer, 1);
-    lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+    if (push_to_bottom) {
+        lv_obj_t* spacer = lv_obj_create(parent);
+        lv_obj_remove_style_all(spacer);
+        lv_obj_set_width(spacer, LV_PCT(100));
+        lv_obj_set_flex_grow(spacer, 1);
+        lv_obj_remove_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+    }
 
     lv_obj_t* kb = lv_keyboard_create(parent);
     lv_obj_set_width(kb, LV_PCT(100));
@@ -333,20 +492,25 @@ lv_obj_t* SettingsUi::MakeKeyboard(lv_obj_t* parent, lv_obj_t* textarea, Action 
         lv_obj_set_style_text_font(kb, font, LV_PART_ITEMS);
     }
     const lv_color_t card = CardColor();
-    const lv_color_t function_key = lv_color_brightness(card) > 128
-                                        ? lv_color_darken(card, 32)
-                                        : lv_color_lighten(card, 48);
-    const lv_color_t pressed = lv_color_mix(lv_color_hex(kAccentColor), card, 90);
-    lv_obj_set_style_radius(kb, 12, LV_PART_ITEMS);
+    const lv_color_t function_key = RaisedSurfaceColor();
+    const lv_color_t pressed = lv_color_mix(AccentColor(), card, 64);
+    lv_obj_set_style_radius(kb, 14, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(kb, 1, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(kb, SurfaceBorderColor(), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, card, LV_PART_ITEMS);
-    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(kb, function_key,
-                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_90, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(
+        kb, function_key,
+        (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(
+        kb, pressed, (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(
+        kb, AccentColor(),
+        (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
     lv_obj_set_style_bg_color(kb, pressed,
-                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(kb, pressed,
-                              (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_PRESSED |
+                              (lv_style_selector_t)LV_PART_ITEMS |
+                                  (lv_style_selector_t)LV_STATE_PRESSED |
                                   (lv_style_selector_t)LV_STATE_CHECKED);
 
     lv_keyboard_set_map(kb, LV_KEYBOARD_MODE_TEXT_LOWER, kKeyboardLowerMap, kKeyboardLowerCtrl);
@@ -367,14 +531,17 @@ lv_obj_t* SettingsUi::MakeCard(lv_obj_t* parent) {
     lv_obj_set_width(card, LV_PCT(100));
     lv_obj_set_height(card, kRowHeight);
     lv_obj_set_style_bg_color(card, CardColor(), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(card, LV_OPA_90, 0);
     lv_obj_set_style_radius(card, kCardRadius, 0);
-    lv_obj_set_style_pad_hor(card, 20, 0);
-    lv_obj_set_style_pad_column(card, 20, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, SurfaceBorderColor(), 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_60, 0);
+    lv_obj_set_style_pad_hor(card, 22, 0);
+    lv_obj_set_style_pad_column(card, 18, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+    ApplyPressFeedback(card, CardColor());
     return card;
 }
 
@@ -386,7 +553,7 @@ lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const cha
     Bind(card, action, index);
 
     if (icon != nullptr) {
-        MakeIconLabel(card, icon, true);
+        MakeIconBadge(card, icon, true);
     }
 
     lv_obj_t* texts = lv_obj_create(card);
@@ -397,6 +564,7 @@ lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const cha
     lv_obj_set_height(texts, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(texts, 1);
     lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(texts, 2, 0);
     lv_obj_set_scrollbar_mode(texts, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t* title_label = lv_label_create(texts);
@@ -409,11 +577,12 @@ lv_obj_t* SettingsUi::MakeListItem(lv_obj_t* parent, const char* icon, const cha
         lv_label_set_text(subtitle_label, subtitle);
         lv_obj_set_width(subtitle_label, LV_PCT(100));
         lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_opa(subtitle_label, LV_OPA_60, 0);
+        lv_obj_set_style_text_opa(subtitle_label, LV_OPA_60, 0);
     }
 
     if (trailing_icon != nullptr) {
-        MakeIconLabel(card, trailing_icon, false);
+        lv_obj_t* trailing = MakeIconLabel(card, trailing_icon, false);
+        lv_obj_set_style_text_opa(trailing, LV_OPA_40, 0);
     }
     return card;
 }
@@ -423,15 +592,26 @@ lv_obj_t* SettingsUi::MakeTextButton(lv_obj_t* parent, const char* icon, const c
     lv_obj_t* button = lv_button_create(parent);
     lv_obj_set_width(button, LV_PCT(100));
     lv_obj_set_height(button, kButtonHeight);
-    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_radius(button, kButtonRadius, 0);
     lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_set_style_bg_color(button, primary ? lv_color_hex(kAccentColor) : CardColor(), 0);
+    lv_obj_set_style_border_width(button, 1, 0);
+    lv_obj_set_style_border_color(button, primary ? AccentColor() : SurfaceBorderColor(), 0);
+    lv_obj_set_style_border_opa(button, LV_OPA_60, 0);
+    lv_obj_set_style_bg_color(button, primary ? AccentColor() : CardColor(), 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(button, primary ? lv_color_hex(kSenseCraftInk) : ThemeTextColor(),
+                                0);
     if (primary) {
-        lv_obj_set_style_text_color(button, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(button, lv_color_darken(AccentColor(), 24), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(button, lv_color_darken(AccentColor(), 24), LV_STATE_PRESSED);
+    } else {
+        lv_obj_set_style_bg_color(button, PressedSurfaceColor(), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(button, AccentColor(), LV_STATE_PRESSED);
     }
+    lv_obj_set_style_translate_y(button, 1, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_scale(button, 250, LV_STATE_PRESSED);
     lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(button, 12, 0);
     if (icon != nullptr) {
         MakeIconLabel(button, icon, false);
@@ -442,6 +622,31 @@ lv_obj_t* SettingsUi::MakeTextButton(lv_obj_t* parent, const char* icon, const c
     return button;
 }
 
+void SettingsUi::StyleTextArea(lv_obj_t* textarea) {
+    lv_obj_set_style_bg_color(textarea, CardColor(), 0);
+    lv_obj_set_style_bg_opa(textarea, LV_OPA_90, 0);
+    lv_obj_set_style_radius(textarea, kButtonRadius, 0);
+    lv_obj_set_style_border_width(textarea, 1, 0);
+    lv_obj_set_style_border_color(textarea, SurfaceBorderColor(), 0);
+    lv_obj_set_style_border_opa(textarea, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(textarea, 2, LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(textarea, AccentColor(), LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(textarea, 18, 0);
+    lv_obj_set_style_text_color(textarea, ThemeTextColor(), 0);
+    lv_obj_set_style_text_opa(textarea, LV_OPA_50, LV_PART_TEXTAREA_PLACEHOLDER);
+}
+
+lv_obj_t* SettingsUi::MakeTextArea(lv_obj_t* parent, const char* placeholder, int max_length) {
+    lv_obj_t* textarea = lv_textarea_create(parent);
+    lv_obj_set_width(textarea, LV_PCT(100));
+    lv_obj_set_height(textarea, kButtonHeight);
+    lv_textarea_set_one_line(textarea, true);
+    lv_textarea_set_max_length(textarea, max_length);
+    lv_textarea_set_placeholder_text(textarea, placeholder);
+    StyleTextArea(textarea);
+    return textarea;
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -450,6 +655,7 @@ void SettingsUi::Open(SettingsPage page) {
     if (root_ != nullptr) {
         return;
     }
+    closing_ = false;
     pending_face_mode_ = -1;
     ESP_LOGI(TAG, "Opening settings overlay on page %d", static_cast<int>(page));
 
@@ -482,10 +688,33 @@ void SettingsUi::Open(SettingsPage page) {
             ShowWifiPage();
             break;
     }
+    AnimateOpen();
+}
+
+void SettingsUi::AnimateOpen() {
+    if (root_ == nullptr) {
+        return;
+    }
+    lv_obj_update_layout(root_);
+    int height = lv_obj_get_height(root_);
+    if (height <= 0) {
+        height = LV_VER_RES;
+    }
+    lv_anim_delete(root_, nullptr);
+    lv_obj_set_y(root_, -height);
+
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, root_);
+    lv_anim_set_duration(&anim, 320);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_values(&anim, -height, 0);
+    lv_anim_set_exec_cb(&anim, AnimRootY);
+    lv_anim_start(&anim);
 }
 
 void SettingsUi::Close() {
-    if (root_ == nullptr) {
+    if (root_ == nullptr || closing_) {
         return;
     }
     ESP_LOGI(TAG, "Closing settings overlay");
@@ -493,6 +722,41 @@ void SettingsUi::Close() {
     async_scheduled_ = false;
     scan_generation_++;
     pending_actions_.clear();
+    closing_ = true;
+    AnimateClose();
+}
+
+void SettingsUi::AnimateClose() {
+    if (root_ == nullptr) {
+        return;
+    }
+    lv_anim_delete(root_, nullptr);
+    int height = lv_obj_get_height(root_);
+    if (height <= 0) {
+        height = LV_VER_RES;
+    }
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, root_);
+    lv_anim_set_duration(&anim, 240);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_in);
+    lv_anim_set_values(&anim, lv_obj_get_y(root_), -height);
+    lv_anim_set_exec_cb(&anim, AnimRootY);
+    lv_anim_set_completed_cb(&anim, [](lv_anim_t* a) {
+        auto* self = static_cast<SettingsUi*>(a->user_data);
+        if (self != nullptr) {
+            self->FinishClose();
+        }
+    });
+    lv_anim_set_user_data(&anim, this);
+    lv_anim_start(&anim);
+}
+
+void SettingsUi::FinishClose() {
+    if (root_ == nullptr) {
+        return;
+    }
+    lv_anim_delete(root_, nullptr);
     lv_obj_delete(root_);
     root_ = nullptr;
     header_ = nullptr;
@@ -501,8 +765,10 @@ void SettingsUi::Close() {
     keyboard_ = nullptr;
     volume_slider_ = nullptr;
     volume_value_ = nullptr;
+    volume_icon_ = nullptr;
     icon_labels_.clear();
     event_ctx_.clear();
+    closing_ = false;
     if (close_cb_) {
         close_cb_();
     }
@@ -518,10 +784,17 @@ void SettingsUi::ShowWifiPage() {
     lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::Close, true);
 
     lv_obj_t* card = MakeCard(body);
-    MakeIconLabel(card, MATERIAL_SYMBOLS_WIFI, true);
+    MakeIconBadge(card, MATERIAL_SYMBOLS_WIFI, true);
     lv_obj_t* label = lv_label_create(card);
     lv_label_set_text(label, "正在扫描附近的网络 ...");
     lv_obj_set_flex_grow(label, 1);
+    lv_obj_set_style_text_opa(label, LV_OPA_70, 0);
+
+    lv_obj_t* spinner = lv_spinner_create(card);
+    lv_obj_set_size(spinner, 34, 34);
+    lv_obj_set_style_arc_width(spinner, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(spinner, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spinner, AccentColor(), LV_PART_INDICATOR);
 
     StartWifiScan();
 }
@@ -531,9 +804,10 @@ void SettingsUi::ShowWifiList() {
     lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::Close, true);
 
     lv_obj_t* area = MakeScrollArea(body);
+    MakeSectionLabel(area, "附近的网络");
     if (scan_results_.empty()) {
         lv_obj_t* card = MakeCard(area);
-        MakeIconLabel(card, MATERIAL_SYMBOLS_WIFI_OFF, true);
+        MakeIconBadge(card, MATERIAL_SYMBOLS_WIFI_OFF, true);
         lv_obj_t* label = lv_label_create(card);
         lv_label_set_text(label, "没有扫描到网络，点击右上角重试");
         lv_obj_set_flex_grow(label, 1);
@@ -625,7 +899,7 @@ void SettingsUi::StartWifiScan() {
 void SettingsUi::OnScanComplete(std::vector<WifiScanItem> results, esp_err_t error,
                                 uint32_t generation) {
     DisplayLockGuard lock(display_);
-    if (root_ == nullptr || generation != scan_generation_ ||
+    if (root_ == nullptr || closing_ || generation != scan_generation_ ||
         wifi_state_ != WifiSettingsState::Scanning) {
         return;
     }
@@ -641,16 +915,9 @@ void SettingsUi::ShowManualSsid() {
     wifi_state_ = WifiSettingsState::InputSsid;
     lv_obj_t* body = BuildPage("手动输入 SSID", Action::WifiRescan, false);
 
-    textarea_ = lv_textarea_create(body);
-    lv_obj_set_width(textarea_, LV_PCT(100));
-    lv_obj_set_height(textarea_, kButtonHeight);
-    lv_obj_set_style_radius(textarea_, 12, 0);
-    lv_textarea_set_one_line(textarea_, true);
-    lv_textarea_set_max_length(textarea_, 32);
-    lv_textarea_set_placeholder_text(textarea_, "network name");
+    textarea_ = MakeTextArea(body, "network name", 32);
 
-    MakeTextButton(body, MATERIAL_SYMBOLS_ARROW_FORWARD, "下一步", Action::WifiManualNext, 0,
-                   true);
+    MakeTextButton(body, MATERIAL_SYMBOLS_ARROW_FORWARD, "下一步", Action::WifiManualNext, 0, true);
 
     keyboard_ = MakeKeyboard(body, textarea_, Action::WifiManualNext);
 }
@@ -662,14 +929,8 @@ void SettingsUi::ShowPasswordInput(const std::string& ssid, bool encrypted) {
 
     lv_obj_t* body = BuildPage(ssid.c_str(), Action::WifiPasswordCancel, false);
 
-    textarea_ = lv_textarea_create(body);
-    lv_obj_set_width(textarea_, LV_PCT(100));
-    lv_obj_set_height(textarea_, kButtonHeight);
-    lv_obj_set_style_radius(textarea_, 12, 0);
-    lv_textarea_set_one_line(textarea_, true);
+    textarea_ = MakeTextArea(body, encrypted ? "password" : "(open network)", 64);
     lv_textarea_set_password_mode(textarea_, true);
-    lv_textarea_set_max_length(textarea_, 64);
-    lv_textarea_set_placeholder_text(textarea_, encrypted ? "password" : "(open network)");
 
     lv_obj_t* row = lv_obj_create(body);
     lv_obj_remove_style_all(row);
@@ -700,7 +961,7 @@ void SettingsUi::ShowSavedList() {
 
     if (saved_ssids_.empty()) {
         lv_obj_t* card = MakeCard(area);
-        MakeIconLabel(card, MATERIAL_SYMBOLS_INFO, true);
+        MakeIconBadge(card, MATERIAL_SYMBOLS_INFO, true);
         lv_obj_t* label = lv_label_create(card);
         lv_label_set_text(label, "还没有保存任何网络");
         lv_obj_set_flex_grow(label, 1);
@@ -709,7 +970,7 @@ void SettingsUi::ShowSavedList() {
 
     for (size_t i = 0; i < saved_ssids_.size(); i++) {
         lv_obj_t* card = MakeCard(area);
-        MakeIconLabel(card, MATERIAL_SYMBOLS_KEY, true);
+        MakeIconBadge(card, MATERIAL_SYMBOLS_KEY, true);
 
         lv_obj_t* name = lv_label_create(card);
         lv_label_set_text(name, saved_ssids_[i].c_str());
@@ -718,19 +979,24 @@ void SettingsUi::ShowSavedList() {
 
         lv_obj_t* connect = lv_button_create(card);
         lv_obj_set_size(connect, kIconButtonSize, kIconButtonSize);
-        lv_obj_set_style_radius(connect, 12, 0);
+        lv_obj_set_style_radius(connect, kButtonRadius, 0);
         lv_obj_set_style_shadow_width(connect, 0, 0);
-        lv_obj_set_style_bg_color(connect, lv_color_hex(kAccentColor), 0);
-        lv_obj_set_style_text_color(connect, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(connect, AccentColor(), 0);
+        lv_obj_set_style_bg_color(connect, lv_color_darken(AccentColor(), 24), LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(connect, lv_color_hex(kSenseCraftInk), 0);
+        lv_obj_set_style_transform_scale(connect, 250, LV_STATE_PRESSED);
         lv_obj_center(MakeIconLabel(connect, MATERIAL_SYMBOLS_LINK, false));
         Bind(connect, Action::WifiConnectSaved, (int)i);
 
         lv_obj_t* remove = lv_button_create(card);
         lv_obj_set_size(remove, kIconButtonSize, kIconButtonSize);
-        lv_obj_set_style_radius(remove, 12, 0);
+        lv_obj_set_style_radius(remove, kButtonRadius, 0);
         lv_obj_set_style_shadow_width(remove, 0, 0);
         lv_obj_set_style_bg_color(remove, lv_color_hex(kDangerColor), 0);
-        lv_obj_set_style_text_color(remove, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(remove, lv_color_darken(lv_color_hex(kDangerColor), 24),
+                                  LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(remove, lv_color_white(), 0);
+        lv_obj_set_style_transform_scale(remove, 250, LV_STATE_PRESSED);
         lv_obj_center(MakeIconLabel(remove, MATERIAL_SYMBOLS_DELETE, false));
         Bind(remove, Action::WifiDeleteSaved, (int)i);
     }
@@ -751,7 +1017,7 @@ void SettingsUi::ShowConnecting(const std::string& ssid) {
 
     lv_obj_t* spinner = lv_spinner_create(box);
     lv_obj_set_size(spinner, 96, 96);
-    lv_obj_set_style_arc_color(spinner, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spinner, AccentColor(), LV_PART_INDICATOR);
 
     lv_obj_t* label = lv_label_create(box);
     lv_label_set_text_fmt(label, "正在连接 %s", ssid.c_str());
@@ -793,7 +1059,7 @@ void SettingsUi::ShowResult(bool success, const char* message) {
 void SettingsUi::OnConnectResult(bool success, const std::string& message) {
     DisplayLockGuard lock(display_);
     operation_active_ = false;
-    if (root_ == nullptr || wifi_state_ != WifiSettingsState::Connecting) {
+    if (root_ == nullptr || closing_ || wifi_state_ != WifiSettingsState::Connecting) {
         return;
     }
     ESP_LOGI(TAG, "%s: %s", success ? "Success" : "Failed", message.c_str());
@@ -840,17 +1106,14 @@ void SettingsUi::ShowStaticIpPage() {
     const char* hints[4] = {"IP 地址 (192.168.1.50)", "网关", "子网掩码 (255.255.255.0)",
                             "DNS (可空, 默认网关)"};
 
+    MakeSectionLabel(body, "网络参数");
     lv_obj_t* state = lv_label_create(body);
     lv_label_set_text(state, enabled ? "当前: 静态 IP" : "当前: DHCP 自动获取");
+    lv_obj_set_style_text_opa(state, LV_OPA_60, 0);
+    lv_obj_set_style_pad_left(state, 4, 0);
 
     for (int i = 0; i < 4; i++) {
-        lv_obj_t* ta = lv_textarea_create(body);
-        lv_obj_set_width(ta, LV_PCT(100));
-        lv_obj_set_height(ta, kButtonHeight);
-        lv_obj_set_style_radius(ta, 12, 0);
-        lv_textarea_set_one_line(ta, true);
-        lv_textarea_set_max_length(ta, 15);
-        lv_textarea_set_placeholder_text(ta, hints[i]);
+        lv_obj_t* ta = MakeTextArea(body, hints[i], 15);
         std::string value = settings.GetString(keys[i], "");
         if (!value.empty()) {
             lv_textarea_set_text(ta, value.c_str());
@@ -900,14 +1163,15 @@ void SettingsUi::ShowFacePage() {
     }
 
     lv_obj_t* body = BuildPage("人脸识别", Action::Close, false);
+    // The mode list and the parameter rows scroll; the endpoint field and the
+    // keyboard stay pinned above the bottom so editing never requires hunting
+    // for the input after the keyboard covers the page.
+    lv_obj_t* content = MakeScrollArea(body);
+    MakeSectionLabel(content, "视觉模式");
 
     static const char* kModeNames[4] = {"不感知", "人形感知", "智能问候", "哨兵模式"};
-    static const char* kModeHints[4] = {
-        "关闭视觉，不唤醒",
-        "有人即唤醒，不认人脸",
-        "熟人叫名字，主动问候",
-        "熟人免打扰，陌生人警戒"
-    };
+    static const char* kModeHints[4] = {"关闭视觉，不唤醒", "有人即唤醒，不认人脸",
+                                        "熟人叫名字，主动问候", "熟人免打扰，陌生人警戒"};
     static const char* kModeIcons[4] = {
         MATERIAL_SYMBOLS_CANCEL,
         MATERIAL_SYMBOLS_PERSON,
@@ -915,7 +1179,7 @@ void SettingsUi::ShowFacePage() {
         MATERIAL_SYMBOLS_NOTIFICATIONS,
     };
 
-    lv_obj_t* grid = lv_obj_create(body);
+    lv_obj_t* grid = lv_obj_create(content);
     lv_obj_remove_style_all(grid);
     lv_obj_set_width(grid, LV_PCT(100));
     lv_obj_set_height(grid, LV_SIZE_CONTENT);
@@ -927,44 +1191,49 @@ void SettingsUi::ShowFacePage() {
     for (int i = 0; i < 4; i++) {
         bool selected = (i == pending_face_mode_);
         lv_obj_t* tile = lv_button_create(grid);
-        lv_obj_set_size(tile, LV_PCT(48), 108);
+        lv_obj_set_size(tile, LV_PCT(48), 116);
         lv_obj_set_style_radius(tile, kCardRadius, 0);
         lv_obj_set_style_shadow_width(tile, 0, 0);
-        lv_obj_set_style_bg_color(tile, selected ? lv_color_hex(kAccentColor) : CardColor(), 0);
-        lv_obj_set_style_border_width(tile, selected ? 2 : 0, 0);
-        lv_obj_set_style_border_color(tile, lv_color_hex(kAccentColor), 0);
-        if (selected) {
-            lv_obj_set_style_text_color(tile, lv_color_hex(0xFFFFFF), 0);
-        }
+        lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_90, 0);
+        lv_obj_set_style_border_width(tile, selected ? 2 : 1, 0);
+        lv_obj_set_style_border_color(tile, selected ? AccentColor() : SurfaceBorderColor(), 0);
+        lv_obj_set_style_border_opa(tile, selected ? LV_OPA_COVER : LV_OPA_60, 0);
+        ApplyPressFeedback(tile, selected ? AccentWashStrongColor() : CardColor());
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_all(tile, 16, 0);
-        lv_obj_set_style_pad_row(tile, 6, 0);
+        lv_obj_set_style_pad_all(tile, 18, 0);
+        lv_obj_set_style_pad_row(tile, 8, 0);
 
         lv_obj_t* hrow = lv_obj_create(tile);
         lv_obj_remove_style_all(hrow);
         lv_obj_set_size(hrow, LV_PCT(100), LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(hrow, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(hrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_align(hrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(hrow, 8, 0);
+        lv_obj_remove_flag(hrow, LV_OBJ_FLAG_CLICKABLE);
 
-        MakeIconLabel(hrow, kModeIcons[i], false);
+        lv_obj_t* mode_icon = MakeIconLabel(hrow, kModeIcons[i], false);
+        lv_obj_set_style_text_color(mode_icon, selected ? AccentInkColor() : ThemeTextColor(), 0);
 
         lv_obj_t* name = lv_label_create(hrow);
         lv_label_set_text(name, kModeNames[i]);
         lv_obj_set_flex_grow(name, 1);
 
         if (selected) {
-            MakeIconLabel(hrow, MATERIAL_SYMBOLS_CHECK, false);
+            lv_obj_t* check = MakeIconLabel(hrow, MATERIAL_SYMBOLS_CHECK, false);
+            lv_obj_set_style_text_color(check, AccentInkColor(), 0);
         }
 
         lv_obj_t* hint = lv_label_create(tile);
         lv_label_set_text(hint, kModeHints[i]);
-        lv_obj_set_style_text_opa(hint, selected ? LV_OPA_90 : LV_OPA_60, 0);
+        lv_obj_set_style_text_opa(hint, selected ? LV_OPA_80 : LV_OPA_50, 0);
 
         Bind(tile, Action::FacePick, i);
     }
 
+    MakeSectionLabel(content, "识别参数");
     {
         Settings settings("face", false);
         int interval = settings.GetInt("interval_s", 5);
@@ -979,30 +1248,26 @@ void SettingsUi::ShowFacePage() {
         (void)known_only;
         char text[24];
         snprintf(text, sizeof(text), "%d 秒", duration);
-        MakeListItem(body, MATERIAL_SYMBOLS_CHECK, "持续确认", text, Action::FaceParamCycle, 1,
+        MakeListItem(content, MATERIAL_SYMBOLS_CHECK, "持续确认", text, Action::FaceParamCycle, 1,
                      MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
         snprintf(text, sizeof(text), "%d 秒", cooldown);
-        MakeListItem(body, MATERIAL_SYMBOLS_VOLUME_OFF, "唤醒冷却", text, Action::FaceParamCycle, 2,
-                     MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+        MakeListItem(content, MATERIAL_SYMBOLS_VOLUME_OFF, "唤醒冷却", text, Action::FaceParamCycle,
+                     2, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
     }
 
     lv_obj_t* label = lv_label_create(body);
     lv_label_set_text(label, "识别服务地址（智能问候/哨兵模式使用）");
+    lv_obj_set_style_text_opa(label, LV_OPA_60, 0);
+    lv_obj_set_style_pad_left(label, 4, 0);
 
-    textarea_ = lv_textarea_create(body);
-    lv_obj_set_width(textarea_, LV_PCT(100));
-    lv_obj_set_height(textarea_, kButtonHeight);
-    lv_obj_set_style_radius(textarea_, 12, 0);
-    lv_textarea_set_one_line(textarea_, true);
-    lv_textarea_set_max_length(textarea_, 96);
-    lv_textarea_set_placeholder_text(textarea_, "http://192.168.x.x:8001/recognize");
+    textarea_ = MakeTextArea(body, "http://192.168.x.x:8001/recognize", 96);
     if (!endpoint.empty()) {
         lv_textarea_set_text(textarea_, endpoint.c_str());
     }
 
     MakeTextButton(body, MATERIAL_SYMBOLS_CHECK, "保存", Action::FaceSave, 0, true);
 
-    keyboard_ = MakeKeyboard(body, textarea_, Action::FaceSave);
+    keyboard_ = MakeKeyboard(body, textarea_, Action::FaceSave, false);
 }
 
 void SettingsUi::ShowDisplaySettings() {
@@ -1014,11 +1279,12 @@ void SettingsUi::ShowDisplaySettings() {
     }
 
     lv_obj_t* body = BuildPage("屏幕方向", Action::Close, false);
+    MakeSectionLabel(body, "方向");
 
     lv_obj_t* grid = lv_obj_create(body);
     lv_obj_remove_style_all(grid);
     lv_obj_set_width(grid, LV_PCT(100));
-    lv_obj_set_flex_grow(grid, 1);
+    lv_obj_set_height(grid, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_pad_row(grid, kGap, 0);
     lv_obj_set_style_pad_column(grid, kGap, 0);
@@ -1032,16 +1298,20 @@ void SettingsUi::ShowDisplaySettings() {
         lv_obj_set_size(tile, LV_PCT(47), 160);
         lv_obj_set_style_radius(tile, kCardRadius, 0);
         lv_obj_set_style_shadow_width(tile, 0, 0);
-        lv_obj_set_style_bg_color(tile, selected ? lv_color_hex(kAccentColor) : CardColor(), 0);
-        if (selected) {
-            lv_obj_set_style_text_color(tile, lv_color_hex(0xFFFFFF), 0);
-        }
+        lv_obj_set_style_bg_color(tile, selected ? AccentWashStrongColor() : CardColor(), 0);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_90, 0);
+        lv_obj_set_style_border_width(tile, selected ? 2 : 1, 0);
+        lv_obj_set_style_border_color(tile, selected ? AccentColor() : SurfaceBorderColor(), 0);
+        lv_obj_set_style_border_opa(tile, selected ? LV_OPA_COVER : LV_OPA_60, 0);
+        ApplyPressFeedback(tile, selected ? AccentWashStrongColor() : CardColor());
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_row(tile, 8, 0);
 
-        MakeIconLabel(tile, MATERIAL_SYMBOLS_REPEAT, true);
+        lv_obj_t* rotation_icon = MakeIconLabel(tile, MATERIAL_SYMBOLS_REPEAT, true);
+        lv_obj_set_style_text_color(rotation_icon, selected ? AccentInkColor() : ThemeTextColor(),
+                                    0);
         lv_obj_t* label = lv_label_create(tile);
         char text[24];
         snprintf(text, sizeof(text), "%d°%s", degrees, degrees == current ? "  (当前)" : "");
@@ -1049,6 +1319,7 @@ void SettingsUi::ShowDisplaySettings() {
         Bind(tile, Action::RotationPick, i);
     }
 
+    MakeSectionLabel(body, "电源管理");
     {
         Settings settings("power", false);
         int dim_s = settings.GetInt("dim_s", 60);
@@ -1063,8 +1334,8 @@ void SettingsUi::ShowDisplaySettings() {
                      Action::SleepOffCycle, 0, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
     }
 
-    MakeTextButton(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave,
-                   0, true);
+    MakeTextButton(body, MATERIAL_SYMBOLS_POWER_SETTINGS_NEW, "保存并重启", Action::RotationSave, 0,
+                   true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,28 +1351,66 @@ void SettingsUi::ShowVolumeSettings() {
     }
 
     lv_obj_t* body = BuildPage("音量", Action::Close, false);
+    MakeSectionLabel(body, "媒体音量");
 
     lv_obj_t* card = MakeCard(body);
-    lv_obj_set_height(card, 120);
-    MakeIconLabel(card, volume == 0 ? MATERIAL_SYMBOLS_VOLUME_OFF : MATERIAL_SYMBOLS_VOLUME_UP,
-                  true);
-    volume_value_ = lv_label_create(card);
-    lv_label_set_text_fmt(volume_value_, "%d%%", volume);
-    lv_obj_set_flex_grow(volume_value_, 1);
-    lv_obj_set_style_text_align(volume_value_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(card, 24, 0);
+    lv_obj_set_style_pad_row(card, 26, 0);
 
-    volume_slider_ = lv_slider_create(body);
+    lv_obj_t* head = lv_obj_create(card);
+    lv_obj_remove_style_all(head);
+    lv_obj_set_width(head, LV_PCT(100));
+    lv_obj_set_height(head, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 16, 0);
+    lv_obj_remove_flag(head, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(head, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t* badge = lv_obj_create(head);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, 52, 52);
+    lv_obj_set_style_radius(badge, 16, 0);
+    lv_obj_set_style_bg_color(badge, AccentWashStrongColor(), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    volume_icon_ = MakeIconLabel(badge, VolumeGlyph(volume), true);
+    lv_obj_set_style_text_color(volume_icon_, AccentInkColor(), 0);
+    lv_obj_center(volume_icon_);
+
+    lv_obj_t* title = lv_label_create(head);
+    lv_label_set_text(title, "输出音量");
+    lv_obj_set_flex_grow(title, 1);
+
+    volume_value_ = lv_label_create(head);
+    lv_label_set_text_fmt(volume_value_, "%d%%", volume);
+    lv_obj_set_style_text_color(volume_value_, AccentInkColor(), 0);
+
+    volume_slider_ = lv_slider_create(card);
     lv_obj_set_width(volume_slider_, LV_PCT(100));
     lv_obj_set_height(volume_slider_, kSliderHeight);
     lv_slider_set_range(volume_slider_, 0, 100);
     lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(volume_slider_, CardColor(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(volume_slider_, TrackColor(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(volume_slider_, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(volume_slider_, kSliderHeight / 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(volume_slider_, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(volume_slider_, AccentColor(), LV_PART_INDICATOR);
     lv_obj_set_style_radius(volume_slider_, kSliderHeight / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(volume_slider_, lv_color_hex(kAccentColor), LV_PART_KNOB);
-    lv_obj_set_style_pad_all(volume_slider_, 10, LV_PART_KNOB);
-    lv_obj_set_ext_click_area(volume_slider_, 16);
+    lv_obj_set_style_bg_color(volume_slider_, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(volume_slider_, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_radius(volume_slider_, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(volume_slider_, 12, LV_PART_KNOB);
+    lv_obj_set_style_border_width(volume_slider_, 4, LV_PART_KNOB);
+    lv_obj_set_style_border_color(volume_slider_, AccentColor(), LV_PART_KNOB);
+    lv_obj_set_style_shadow_width(volume_slider_, 0, LV_PART_KNOB);
+    lv_obj_set_style_transform_scale(
+        volume_slider_, 264,
+        (lv_style_selector_t)LV_PART_KNOB | (lv_style_selector_t)LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(volume_slider_, 22);
     lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_RELEASED, this);
     lv_obj_add_event_cb(volume_slider_, VolumeSliderThunk, LV_EVENT_PRESS_LOST, this);
@@ -1110,10 +1419,18 @@ void SettingsUi::ShowVolumeSettings() {
                    volume == 0 ? "取消静音" : "静音", Action::VolumeMute, 0, false);
 
     lv_obj_t* hint = lv_label_create(body);
-    lv_label_set_text(hint, "松手时才写入设置，拖动过程只做预览。");
+    lv_label_set_text(hint, "松手时写入设置，拖动过程只做预览。");
     lv_obj_set_width(hint, LV_PCT(100));
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_opa(hint, LV_OPA_60, 0);
+    lv_obj_set_style_text_opa(hint, LV_OPA_50, 0);
+    lv_obj_set_style_pad_left(hint, 4, 0);
+}
+
+void SettingsUi::UpdateVolumeIcon(int volume) {
+    if (volume_icon_ == nullptr) {
+        return;
+    }
+    lv_label_set_text(volume_icon_, VolumeGlyph(volume));
 }
 
 void SettingsUi::ShowRotationConfirm() {
@@ -1160,7 +1477,7 @@ void SettingsUi::CommitRotation() {
 
     lv_obj_t* spinner = lv_spinner_create(box);
     lv_obj_set_size(spinner, 96, 96);
-    lv_obj_set_style_arc_color(spinner, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(spinner, AccentColor(), LV_PART_INDICATOR);
 
     lv_obj_t* label = lv_label_create(box);
     lv_label_set_text_fmt(label, "已保存 %d°，正在重启 ...", pending_rotation_);
@@ -1179,6 +1496,9 @@ void SettingsUi::CommitRotation() {
 // ---------------------------------------------------------------------------
 
 void SettingsUi::HandleAction(Action action, int index) {
+    if (closing_) {
+        return;
+    }
     switch (action) {
         case Action::Close:
             if (operation_active_) {
@@ -1216,8 +1536,7 @@ void SettingsUi::HandleAction(Action action, int index) {
             return;
         case Action::WifiTogglePassword:
             if (textarea_ != nullptr) {
-                lv_textarea_set_password_mode(textarea_,
-                                              !lv_textarea_get_password_mode(textarea_));
+                lv_textarea_set_password_mode(textarea_, !lv_textarea_get_password_mode(textarea_));
             }
             return;
         case Action::WifiPasswordCancel:
@@ -1330,8 +1649,7 @@ void SettingsUi::HandleAction(Action action, int index) {
             ShowFacePage();
             break;
         case Action::FaceSave: {
-            std::string endpoint =
-                textarea_ != nullptr ? lv_textarea_get_text(textarea_) : "";
+            std::string endpoint = textarea_ != nullptr ? lv_textarea_get_text(textarea_) : "";
             if (face_apply_) {
                 face_apply_(pending_face_mode_, endpoint);
             }
@@ -1339,13 +1657,10 @@ void SettingsUi::HandleAction(Action action, int index) {
             break;
         }
         case Action::FaceParamCycle: {
-            static const char* kKeys[5] = {"interval_s", "duration_s", "cooldown_s",
-                                           "threshold", "known_only"};
-            static const int kChoices[5][4] = {{1, 3, 5, 10},
-                                               {1, 2, 3, -1},
-                                               {3, 8, 15, 30},
-                                               {50, 60, 70, 80},
-                                               {1, 0, -1, -1}};
+            static const char* kKeys[5] = {"interval_s", "duration_s", "cooldown_s", "threshold",
+                                           "known_only"};
+            static const int kChoices[5][4] = {
+                {1, 3, 5, 10}, {1, 2, 3, -1}, {3, 8, 15, 30}, {50, 60, 70, 80}, {1, 0, -1, -1}};
             static const int kDefaults[5] = {5, 2, 8, 60, 1};
             Settings settings("face", true);
             int current = settings.GetInt(kKeys[index], kDefaults[index]);

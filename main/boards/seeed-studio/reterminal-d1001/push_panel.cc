@@ -98,7 +98,14 @@ const char* RemoteWakeState(DeviceState state) {
 
 // Same accent as the settings overlay's primary actions.
 lv_color_t AccentColor() {
-    return lv_color_hex(0x2F6BFF);
+    return lv_color_hex(0x8CC020);
+}
+
+// Accent used for text on the theme background: green stays legible on the
+// dark theme, while the light theme needs the deeper green.
+lv_color_t AccentTextColor() {
+    lv_color_t bg = lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
+    return lv_color_brightness(bg) > 128 ? lv_color_hex(0x3B5A11) : AccentColor();
 }
 
 // Strips markdown emphasis markers in place ("**bold**", "`code`").
@@ -756,7 +763,7 @@ void PushPanel::OpenRoot(const char* title) {
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_flex_grow(title_label, 1);
-    lv_obj_set_style_text_color(title_label, AccentColor(), 0);
+    lv_obj_set_style_text_color(title_label, AccentTextColor(), 0);
 
     lv_obj_t* close_button = lv_label_create(header);
     lv_label_set_text(close_button, LV_SYMBOL_CLOSE);
@@ -848,7 +855,7 @@ void PushPanel::AddTextBlock(const std::string& text, int heading_level) {
     lv_obj_set_width(label, LV_PCT(100));
     if (heading_level > 0) {
         lv_obj_set_style_text_font(label, &font_noto_sans_basic_30_4, 0);
-        lv_obj_set_style_text_color(label, AccentColor(), 0);
+        lv_obj_set_style_text_color(label, AccentTextColor(), 0);
         lv_obj_set_style_pad_top(label, heading_level == 1 ? 8 : 4, 0);
     } else if (large_text_) {
         lv_obj_set_style_text_font(label, &font_noto_sans_basic_30_4, 0);

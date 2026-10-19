@@ -115,6 +115,10 @@ public:
         lv_obj_remove_flag(network_hotspot_, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(network_hotspot_, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(network_hotspot_, OnNetworkClicked, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(network_hotspot_, OnStatusGesture, LV_EVENT_ALL, this);
+        // Pulling down anywhere on the status strip opens the settings overlay,
+        // so the entry no longer depends on hitting the small network hotspot.
+        lv_obj_add_event_cb(status_bar_, OnStatusGesture, LV_EVENT_ALL, this);
 
         status_actions_ = lv_obj_create(status_bar_);
         lv_obj_remove_style_all(status_actions_);
@@ -131,7 +135,9 @@ public:
         // glyphs top-aligned, so a top alignment lands the glyphs on the same
         // horizontal line as the network label in the top bar.
         lv_obj_align(status_actions_, LV_ALIGN_TOP_LEFT, hotspot_width, 0);
+        lv_obj_add_event_cb(status_actions_, OnStatusGesture, LV_EVENT_ALL, this);
 
+        settings_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_SETTINGS, OnSettingsClicked);
         rotation_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_REPEAT, OnRotationClicked);
         volume_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_VOLUME_UP, OnVolumeClicked);
         face_icon_ = CreateStatusIcon(MATERIAL_SYMBOLS_PERSON, OnFaceClicked);
@@ -148,6 +154,7 @@ public:
         // The theme reload frees the previous fonts, so both entries are
         // re-pointed at the new ones before anything can draw with a dangling
         // pointer.
+        ApplyStatusIconStyle(settings_icon_);
         ApplyStatusIconStyle(rotation_icon_);
         ApplyStatusIconStyle(volume_icon_);
         ApplyStatusIconStyle(face_icon_);
@@ -212,7 +219,7 @@ public:
         ApplyStatusIconStyle(face_icon_);
         lv_obj_set_style_text_opa(face_icon_, mode == 0 ? LV_OPA_40 : LV_OPA_COVER, 0);
         if (mode == 2) {
-            lv_obj_set_style_text_color(face_icon_, kAccentColor(), 0);
+            lv_obj_set_style_text_color(face_icon_, kAccentTextColor(), 0);
         }
     }
 
@@ -244,11 +251,17 @@ private:
         lv_obj_t* button = lv_obj_create(status_actions_);
         lv_obj_remove_style_all(button);
         lv_obj_set_size(button, kStatusIconTouchWidth, kStatusBarTouchHeight);
+        lv_obj_set_style_radius(button, 16, 0);
         lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(button, lv_color_mix(kAccentColor(), ScreenBackgroundColor(), 42),
+                                  LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(button, LV_OPA_40, LV_STATE_PRESSED);
+        lv_obj_set_style_transform_scale(button, 250, LV_STATE_PRESSED);
         lv_obj_set_scrollbar_mode(button, LV_SCROLLBAR_MODE_OFF);
         lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(button, OnStatusGesture, LV_EVENT_ALL, this);
 
         lv_obj_t* label = lv_label_create(button);
         lv_label_set_text(label, glyph);
@@ -272,13 +285,29 @@ private:
         if (theme != nullptr) {
             lv_obj_set_style_text_color(label, theme->text_color(), 0);
         }
-        lv_obj_set_style_text_color(label, kAccentColor(), LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(label, kAccentTextColor(), LV_STATE_PRESSED);
     }
 
-    // Same accent as the settings overlay's primary actions (#2F6BFF).
-    static lv_color_t kAccentColor() { return lv_color_hex(0x2F6BFF); }
+    static lv_color_t ScreenBackgroundColor() {
+        return lv_obj_get_style_bg_color(lv_screen_active(), LV_PART_MAIN);
+    }
+
+    // SenseCraft green, shared with the settings overlay.
+    static lv_color_t kAccentColor() { return lv_color_hex(0x8CC020); }
+
+    // Small accent glyphs need the deeper green on the light theme to keep
+    // their contrast; the filled green surfaces keep using kAccentColor().
+    static lv_color_t kAccentTextColor() {
+        return lv_color_brightness(ScreenBackgroundColor()) > 128
+                   ? lv_color_hex(0x3B5A11)
+                   : kAccentColor();
+    }
 
     static void OnNetworkClicked(lv_event_t* event) {
+        Dispatch(event, SettingsPage::Wifi);
+    }
+
+    static void OnSettingsClicked(lv_event_t* event) {
         Dispatch(event, SettingsPage::Wifi);
     }
 
@@ -302,14 +331,63 @@ private:
         }
     }
 
+    // The status strip is only 48 px tall, so a pull-down swipe is detected
+    // both through LVGL's gesture event and through the raw press/release
+    // delta; the latter keeps the entry reliable on the small touch band.
+    static void OnStatusGesture(lv_event_t* event) {
+        auto* self = static_cast<ReTerminalD1001Display*>(lv_event_get_user_data(event));
+        if (self == nullptr) {
+            return;
+        }
+        lv_event_code_t code = lv_event_get_code(event);
+        lv_indev_t* indev = lv_indev_active();
+
+        if (code == LV_EVENT_GESTURE) {
+            if (indev != nullptr && lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM) {
+                self->gesture_tracking_ = false;
+                lv_indev_wait_release(indev);
+                Dispatch(event, SettingsPage::Wifi);
+            }
+            return;
+        }
+        if (code == LV_EVENT_PRESSED) {
+            if (indev != nullptr) {
+                lv_indev_get_point(indev, &self->gesture_start_);
+                self->gesture_tracking_ = true;
+            }
+            return;
+        }
+        if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_INDEV_RESET) {
+            self->gesture_tracking_ = false;
+            return;
+        }
+        if (code == LV_EVENT_RELEASED && self->gesture_tracking_) {
+            self->gesture_tracking_ = false;
+            if (indev == nullptr) {
+                return;
+            }
+            lv_point_t end;
+            lv_indev_get_point(indev, &end);
+            int dx = end.x - self->gesture_start_.x;
+            int dy = end.y - self->gesture_start_.y;
+            if (dy > 42 && dx > -56 && dx < 56) {
+                lv_indev_wait_release(indev);
+                Dispatch(event, SettingsPage::Wifi);
+            }
+        }
+    }
+
     OpenSettingsCallback open_settings_;
     std::function<int()> face_toggle_;
     std::function<void()> on_theme_changed_;
     lv_obj_t* network_hotspot_ = nullptr;
     lv_obj_t* status_actions_ = nullptr;
+    lv_obj_t* settings_icon_ = nullptr;
     lv_obj_t* rotation_icon_ = nullptr;
     lv_obj_t* volume_icon_ = nullptr;
     lv_obj_t* face_icon_ = nullptr;
+    lv_point_t gesture_start_ = {};
+    bool gesture_tracking_ = false;
 };
 
 class ReTerminalD1001Board : public WifiBoard {
