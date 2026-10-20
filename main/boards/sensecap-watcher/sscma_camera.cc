@@ -1510,29 +1510,58 @@ std::expected<std::string, std::string> SscmaCamera::Explain(const std::string& 
     }
     http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
     http->SetHeader("Transfer-Encoding", "chunked");
-    if (!http->Open("POST", explain_url_)) {
-        ESP_LOGE(TAG, "Failed to connect to explain URL");
-        return "{\"success\": false, \"message\": \"Failed to connect to explain URL\"}";
+    if (auto opened = http->Open("POST", explain_url_); !opened) {
+        ESP_LOGE(TAG, "Failed to connect to explain URL: %s", opened.error().ToString().c_str());
+        return std::unexpected("Failed to connect to explain URL");
     }
-    
+
+    auto write_or_fail = [&http](const char* data, size_t size) -> bool {
+        if (auto written = http->Write(data, size); !written) {
+            ESP_LOGE(TAG, "Failed to upload photo: %s", written.error().ToString().c_str());
+            return true;
+        }
+        return false;
+    };
+
     // 第一块：question字段
-    http->Write(question_field.c_str(), question_field.size());
-    
+    if (write_or_fail(question_field.c_str(), question_field.size())) {
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
+
     // 第二块：文件字段头部
-    http->Write(file_header.c_str(), file_header.size());
-    
+    if (write_or_fail(file_header.c_str(), file_header.size())) {
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
+
     // 第三块：JPEG数据
-    http->Write((const char*)jpeg_data_.buf, jpeg_data_.len);
+    if (write_or_fail((const char*)jpeg_data_.buf, jpeg_data_.len)) {
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
 
     // 第四块：multipart尾部
-    http->Write(multipart_footer.c_str(), multipart_footer.size());
-    
+    if (write_or_fail(multipart_footer.c_str(), multipart_footer.size())) {
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
+
     // 结束块
-    http->Write("", 0);
+    if (write_or_fail("", 0)) {
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
 
     auto status_code = http->GetStatusCode();
-    if (!status_code || *status_code != 200) {
-        ESP_LOGE(TAG, "Failed to upload photo, status code: %d", status_code.value_or(0));
+    if (!status_code) {
+        ESP_LOGE(TAG, "Failed to read HTTP status: %s", status_code.error().ToString().c_str());
+        http->Close();
+        return std::unexpected("Failed to upload photo");
+    }
+    if (*status_code != 200) {
+        ESP_LOGE(TAG, "Failed to upload photo, status code: %d", *status_code);
+        http->Close();
         return std::unexpected("Failed to upload photo");
     }
 

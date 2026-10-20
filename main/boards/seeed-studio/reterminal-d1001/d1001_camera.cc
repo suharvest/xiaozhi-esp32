@@ -412,6 +412,8 @@ void D1001Camera::SetExplainUrl(const std::string& url, const std::string& token
 }
 
 bool D1001Camera::Capture() {
+    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
+
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
@@ -947,6 +949,8 @@ bool D1001Camera::SetVFlip(bool enabled) {
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
 std::expected<std::string, std::string> D1001Camera::Explain(const std::string& question) {
+    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
+
     if (explain_url_.empty()) {
         return std::unexpected("Image explain URL or token is not set");
     }
@@ -1152,6 +1156,7 @@ bool D1001Camera::CaptureToJpeg(std::vector<uint8_t>& out) {
 }
 
 bool D1001Camera::CaptureRaw(RawFrame& out) {
+    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
     preview_enabled_ = false;
     bool ok = Capture();
     preview_enabled_ = true;
