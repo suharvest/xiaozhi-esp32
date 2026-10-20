@@ -1154,10 +1154,8 @@ void SscmaCamera::InitializeMcpTools() {
         [this](const PropertyList& properties) -> ReturnValue {
             Settings settings("model", true);
             auto handle_prop = [&](const std::string& name, auto fn) {
-                if (properties.HasProperty(name)) {
-                    int val = properties[name].value<int>();
-                    if (val != -1) fn(val);
-                }
+                int val = properties[name].value<int>();
+                if (val != -1) fn(val);
             };
             handle_prop("threshold", [&](int val) {
                 settings.SetInt("threshold", val);
