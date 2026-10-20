@@ -183,14 +183,29 @@ static esp_err_t esp_lcd_touch_gsl3670_read_data(esp_lcd_touch_handle_t tp)
 
     Finger_num = (touch_data[0] > MAX_FINGER_NUM) ? MAX_FINGER_NUM : touch_data[0];
 
+    // Hardware electrode matrix configuration for GSL3670 on reTerminal D1001:
+    // - drv (driving lines): 26 lines -> full-scale range = 26 * 64 = 1664 (maps to long edge / Y)
+    // - sen (sensing lines): 14 lines -> full-scale range = 14 * 64 = 896  (maps to short edge / X)
+    const uint32_t x_scale = tp->config.x_max ? tp->config.x_max : 800;
+    const uint32_t y_scale = tp->config.y_max ? tp->config.y_max : 1280;
+
     for (int j = 0; j < Finger_num; j++) {
-        uint16_t x = ((touch_data[(j + 1) * 4 + 3] & 0x0f) << 8) | touch_data[(j + 1) * 4 + 2];
-        uint16_t y = (touch_data[(j + 1) * 4 + 1] << 8) | touch_data[(j + 1) * 4 + 0];
+        uint32_t raw_drv = ((touch_data[(j + 1) * 4 + 3] & 0x0f) << 8) | touch_data[(j + 1) * 4 + 2];
+        uint32_t raw_sen = (touch_data[(j + 1) * 4 + 1] << 8) | touch_data[(j + 1) * 4 + 0];
         uint8_t id = (touch_data[(j + 1) * 4 + 3] >> 4) & 0x0f;
 
-        XY_Coordinate[j].x_position = x;
-        XY_Coordinate[j].y_position = y;
+        uint32_t x = (raw_sen * x_scale + 448) / 896;
+        uint32_t y = (raw_drv * y_scale + 832) / 1664;
+
+        if (x > x_scale) x = x_scale;
+        if (y > y_scale) y = y_scale;
+
+        XY_Coordinate[j].x_position = (uint16_t)x;
+        XY_Coordinate[j].y_position = (uint16_t)y;
         XY_Coordinate[j].finger_id = id;
+
+        ESP_LOGI(TAG, "TOUCH [%d]: raw(sen=%lu, drv=%lu) -> mapped(x=%u, y=%u)",
+                 j, (unsigned long)raw_sen, (unsigned long)raw_drv, (unsigned int)x, (unsigned int)y);
     }
 
     return ESP_OK;
