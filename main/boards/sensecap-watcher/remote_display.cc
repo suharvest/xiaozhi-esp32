@@ -600,7 +600,7 @@ void RemoteDisplay::SendEmotion(const char* emotion) {
         ui_state_dirty_ = true;
     }
 
-    if (session_ready_) SendUIState();
+    if (session_ready_) ScheduleUIFlush();
 }
 
 void RemoteDisplay::SendStatus(const char* status) {
@@ -613,7 +613,7 @@ void RemoteDisplay::SendStatus(const char* status) {
         ui_state_dirty_ = true;
     }
 
-    if (session_ready_) SendUIState();
+    if (session_ready_) ScheduleUIFlush();
 }
 
 void RemoteDisplay::SendChatMessage(const char* role, const char* content) {
@@ -625,7 +625,7 @@ void RemoteDisplay::SendChatMessage(const char* role, const char* content) {
         ui_state_dirty_ = true;
     }
 
-    if (session_ready_) SendUIState();
+    if (session_ready_) ScheduleUIFlush();
 }
 
 void RemoteDisplay::SendTheme(const char* theme_name) {
@@ -636,7 +636,7 @@ void RemoteDisplay::SendTheme(const char* theme_name) {
         ui_state_dirty_ = true;
     }
 
-    if (session_ready_) SendUIState();
+    if (session_ready_) ScheduleUIFlush();
 }
 
 void RemoteDisplay::SendVolume(int volume, bool muted) {
@@ -649,7 +649,7 @@ void RemoteDisplay::SendVolume(int volume, bool muted) {
         ui_state_dirty_ = true;
     }
 
-    if (session_ready_) SendUIState();
+    if (session_ready_) ScheduleUIFlush();
 }
 
 void RemoteDisplay::SendUIState(bool force) {
