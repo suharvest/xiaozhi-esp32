@@ -1223,7 +1223,7 @@ private:
                 Property("enable", kPropertyTypeInteger, 0, 1)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                if (properties.HasProperty("enable")) {
+                try {
                     int en = properties["enable"].value<int>();
                     ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
                     if (en == 1) {
@@ -1231,6 +1231,8 @@ private:
                     } else {
                         return StopScreenCast();
                     }
+                } catch (...) {
+                    return GetScreenCastStatus();
                 }
                 // 没传参数 → 查询状态
                 ESP_LOGI(TAG, "screen_cast tool: query status");
