@@ -18,7 +18,7 @@
 #include "board.h"
 #include "display.h"
 #include "esp_jpeg_common.h"
-#include "esp_video.h"
+#include "d1001_camera.h"
 #include "jpg/image_to_jpeg.h"
 #include "jpg/jpeg_to_image.h"
 #include "lvgl_display.h"
@@ -53,7 +53,7 @@
 #endif  // target
 #endif  // CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
 
-#define TAG "EspVideo"
+#define TAG "D1001Camera"
 
 #if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
 #if CONFIG_XIAOZHI_CAMERA_HMIRROR
@@ -107,7 +107,7 @@ static void log_available_video_devices() {
 #define CAM_PRINT_FOURCC(pixelformat) (void)0;
 #endif  // CONFIG_XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
 
-EspVideo::EspVideo(const esp_video_init_config_t& config) {
+D1001Camera::D1001Camera(const esp_video_init_config_t& config) {
     if (esp_video_init(&config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed");
         return;
@@ -358,7 +358,7 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
     // 当启用 ISP 时，ISP 需要一些照片来初始化参数，因此开启后后台拍摄5s照片并丢弃
     xTaskCreate(
         [](void* arg) {
-            EspVideo* self = static_cast<EspVideo*>(arg);
+            D1001Camera* self = static_cast<D1001Camera*>(arg);
             uint16_t capture_count = 0;
             TickType_t start = xTaskGetTickCount();
             TickType_t duration = 5000 / portTICK_PERIOD_MS;  // 5s
@@ -388,7 +388,7 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
 #endif  // CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE
 }
 
-EspVideo::~EspVideo() {
+D1001Camera::~D1001Camera() {
     if (streaming_on_ && video_fd_ >= 0) {
         int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(video_fd_, VIDIOC_STREAMOFF, &type);
@@ -406,12 +406,12 @@ EspVideo::~EspVideo() {
     esp_video_deinit();
 }
 
-void EspVideo::SetExplainUrl(const std::string& url, const std::string& token) {
+void D1001Camera::SetExplainUrl(const std::string& url, const std::string& token) {
     explain_url_ = url;
     explain_token_ = token;
 }
 
-bool EspVideo::Capture() {
+bool D1001Camera::Capture() {
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
@@ -892,7 +892,7 @@ bool EspVideo::Capture() {
     return true;
 }
 
-bool EspVideo::SetHMirror(bool enabled) {
+bool D1001Camera::SetHMirror(bool enabled) {
     if (video_fd_ < 0)
         return false;
     struct v4l2_ext_controls ctrls = {};
@@ -909,7 +909,7 @@ bool EspVideo::SetHMirror(bool enabled) {
     return true;
 }
 
-bool EspVideo::SetVFlip(bool enabled) {
+bool D1001Camera::SetVFlip(bool enabled) {
     if (video_fd_ < 0)
         return false;
     struct v4l2_ext_controls ctrls = {};
@@ -946,7 +946,7 @@ bool EspVideo::SetVFlip(bool enabled) {
  * @note 函数会等待之前的编码线程完成后再开始新的处理
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
-std::expected<std::string, std::string> EspVideo::Explain(const std::string& question) {
+std::expected<std::string, std::string> D1001Camera::Explain(const std::string& question) {
     if (explain_url_.empty()) {
         return std::unexpected("Image explain URL or token is not set");
     }
@@ -1130,7 +1130,7 @@ std::expected<std::string, std::string> EspVideo::Explain(const std::string& que
     return result;
 }
 
-bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
+bool D1001Camera::CaptureToJpeg(std::vector<uint8_t>& out) {
     std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
     if (!Capture()) {
         return false;
@@ -1151,7 +1151,7 @@ bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
         &out);
 }
 
-bool EspVideo::CaptureRaw(RawFrame& out) {
+bool D1001Camera::CaptureRaw(RawFrame& out) {
     preview_enabled_ = false;
     bool ok = Capture();
     preview_enabled_ = true;
@@ -1165,7 +1165,7 @@ bool EspVideo::CaptureRaw(RawFrame& out) {
     return true;
 }
 
-bool EspVideo::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
+bool D1001Camera::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
     std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
     if (!CaptureRaw(info)) {
         return false;

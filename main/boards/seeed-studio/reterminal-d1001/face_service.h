@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-class EspVideo;
+class D1001Camera;
 class HumanFaceDetect;
 
 // One recognized face from the external recognizer.
@@ -35,7 +35,7 @@ struct FaceHit {
 //      can authenticate the operator before sensitive tasks.
 class FaceService {
 public:
-    explicit FaceService(EspVideo* camera);
+    explicit FaceService(D1001Camera* camera);
 
     // Loads config, registers the MCP tools and spawns the watch task.
     void Start();
@@ -71,7 +71,7 @@ private:
     // On-device esp-dl face detection on a raw camera frame.
     bool DetectFaceLocal();
 
-    EspVideo* camera_;
+    D1001Camera* camera_;
     TaskHandle_t task_ = nullptr;
     std::mutex mutex_;  // endpoint_ + last_result_
 

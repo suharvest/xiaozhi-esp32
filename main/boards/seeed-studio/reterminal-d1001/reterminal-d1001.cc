@@ -5,7 +5,7 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "esp_lcd_touch_gsl3670.h"
-#include "esp_video.h"
+#include "d1001_camera.h"
 #include "lcd_init_cmds.h"
 #include "reterminal_d1001_audio_codec.h"
 #include "reterminal_d1001_expander.h"
@@ -431,7 +431,7 @@ private:
     PowerSaveTimer* power_save_timer_ = nullptr;
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
-    EspVideo* camera_ = nullptr;
+    D1001Camera* camera_ = nullptr;
     std::atomic<bool> powering_off_{false};
     bool power_off_armed_ = false;
 
@@ -850,7 +850,7 @@ private:
             .csi = &csi_config,
         };
 
-        camera_ = new EspVideo(camera_config);
+        camera_ = new D1001Camera(camera_config);
         camera_->SetHMirror(false);
         camera_->SetVFlip(false);
         ESP_LOGI(TAG, "Camera initialized");
@@ -1005,7 +1005,7 @@ public:
                     if (camera_ == nullptr) {
                         return false;
                     }
-                    EspVideo::RawFrame info;
+                    D1001Camera::RawFrame info;
                     if (!camera_->CaptureRawCopy(bytes, info)) {
                         return false;
                     }

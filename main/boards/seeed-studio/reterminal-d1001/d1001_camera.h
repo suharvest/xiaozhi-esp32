@@ -19,7 +19,7 @@ struct JpegChunk {
     size_t len;
 };
 
-class EspVideo : public Camera {
+class D1001Camera : public Camera {
 private:
     struct FrameBuffer {
         uint8_t* data = nullptr;
@@ -47,8 +47,8 @@ private:
     std::thread encoder_thread_;
 
 public:
-    EspVideo(const esp_video_init_config_t& config);
-    ~EspVideo() override;
+    D1001Camera(const esp_video_init_config_t& config);
+    ~D1001Camera() override;
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();

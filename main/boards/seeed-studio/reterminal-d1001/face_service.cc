@@ -4,7 +4,7 @@
 
 #include "application.h"
 #include "board.h"
-#include "esp_video.h"
+#include "d1001_camera.h"
 #include "mcp_server.h"
 #include "settings.h"
 
@@ -35,7 +35,7 @@ std::string TruncateUtf8(const std::string& s, size_t max_bytes) {
 }
 }
 
-FaceService::FaceService(EspVideo* camera) : camera_(camera) {}
+FaceService::FaceService(D1001Camera* camera) : camera_(camera) {}
 
 void FaceService::LoadConfig() {
     Settings settings("face", false);
@@ -212,7 +212,7 @@ bool FaceService::DetectFaceLocal() {
     detector_->set_score_thr(det_thr0_.load() / 100.0f, 0);
     detector_->set_score_thr(det_thr1_.load() / 100.0f, 1);
     std::lock_guard<std::recursive_mutex> capture_lock(camera_->capture_mutex());
-    EspVideo::RawFrame frame;
+    D1001Camera::RawFrame frame;
     if (!camera_->CaptureRaw(frame)) {
         return false;
     }
