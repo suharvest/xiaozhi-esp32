@@ -362,6 +362,10 @@ private:
     }
 
     void OnKnobRotate(bool clockwise) {
+        if (display_ == nullptr) {
+            return;
+        }
+
         if (settings_ui_ && settings_ui_->IsOpen()) {
             settings_ui_->OnKnobRotate(clockwise);
             power_save_timer_->WakeUp();
@@ -1168,7 +1172,10 @@ private:
     }
 
     void InitializeRemoteDisplay() {
-        // 启动任务注册投屏回调，等待联网后启动常驻 HTTP 服务并恢复连接。
+        // 同步注册投屏控制 MCP 工具，避免异步任务在多核环境下与主任务并发修改 McpServer::tools_
+        RegisterScreenCastTool();
+
+        // 启动任务等待联网后启动常驻 HTTP 服务并恢复连接
         xTaskCreate([](void* arg) {
             auto* self = static_cast<SensecapWatcher*>(arg);
 
@@ -1180,9 +1187,6 @@ private:
                         remote->ForwardOpusAudio(opus_data, sample_rate, frame_duration);
                     }
                 });
-
-            // 注册投屏控制 MCP 工具（用户说"开启/关闭投屏"时触发）
-            self->RegisterScreenCastTool();
 
             // 等待 WiFi 真正连接
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
@@ -1330,12 +1334,12 @@ public:
         InitializeExpander();
         InitializeCmd();  //工厂生产测试使用
         InitializeButton();
-        InitializeKnob();
         Initializespd2010Display();
         GetBacklight()->RestoreBrightness();  // 对于不带摄像头的版本，InitializeCamera需要3s, 所以先恢复背光亮度
         InitializeTouch();
         InitializeCamera();
         InitializeSettingsUi();
+        InitializeKnob();
         InitializeRemoteDisplay();
     }
 
@@ -1401,17 +1405,31 @@ public:
 
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
         static bool last_discharging = false;
+        static int low_battery_streak = 0;
         charging = (IoExpanderGetLevel(BSP_PWR_VBUS_IN_DET) == 0);
         discharging = !charging;
-        level = (int)BatterygetPercent(false);
+
+        uint16_t voltage = BatterygetVoltage();
+        if (voltage >= 2500) {
+            level = (int)BatterygetPercent(false);
+            if (level <= 1 && discharging) {
+                low_battery_streak++;
+                if (low_battery_streak >= 3) {
+                    ESP_LOGI(TAG, "Battery level is low (%d mV), shutting down", voltage);
+                    IoExpanderSetLevel(BSP_PWR_SYSTEM, 0);
+                }
+            } else {
+                low_battery_streak = 0;
+            }
+        } else {
+            // ADC 未就绪或采样异常时保持默认安全电量，禁止误触发断电
+            level = 50;
+            low_battery_streak = 0;
+        }
 
         if (discharging != last_discharging) {
             power_save_timer_->SetEnabled(discharging);
             last_discharging = discharging;
-        }
-        if (level <= 1  &&  discharging) {
-            ESP_LOGI(TAG, "Battery level is low, shutting down");
-            IoExpanderSetLevel(BSP_PWR_SYSTEM, 0);
         }
         return true;
     }
