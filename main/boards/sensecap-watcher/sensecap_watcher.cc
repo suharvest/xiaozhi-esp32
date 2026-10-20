@@ -1179,15 +1179,6 @@ private:
         xTaskCreate([](void* arg) {
             auto* self = static_cast<SensecapWatcher*>(arg);
 
-            // 注册 Opus 音频转发回调
-            Application::GetInstance().SetOpusForwardCallback(
-                [](const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration) {
-                    auto* remote = RemoteDisplay::GetInstance();
-                    if (remote && remote->IsRunning()) {
-                        remote->ForwardOpusAudio(opus_data, sample_rate, frame_duration);
-                    }
-                });
-
             // 等待 WiFi 真正连接
             ESP_LOGI(TAG, "Waiting for WiFi connection before starting remote display...");
             auto& wifi = WifiManager::GetInstance();
@@ -1232,15 +1223,13 @@ private:
                 Property("enable", kPropertyTypeInteger, 0, 1)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                for (const auto& p : properties) {
-                    if (p.name() == "enable") {
-                        int en = p.value<int>();
-                        ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
-                        if (en == 1) {
-                            return StartScreenCast();
-                        } else {
-                            return StopScreenCast();
-                        }
+                if (properties.HasProperty("enable")) {
+                    int en = properties["enable"].value<int>();
+                    ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
+                    if (en == 1) {
+                        return StartScreenCast();
+                    } else {
+                        return StopScreenCast();
                     }
                 }
                 // 没传参数 → 查询状态

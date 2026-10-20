@@ -1180,8 +1180,6 @@ void SscmaCamera::InitializeMcpTools() {
                 this->detect_target = val;
                 ESP_LOGI(TAG, "Set detection target to %d", val);
             });
-                }
-            }
 
             // Always echo the resulting config — this is also the query path
             // (parameterless call sets nothing and just reads back), which is
