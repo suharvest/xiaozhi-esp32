@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <mutex>
+#include <vector>
 
 /**
  * D1001 audio codec: ES8311 playback on I2S0 TX (standard I2S) and ES7210
@@ -48,6 +49,7 @@ private:
     esp_codec_dev_handle_t input_dev_ = nullptr;
     std::function<void(bool)> pa_callback_;
     std::mutex data_if_mutex_;
+    std::vector<int16_t> rx_buf_;
 
     void CreateChannels();
     void PrefillSilence();

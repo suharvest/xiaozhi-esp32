@@ -273,16 +273,24 @@ void ReTerminalD1001AudioCodec::EnableInput(bool enable) {
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 4,
-            .channel_mask =
-                ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
+            .channel_mask = 0,
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
         ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
             input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+            input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1), input_gain_));
+        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+            input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(2), 0));
+        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+            input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(3), 0));
+        rx_buf_.resize(AUDIO_CODEC_DMA_FRAME_NUM * 4);
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
+        rx_buf_.clear();
+        rx_buf_.shrink_to_fit();
     }
     AudioCodec::EnableInput(enable);
 }
@@ -317,9 +325,34 @@ void ReTerminalD1001AudioCodec::EnableOutput(bool enable) {
 }
 
 int ReTerminalD1001AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(
-            esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    if (!input_enabled_ || input_channels_ <= 0) {
+        return 0;
+    }
+    int frames = samples / input_channels_;
+    if (frames <= 0) {
+        return 0;
+    }
+
+    size_t tdm_samples = (size_t)frames * 4;
+    if (rx_buf_.size() < tdm_samples) {
+        rx_buf_.resize(tdm_samples);
+    }
+
+    int ret = esp_codec_dev_read(input_dev_, rx_buf_.data(), tdm_samples * sizeof(int16_t));
+    if (ret != ESP_CODEC_DEV_OK) {
+        return 0;
+    }
+
+    if (input_reference_) {
+        // TDM: slot 0 is Mic1, slot 1 is DAC Reference loopback
+        for (int i = 0; i < frames; ++i) {
+            dest[2 * i + 0] = rx_buf_[4 * i + 0];
+            dest[2 * i + 1] = rx_buf_[4 * i + 1];
+        }
+    } else {
+        for (int i = 0; i < frames; ++i) {
+            dest[i] = rx_buf_[4 * i + 0];
+        }
     }
     return samples;
 }
