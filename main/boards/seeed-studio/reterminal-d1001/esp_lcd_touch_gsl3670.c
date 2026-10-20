@@ -163,7 +163,22 @@ static esp_err_t esp_lcd_touch_gsl3670_read_data(esp_lcd_touch_handle_t tp)
     esp_err_t err = touch_gsl3670_i2c_read(tp, ESP_LCD_TOUCH_GSL3670_READ_XY_REG, touch_data, sizeof(touch_data));
     if (err != ESP_OK) {
         Finger_num = 0;
+        static int err_count = 0;
+        if (++err_count % 50 == 0) {
+            ESP_LOGW(TAG, "touch_gsl3670_i2c_read err=%s", esp_err_to_name(err));
+        }
         return err;
+    }
+
+    static int read_count = 0;
+    if (++read_count % 100 == 0) {
+        ESP_LOGI(TAG, "read_data count=%d points=%d raw[0..3]=%02x %02x %02x %02x",
+                 read_count, touch_data[0], touch_data[0], touch_data[1], touch_data[2], touch_data[3]);
+    }
+    if (touch_data[0] > 0) {
+        ESP_LOGI(TAG, "TOUCH DETECTED! points=%d raw[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x",
+                 touch_data[0], touch_data[0], touch_data[1], touch_data[2], touch_data[3],
+                 touch_data[4], touch_data[5], touch_data[6], touch_data[7]);
     }
 
     Finger_num = (touch_data[0] > MAX_FINGER_NUM) ? MAX_FINGER_NUM : touch_data[0];
