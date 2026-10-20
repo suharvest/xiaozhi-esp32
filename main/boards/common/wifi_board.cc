@@ -118,6 +118,7 @@ void WifiBoard::TryWifiConnect() {
         // Wait for the board version to be shown
         vTaskDelay(pdMS_TO_TICKS(1500));
         StartWifiConfigMode();
+#endif
     }
 }
 
