@@ -162,6 +162,12 @@ esp_err_t RemoteDisplayHttpServer::HandleStartCast(httpd_req_t* req) {
         return ESP_FAIL;
     }
 
+    bool forward_audio = false;
+    cJSON* fwd = cJSON_GetObjectItem(root, "forward_audio");
+    if (fwd && cJSON_IsBool(fwd)) {
+        forward_audio = cJSON_IsTrue(fwd);
+    }
+
     auto* remote = RemoteDisplay::GetInstance();
     std::string server_url = requested_url;
     cJSON_Delete(root);
@@ -171,6 +177,7 @@ esp_err_t RemoteDisplayHttpServer::HandleStartCast(httpd_req_t* req) {
     // nor survive a failed attempt to the new one.
     auto config = RemoteDisplay::LoadConfig();
     config.server_url = server_url;
+    config.forward_audio = forward_audio;
     config.enabled = false;
     RemoteDisplay::SaveConfig(config);
     remote->Stop();
@@ -180,6 +187,7 @@ esp_err_t RemoteDisplayHttpServer::HandleStartCast(httpd_req_t* req) {
     if (ok) {
         config = RemoteDisplay::LoadConfig();
         config.server_url = server_url;
+        config.forward_audio = forward_audio;
         config.enabled = true;
         RemoteDisplay::SaveConfig(config);
         if (!remote->IsRunning()) {
@@ -222,6 +230,7 @@ esp_err_t RemoteDisplayHttpServer::HandleStatus(httpd_req_t* req) {
     cJSON* resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "casting", remote->IsRunning());
     cJSON_AddBoolToObject(resp, "enabled", config.enabled);
+    cJSON_AddBoolToObject(resp, "forward_audio", config.forward_audio);
     cJSON_AddBoolToObject(resp, "configured", !config.server_url.empty());
     cJSON_AddStringToObject(resp, "server_url", config.server_url.c_str());
 

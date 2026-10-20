@@ -29,6 +29,7 @@ struct RemoteDisplayConfig {
     bool enabled = false;
     std::string server_url;
     int timeout_ms = 1000;  // 默认 1 秒超时，避免长时间阻塞
+    bool forward_audio = false;  // 投屏音频转发（默认关闭）
 };
 
 // 远程显示服务 - 将 UI 状态同步到树莓派
@@ -66,6 +67,10 @@ public:
     // Opus 音频转发 - 由 Application::OnIncomingAudio 回调调用
     void ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration);
 
+    // PCM 音频转发 - 由板级 AudioCodec::Write 调用（开关控制，默认关闭）
+    bool IsForwardAudioEnabled() const { return forward_audio_enabled_.load() && running_ && connected_ && session_ready_; }
+    void ForwardPcmAudio(const int16_t* pcm_data, int samples, int sample_rate);
+
 private:
     struct RetiredWebSocket {
         std::unique_ptr<WebSocket> socket;
@@ -77,6 +82,8 @@ private:
         int sample_rate;
         int frame_duration;
         uint32_t connect_generation;
+        bool is_pcm = false;
+        uint32_t samples = 0;
     };
 
     RemoteDisplay() = default;
@@ -105,6 +112,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
     std::atomic<bool> session_ready_{false};
+    std::atomic<bool> forward_audio_enabled_{false};
     std::atomic<bool> cleanup_due_{false};
     std::atomic<bool> ui_state_dirty_{false};
     std::atomic<uint32_t> ui_state_version_{0};

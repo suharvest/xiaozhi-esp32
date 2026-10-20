@@ -76,6 +76,7 @@ static bool IsTcpReachable(const char* host, uint16_t port, int timeout_ms) {
 #define NVS_KEY_ENABLED "enabled"
 #define NVS_KEY_URL "url"
 #define NVS_KEY_TIMEOUT "timeout"
+#define NVS_KEY_FORWARD_AUDIO "fwd_audio"
 
 // Opus 音频帧头结构 (little-endian)
 struct __attribute__((packed)) OpusAudioHeader {
@@ -83,6 +84,14 @@ struct __attribute__((packed)) OpusAudioHeader {
     uint16_t sample_rate;    // 采样率
     uint8_t frame_duration;  // 帧时长 (ms)
     // 后跟 Opus 编码数据
+};
+
+// PCM 音频帧头结构 (little-endian)
+struct __attribute__((packed)) PcmAudioHeader {
+    uint8_t type;            // MSG_TYPE_AUDIO_PCM (0x03)
+    uint32_t sample_rate;    // 采样率
+    uint32_t samples;        // 采样点数
+    // 后跟 16-bit PCM 数据
 };
 
 RemoteDisplay* RemoteDisplay::GetInstance() {
@@ -96,6 +105,7 @@ RemoteDisplayConfig RemoteDisplay::LoadConfig() {
     config.enabled = settings.GetBool(NVS_KEY_ENABLED, false);
     config.server_url = settings.GetString(NVS_KEY_URL, "");
     config.timeout_ms = settings.GetInt(NVS_KEY_TIMEOUT, 4000);
+    config.forward_audio = settings.GetBool(NVS_KEY_FORWARD_AUDIO, false);
     return config;
 }
 
@@ -104,8 +114,9 @@ void RemoteDisplay::SaveConfig(const RemoteDisplayConfig& config) {
     settings.SetBool(NVS_KEY_ENABLED, config.enabled);
     settings.SetString(NVS_KEY_URL, config.server_url);
     settings.SetInt(NVS_KEY_TIMEOUT, config.timeout_ms);
-    ESP_LOGI(TAG, "Config saved: enabled=%d, url=%s, timeout=%d",
-             config.enabled, config.server_url.c_str(), config.timeout_ms);
+    settings.SetBool(NVS_KEY_FORWARD_AUDIO, config.forward_audio);
+    ESP_LOGI(TAG, "Config saved: enabled=%d, url=%s, timeout=%d, fwd_audio=%d",
+             config.enabled, config.server_url.c_str(), config.timeout_ms, config.forward_audio);
 }
 
 bool RemoteDisplay::StartWithConfig() {
@@ -409,6 +420,7 @@ bool RemoteDisplay::StartLocked(const std::string& server_url, int timeout_ms,
         return false;
     }
     session_ready_ = true;
+    forward_audio_enabled_ = LoadConfig().forward_audio;
     if (generation != connect_generation_.load() ||
         lifecycle_epoch != lifecycle_epoch_.load() || !connected_) {
         session_ready_ = false;
@@ -428,6 +440,7 @@ void RemoteDisplay::Stop() {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     lifecycle_epoch_.fetch_add(1);
     reconnect_epoch_ = lifecycle_epoch_.load();
+    forward_audio_enabled_ = false;
     session_ready_ = false;
     running_ = false;
     ClearAudioQueueAndNotify();
@@ -753,13 +766,24 @@ void RemoteDisplay::AudioTask(void* arg) {
                 self->audio_queued_duration_ms_ -= frame.frame_duration;
             }
 
-            size_t total_size = sizeof(OpusAudioHeader) + frame.payload.size();
-            std::vector<uint8_t> buffer(total_size);
-            auto* header = reinterpret_cast<OpusAudioHeader*>(buffer.data());
-            header->type = MSG_TYPE_AUDIO_FRAME;
-            header->sample_rate = static_cast<uint16_t>(frame.sample_rate);
-            header->frame_duration = static_cast<uint8_t>(frame.frame_duration);
-            memcpy(buffer.data() + sizeof(OpusAudioHeader), frame.payload.data(), frame.payload.size());
+            std::vector<uint8_t> buffer;
+            if (frame.is_pcm) {
+                size_t total_size = sizeof(PcmAudioHeader) + frame.payload.size();
+                buffer.resize(total_size);
+                auto* header = reinterpret_cast<PcmAudioHeader*>(buffer.data());
+                header->type = MSG_TYPE_AUDIO_PCM;
+                header->sample_rate = static_cast<uint32_t>(frame.sample_rate);
+                header->samples = static_cast<uint32_t>(frame.samples);
+                memcpy(buffer.data() + sizeof(PcmAudioHeader), frame.payload.data(), frame.payload.size());
+            } else {
+                size_t total_size = sizeof(OpusAudioHeader) + frame.payload.size();
+                buffer.resize(total_size);
+                auto* header = reinterpret_cast<OpusAudioHeader*>(buffer.data());
+                header->type = MSG_TYPE_AUDIO_FRAME;
+                header->sample_rate = static_cast<uint16_t>(frame.sample_rate);
+                header->frame_duration = static_cast<uint8_t>(frame.frame_duration);
+                memcpy(buffer.data() + sizeof(OpusAudioHeader), frame.payload.data(), frame.payload.size());
+            }
 
             // Queue and send locks are never held together. Stop or a connection
             // switch invalidates the generation before this final send check.
@@ -824,6 +848,54 @@ void RemoteDisplay::ForwardOpusAudio(const std::vector<uint8_t>& opus_data, int 
     frame.sample_rate = sample_rate;
     frame.frame_duration = frame_duration;
     frame.connect_generation = connect_generation_.load();
+    audio_queued_duration_ms_ += frame_duration;
+    audio_queue_.push_back(std::move(frame));
+    queue_lock.unlock();
+    xTaskNotifyGive(task);
+}
+
+void RemoteDisplay::ForwardPcmAudio(const int16_t* pcm_data, int samples, int sample_rate) {
+    TaskHandle_t task = audio_task_;
+    if (!running_ || !connected_ || !session_ready_ || !forward_audio_enabled_.load() || !task) {
+        return;
+    }
+
+    if (!pcm_data || samples <= 0 || sample_rate <= 0) {
+        return;
+    }
+
+    int frame_duration = (samples * 1000) / sample_rate;
+    if (frame_duration <= 0) {
+        frame_duration = 1;
+    }
+
+    std::unique_lock<std::mutex> queue_lock(audio_queue_mutex_, std::try_to_lock);
+    if (!queue_lock.owns_lock()) {
+        audio_drop_count_.fetch_add(1);
+        xTaskNotifyGive(task);
+        return;
+    }
+
+    static constexpr size_t kMaxAudioFrames = 10;
+    static constexpr int kMaxAudioDurationMs = 300;
+    while (!audio_queue_.empty() &&
+           (audio_queue_.size() >= kMaxAudioFrames ||
+            audio_queued_duration_ms_ + frame_duration > kMaxAudioDurationMs)) {
+        audio_queued_duration_ms_ -= audio_queue_.front().frame_duration;
+        audio_queue_.pop_front();
+        audio_drop_count_.fetch_add(1);
+    }
+
+    AudioFrame frame;
+    size_t byte_len = samples * sizeof(int16_t);
+    frame.payload.assign(reinterpret_cast<const uint8_t*>(pcm_data),
+                         reinterpret_cast<const uint8_t*>(pcm_data) + byte_len);
+    frame.sample_rate = sample_rate;
+    frame.frame_duration = frame_duration;
+    frame.connect_generation = connect_generation_.load();
+    frame.is_pcm = true;
+    frame.samples = static_cast<uint32_t>(samples);
+
     audio_queued_duration_ms_ += frame_duration;
     audio_queue_.push_back(std::move(frame));
     queue_lock.unlock();
