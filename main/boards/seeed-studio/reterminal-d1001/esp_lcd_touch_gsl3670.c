@@ -11,7 +11,6 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_gsl3670.h"
-#include "gsl_point_id.h"
 
 #define TAG "gsl3670"
 
@@ -22,104 +21,6 @@
 #define ESP_gsl3670_TOUCH_MAX_BUTTONS         (9)
 
 
-unsigned int gsl_config_data_id[] =
-{
-	0xccb69a,  
-	0x200,
-	0,0,
-	0,
-	0,0,0,
-	0,0,0,0,0,0,0,0x1cc86fd6,
-
-
-	0x40000d00,0xa,0xe001a,0xe001a,0x3200500,0,0x5100,0x8e00,
-	0,0x320014,0,0x14,0,0,0,0,
-	0x8,0x4000,0x1000,0x10170002,0x10110000,0,0,0x4040404,
-	0x1b6db688,0x64,0xb3000f,0xad0019,0xa60023,0xa0002d,0xb3000f,0xad0019,
-	0xa60023,0xa0002d,0xb3000f,0xad0019,0xa60023,0xa0002d,0xb3000f,0xad0019,
-	0xa60023,0xa0002d,0x804000,0x90040,0x90001,0,0,0,
-	0,0,0,0x14012c,0xa003c,0xa0078,0x400,0x1081,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-	0,//key_map
-	0x3200384,0x64,0x503e8,//0
-	0,0,0,//1
-	0,0,0,//2
-	0,0,0,//3
-	0,0,0,//4
-	0,0,0,//5
-	0,0,0,//6
-	0,0,0,//7
-
-	0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-
-	0x220,
-	0,0,0,0,0,0,0,0,
-	0x10203,0x4050607,0x8090a0b,0xc0d0e0f,0x10111213,0x14151617,0x18191a1b,0x1c1d1e1f,
-	0x20212223,0x24252627,0x28292a2b,0x2c2d2e2f,0x30313233,0x34353637,0x38393a3b,0x3c3d3e3f,
-	0x10203,0x4050607,0x8090a0b,0xc0d0e0f,0x10111213,0x14151617,0x18191a1b,0x1c1d1e1f,
-	0x20212223,0x24252627,0x28292a2b,0x2c2d2e2f,0x30313233,0x34353637,0x38393a3b,0x3c3d3e3f,
-
-	0x10203,0x4050607,0x8090a0b,0xc0d0e0f,0x10111213,0x14151617,0x18191a1b,0x1c1d1e1f,
-	0x20212223,0x24252627,0x28292a2b,0x2c2d2e2f,0x30313233,0x34353637,0x38393a3b,0x3c3d3e3f,
-
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-	0x10203,0x4050607,0x8090a0b,0xc0d0e0f,0x10111213,0x14151617,0x18191a1b,0x1c1d1e1f,
-	0x20212223,0x24252627,0x28292a2b,0x2c2d2e2f,0x30313233,0x34353637,0x38393a3b,0x3c3d3e3f,
-
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,
-
-
-	0x3,
-	0x101,0,0x100,0,
-	0x20,0x10,0x8,0x4,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-	0x4,0,0,0,0,0,0,0,
-	0x3800680,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,
-};
-
-
-
-// static TG_STATE_E tpc_gesture_id = TG_UNKNOWN_STATE;
 static XY_DATA_T XY_Coordinate[MAX_FINGER_NUM]={0};
 esp_lcd_touch_handle_t esp_lcd_touch_gsl3670;
 
@@ -255,77 +156,29 @@ static esp_err_t esp_lcd_touch_gsl3670_exit_sleep(esp_lcd_touch_handle_t tp)
 
 static esp_err_t esp_lcd_touch_gsl3670_read_data(esp_lcd_touch_handle_t tp)
 {
-    esp_err_t err;
-    /* The read below asks for 44 bytes, so the buffer must be that large. */
-    uint8_t touch_data[44];
-    uint16_t x_poit, y_poit, x2_poit, y2_poit;
-
     assert(tp != NULL);
+    uint8_t touch_data[44];
+    memset(XY_Coordinate, 0, sizeof(XY_Coordinate));
 
-// #ifdef USE_GSL_NOID_VERSION
-    struct gsl_touch_info cinfo = {0};
-    unsigned int tmp1 = 0;
-    uint8_t buf[4] = {0};
-// #endif
-
-    memset(XY_Coordinate,0,sizeof(XY_Coordinate));
-
-    err = touch_gsl3670_i2c_read(tp, ESP_LCD_TOUCH_GSL3670_READ_XY_REG, touch_data, sizeof(touch_data));
+    esp_err_t err = touch_gsl3670_i2c_read(tp, ESP_LCD_TOUCH_GSL3670_READ_XY_REG, touch_data, sizeof(touch_data));
     if (err != ESP_OK) {
         Finger_num = 0;
         return err;
     }
-    /* The controller can report more contacts than the driver tracks. */
+
     Finger_num = (touch_data[0] > MAX_FINGER_NUM) ? MAX_FINGER_NUM : touch_data[0];
-    // ESP_LOGI(TAG,"0x80 = %d",touch_data[0]);
 
-    cinfo.finger_num = Finger_num;	
-    for(int j=0;j<Finger_num;j++)
-    {
-        x_poit = touch_data[(j+1)*4+3] & 0x0f;
-        x2_poit = touch_data[(j+1)*4+2];
-        cinfo.x[j] = x_poit << 8 | x2_poit;
-        y_poit = touch_data[(j+1)*4+1];
-        y2_poit = touch_data[(j+1)*4+0];
-        cinfo.y[j] = y_poit << 8 | y2_poit;
-        cinfo.id[j] = ((touch_data[(j+1)*4+3] & 0xf0) >> 4);
-    }
-		
-	gsl_alg_id_main(&cinfo);
-	tmp1=gsl_mask_tiaoping();
-	
-	if(tmp1>0&&tmp1<0xffffffff)
-	{
-		uint8 addr = 0xf0;
-		buf[0]=0xa;buf[1]=0;buf[2]=0;buf[3]=0;
-		touch_gsl3670_i2c_write(tp,addr, buf, 4);
-		addr = 0x8;
-		buf[0]=(uint8)(tmp1 & 0xff);
-		buf[1]=(uint8)((tmp1>>8) & 0xff);
-		buf[2]=(uint8)((tmp1>>16) & 0xff);
-		buf[3]=(uint8)((tmp1>>24) & 0xff);
-		
-		touch_gsl3670_i2c_write(tp,addr, buf, 4);
-	}
-	Finger_num = cinfo.finger_num;	
+    for (int j = 0; j < Finger_num; j++) {
+        uint16_t x = ((touch_data[(j + 1) * 4 + 3] & 0x0f) << 8) | touch_data[(j + 1) * 4 + 2];
+        uint16_t y = (touch_data[(j + 1) * 4 + 1] << 8) | touch_data[(j + 1) * 4 + 0];
+        uint8_t id = (touch_data[(j + 1) * 4 + 3] >> 4) & 0x0f;
 
-    for(int j=0;j<Finger_num;j++)
-    {
-        XY_Coordinate[j].x_position = cinfo.x[j];
-        XY_Coordinate[j].y_position = cinfo.y[j];
-        XY_Coordinate[j].finger_id = cinfo.id[j];
+        XY_Coordinate[j].x_position = x;
+        XY_Coordinate[j].y_position = y;
+        XY_Coordinate[j].finger_id = id;
     }
-			
-    // if(Finger_num >0)
-    // int i=0
-    // printf("%s: %d[i], %d[x_position], %d[y_position], %d[finger_id], %d[finger_num]\n",
-    //       __func__, i, XY_Coordinate[i].x_position, XY_Coordinate[i].y_position, XY_Coordinate[i].finger_id,Finger_num);
-    // i=1;
-    // printf("%s: %d[i], %d[x_position], %d[y_position], %d[finger_id], %d[finger_num]\n",
-    //       __func__, i, XY_Coordinate[i].x_position, XY_Coordinate[i].y_position, XY_Coordinate[i].finger_id,Finger_num);
-    
-    
-    return err;
+
+    return ESP_OK;
 }
 
 static bool esp_lcd_touch_gsl3670_get_xy(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y, uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
@@ -485,7 +338,7 @@ static esp_err_t esp_lcd_touch_gsl3670_startup_chip(esp_lcd_touch_handle_t tp)
     ESP_RETURN_ON_ERROR(touch_gsl3670_i2c_write(tp,addr,write_buf,1),TAG,"gsl3670 read error");
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    gsl_DataInit(gsl_config_data_id);
+    // Hardware boot ready; no external tracking table needed
     return ret;
 }
 

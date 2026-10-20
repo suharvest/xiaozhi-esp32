@@ -25,8 +25,8 @@ Validated on hardware (P4 v1.3, 32 MB Winbond flash ef/4019, 32 MB PSRAM):
   (`jd9365: LCD ID: 93 65 04`, `Display initialized`).
 - GSL3670 capacitive touch on I2C0, polled (no interrupt), registered as an
   LVGL input device (`gsl3670: load fw success`, `Touch panel initialized`).
-  The driver is vendored from the Seeed BSP because no registry component
-  exists; `gsl_point_id.c` keeps its original Silead GPL-2.0 header.
+  The driver unpacks raw hardware touch coordinates directly (MIT-compliant),
+  completely free from external GPL dependencies.
 - Onboard MIPI CSI-2 camera (see "Camera" below): the sensor answers at SCCB
   `0x36` with PID `0xeb52` and `EspVideo` opens the CSI/ISP device
   (`Camera init success, captured 150 frames in 5013ms`), so
