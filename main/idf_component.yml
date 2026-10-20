@@ -100,7 +100,7 @@ dependencies:
   sscma_client:
     git: https://github.com/suharvest/SenseCAP-Watcher-Firmware.git
     path: components/sscma_client
-    version: fix/spi-dma-rx-length-align
+    version: fix/spi-dma-and-event-drop
     rules:
     - if: target in [esp32s3]
 
