@@ -216,6 +216,15 @@ public:
     PropertyList(const std::vector<Property>& properties) : properties_(properties) {}
     void AddProperty(const Property& property) { properties_.push_back(property); }
 
+    bool HasProperty(const std::string& name) const {
+        for (const auto& property : properties_) {
+            if (property.name() == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     const Property& operator[](const std::string& name) const {
         for (const auto& property : properties_) {
             if (property.name() == name) {
