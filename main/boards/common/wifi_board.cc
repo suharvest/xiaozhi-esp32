@@ -108,7 +108,8 @@ void WifiBoard::TryWifiConnect() {
         WifiManager::GetInstance().StartStation();
     } else {
 #ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
-        // No SSID configured: point the user at the on-screen Wi-Fi setup.
+        // No SSID configured: start station so Wi-Fi driver is active for on-screen scan
+        WifiManager::GetInstance().StartStation();
         vTaskDelay(pdMS_TO_TICKS(1500));
         Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
                                          "gear", Lang::Sounds::OGG_WIFICONFIG);
