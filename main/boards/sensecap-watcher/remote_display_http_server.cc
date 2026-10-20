@@ -342,13 +342,18 @@ esp_err_t RemoteDisplayHttpServer::HandleWake(httpd_req_t* req) {
                 return httpd_resp_sendstr(req, "{\"error\":\"request_id_conflict\"}");
             }
     }
-    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle ||
-        !Application::GetInstance().RequestRemoteWake(
-            rid, m == "speak" ? "[device_call] " + payload : payload, now + ttl_ms * 1000LL)) {
+    auto& app = Application::GetInstance();
+    if (app.GetDeviceState() != kDeviceStateIdle) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req, "{\"error\":\"device_busy\"}");
     }
+    std::string wake_text = (m == "speak") ? "[device_call] " + payload : payload;
+    app.Schedule([&app, wake_text, now, ttl_ms]() {
+        if (app.GetDeviceState() == kDeviceStateIdle && (esp_timer_get_time() <= now + ttl_ms * 1000LL)) {
+            app.WakeWordInvoke(wake_text);
+        }
+    });
     if (instance_ != nullptr) {
         std::lock_guard<std::mutex> lock(instance_->wake_request_mutex_);
         instance_->wake_request_history_.push_back({rid, fingerprint, now});
