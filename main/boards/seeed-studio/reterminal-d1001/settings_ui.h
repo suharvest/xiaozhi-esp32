@@ -232,6 +232,7 @@ private:
     SettingsPage page_ = SettingsPage::Wifi;
     WifiSettingsState wifi_state_ = WifiSettingsState::Idle;
     std::vector<WifiScanItem> scan_results_;
+    std::string scan_error_;
     std::vector<std::string> saved_ssids_;
     std::string pending_ssid_;
     bool pending_encrypted_ = true;

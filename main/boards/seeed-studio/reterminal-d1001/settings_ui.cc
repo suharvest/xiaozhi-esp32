@@ -880,6 +880,7 @@ void SettingsUi::FinishClose() {
 void SettingsUi::ShowWifiPage() {
     page_ = SettingsPage::Wifi;
     wifi_state_ = WifiSettingsState::Scanning;
+    scan_error_.clear();
     lv_obj_t* body = BuildPage("Wi-Fi 网络", Action::Close, true);
 
     lv_obj_t* card = MakeCard(body);
@@ -908,7 +909,11 @@ void SettingsUi::ShowWifiList() {
         lv_obj_t* card = MakeCard(area);
         MakeIconBadge(card, MATERIAL_SYMBOLS_WIFI_OFF, true);
         lv_obj_t* label = lv_label_create(card);
-        lv_label_set_text(label, "没有扫描到网络，点击右上角重试");
+        if (!scan_error_.empty()) {
+            lv_label_set_text_fmt(label, "扫描未完成 (%s)，点击右上角重试", scan_error_.c_str());
+        } else {
+            lv_label_set_text(label, "没有扫描到网络，点击右上角重试");
+        }
         lv_obj_set_flex_grow(label, 1);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     } else {
@@ -1019,10 +1024,7 @@ void SettingsUi::OnScanComplete(std::vector<WifiScanItem> results, esp_err_t err
         return;
     }
     scan_results_ = std::move(results);
-    if (error != ESP_OK) {
-        ShowResult(false, esp_err_to_name(error));
-        return;
-    }
+    scan_error_ = (error != ESP_OK) ? esp_err_to_name(error) : "";
     ShowWifiList();
 }
 
@@ -1875,7 +1877,7 @@ void SettingsUi::HandleAction(Action action, int index) {
             if (operation_active_) {
                 return;
             }
-            ShowWifiPage();
+            ShowWifiList();
             return;
         case Action::RotationPick:
             if (index >= 0 && index < 4) {
