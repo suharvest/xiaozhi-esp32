@@ -10,6 +10,7 @@
 #define TAG "D1001Expander"
 
 ReTerminalD1001Expander::~ReTerminalD1001Expander() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (expander_ != nullptr) {
         esp_io_expander_del(expander_);
         expander_ = nullptr;
@@ -21,6 +22,7 @@ ReTerminalD1001Expander::~ReTerminalD1001Expander() {
 }
 
 void ReTerminalD1001Expander::Initialize() {
+    std::lock_guard<std::mutex> lock(mutex_);
     i2c_master_bus_config_t bus_config = {
         .i2c_port = AUDIO_I2C_PORT,
         .sda_io_num = AUDIO_I2C_SDA_PIN,
@@ -67,6 +69,7 @@ void ReTerminalD1001Expander::Initialize() {
 }
 
 void ReTerminalD1001Expander::SetLevel(uint32_t pin_mask, bool level) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (expander_ == nullptr) {
         ESP_LOGW(TAG, "expander not initialized; ignoring set_level(0x%x, %d)", (unsigned)pin_mask,
                  level);
@@ -205,6 +208,7 @@ void ReTerminalD1001Expander::PowerOff() {
     SetPowerHold(false);
     // Evidence for the bench: read the expander back so the log shows whether
     // bit 8 really dropped (output register) and what the pins read (input).
+    std::lock_guard<std::mutex> lock(mutex_);
     if (expander_ != nullptr) {
         uint32_t out_reg = 0xffffffff, in_reg = 0xffffffff;
         esp_io_expander_get_level(expander_, 0xffff, &in_reg);

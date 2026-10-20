@@ -3,6 +3,7 @@
 
 #include <driver/i2c_master.h>
 #include <esp_io_expander.h>
+#include <mutex>
 
 /**
  * Owns the D1001 audio-control I2C bus (I2C1) and the PCA9535 IO expander
@@ -77,6 +78,7 @@ public:
 private:
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     esp_io_expander_handle_t expander_ = nullptr;
+    mutable std::mutex mutex_;
 };
 
 #endif  // XIAOZHI_BOARDS_SEEED_STUDIO_RETERMINAL_D1001_EXPANDER_H_
