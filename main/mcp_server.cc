@@ -37,7 +37,6 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
-    if (!board.SuppressCommonDeviceTools()) {
     AddTool("self.get_device_status",
             "Provides the real-time information of the device, including the current status of the "
             "audio speaker, screen, battery, network, etc.\n"
@@ -90,8 +89,6 @@ void McpServer::AddCommonTools() {
                 });
     }
 
-    }
-
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -125,32 +122,6 @@ void McpServer::AddCommonTools() {
 }
 
 void McpServer::AddUserOnlyTools() {
-    AddUserOnlyTool(
-        "self.remote_wake.configure",
-        "Configure the LAN remote wake HTTP endpoint. Set a non-empty bearer token and "
-        "enabled=true to enable it; token is never returned.",
-        PropertyList({
-            Property("token", kPropertyTypeString),
-            Property("enabled", kPropertyTypeBoolean),
-        }),
-        [](const PropertyList& properties) -> ReturnValue {
-            const auto token = properties["token"].value<std::string>();
-            const bool enabled = properties["enabled"].value<bool>();
-            if (!token.empty() &&
-                (token.size() < 16 || token.size() > 128 ||
-                 token.find_first_not_of(
-                     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-") !=
-                     std::string::npos)) {
-                return std::string(
-                    "{\"enabled\":false,\"error\":\"token must be 16..128 ASCII characters\"}");
-            }
-            Settings settings("remote_wake", true);
-            settings.SetString("token", token);
-            settings.SetBool("enabled", enabled && !token.empty());
-            return std::string("{\"enabled\":") + ((enabled && !token.empty()) ? "true" : "false") +
-                   ",\"token_configured\":" + (!token.empty() ? "true" : "false") + "}";
-        });
-
     // System tools
     AddUserOnlyTool("self.get_system_info", "Get the system information", PropertyList(),
                     [this](const PropertyList& properties) -> ReturnValue {
