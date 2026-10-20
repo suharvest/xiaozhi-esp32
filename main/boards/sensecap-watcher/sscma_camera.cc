@@ -1153,36 +1153,33 @@ void SscmaCamera::InitializeMcpTools() {
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             Settings settings("model", true);
-            for (const auto& p : properties) {
-                if (p.name() == "threshold") {
-                    int threshold = p.value<int>();
-                    if (threshold != -1) {
-                        settings.SetInt("threshold", threshold);
-                        this->detect_threshold = threshold;
-                        ESP_LOGI(TAG, "Set detection threshold to %d", threshold);
-                    }
-                } else if (p.name() == "interval") {
-                    int interval = p.value<int>();
-                    if (interval != -1) {
-                        settings.SetInt("interval", interval);
-                        this->detect_invoke_interval_sec = interval;
-                        FaceRecognition::GetInstance().SetCooldownInterval(interval);
-                        ESP_LOGI(TAG, "Set detection interval to %d", interval);
-                    }
-                } else if (p.name() == "duration") {
-                    int duration = p.value<int>();
-                    if (duration != -1) {
-                        settings.SetInt("duration", duration);
-                        this->detect_duration_sec = duration;
-                        FaceRecognition::GetInstance().SetValidationDuration(duration);
-                    }
-                } else if (p.name() == "target") {
-                    int target = p.value<int>();
-                    if (target != -1) {
-                        settings.SetInt("target", target);
-                        this->detect_target = target;
-                        ESP_LOGI(TAG, "Set detection target to %d", target);
-                    }
+            auto handle_prop = [&](const std::string& name, auto fn) {
+                if (properties.HasProperty(name)) {
+                    int val = properties[name].value<int>();
+                    if (val != -1) fn(val);
+                }
+            };
+            handle_prop("threshold", [&](int val) {
+                settings.SetInt("threshold", val);
+                this->detect_threshold = val;
+                ESP_LOGI(TAG, "Set detection threshold to %d", val);
+            });
+            handle_prop("interval", [&](int val) {
+                settings.SetInt("interval", val);
+                this->detect_invoke_interval_sec = val;
+                FaceRecognition::GetInstance().SetCooldownInterval(val);
+                ESP_LOGI(TAG, "Set detection interval to %d", val);
+            });
+            handle_prop("duration", [&](int val) {
+                settings.SetInt("duration", val);
+                this->detect_duration_sec = val;
+                FaceRecognition::GetInstance().SetValidationDuration(val);
+            });
+            handle_prop("target", [&](int val) {
+                settings.SetInt("target", val);
+                this->detect_target = val;
+                ESP_LOGI(TAG, "Set detection target to %d", val);
+            });
                 }
             }
 
