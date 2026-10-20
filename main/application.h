@@ -118,14 +118,6 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
-
-    // Opus audio forward callback (for remote display etc.)
-    using OpusForwardCallback = std::function<void(const std::vector<uint8_t>& opus_data, int sample_rate, int frame_duration)>;
-    void SetOpusForwardCallback(OpusForwardCallback callback) { opus_forward_callback_ = callback; }
-
-    // Queue a board-owned remote wake request. This path is idle-only.
-    bool RequestRemoteWake(const std::string& request_id, const std::string& text,
-                           int64_t deadline_us);
     
     /**
      * Reset protocol resources (thread-safe)
@@ -164,9 +156,6 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
     int clock_ticks_ = 0;
-    OpusForwardCallback opus_forward_callback_;
-    std::mutex remote_wake_mutex_;
-    bool remote_wake_pending_ = false;
     TaskHandle_t activation_task_handle_ = nullptr;
 
 
@@ -180,8 +169,8 @@ private:
     void HandleActivationDoneEvent();
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
-    void BeginWakeWordInvoke(const std::string& wake_word, int64_t deadline_us = 0);
-    void ContinueWakeWordInvoke(const std::string& wake_word, int64_t deadline_us = 0);
+    void BeginWakeWordInvoke(const std::string& wake_word);
+    void ContinueWakeWordInvoke(const std::string& wake_word);
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
     void ShowStartupWakeWordHint();
