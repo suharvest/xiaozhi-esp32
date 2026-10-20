@@ -881,13 +881,9 @@ bool EspVideo::Capture() {
                 return false;
         }
 
-        if (preview_enabled_) {
-            auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h,
-                                                              stride, color_format);
-            display->SetPreviewImage(std::move(image));
-        } else {
-            heap_caps_free(data);
-        }
+        auto image =
+            std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
+        display->SetPreviewImage(std::move(image));
     }
     return true;
 }
@@ -1128,49 +1124,4 @@ std::expected<std::string, std::string> EspVideo::Explain(const std::string& que
         "Explain image size=%d bytes, compressed size=%d, remain stack size=%d, question=%s\n%s",
         (int)frame_.len, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
     return result;
-}
-
-bool EspVideo::CaptureToJpeg(std::vector<uint8_t>& out) {
-    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
-    if (!Capture()) {
-        return false;
-    }
-    out.clear();
-    uint16_t w = frame_.width ? frame_.width : 320;
-    uint16_t h = frame_.height ? frame_.height : 240;
-    return image_to_jpeg_cb(
-        frame_.data, frame_.len, w, h, frame_.format, 80,
-        [](void* arg, size_t /*index*/, const void* data, size_t len) -> size_t {
-            auto* vec = static_cast<std::vector<uint8_t>*>(arg);
-            if (data != nullptr && len > 0) {
-                auto* bytes = static_cast<const uint8_t*>(data);
-                vec->insert(vec->end(), bytes, bytes + len);
-            }
-            return len;
-        },
-        &out);
-}
-
-bool EspVideo::CaptureRaw(RawFrame& out) {
-    preview_enabled_ = false;
-    bool ok = Capture();
-    preview_enabled_ = true;
-    if (!ok || frame_.data == nullptr) {
-        return false;
-    }
-    out.data = frame_.data;
-    out.width = frame_.width;
-    out.height = frame_.height;
-    out.v4l2_format = frame_.format;
-    return true;
-}
-
-bool EspVideo::CaptureRawCopy(std::vector<uint8_t>& bytes, RawFrame& info) {
-    std::lock_guard<std::recursive_mutex> lock(capture_mutex_);
-    if (!CaptureRaw(info)) {
-        return false;
-    }
-    bytes.assign(info.data, info.data + frame_.len);
-    info.data = bytes.data();
-    return true;
 }
