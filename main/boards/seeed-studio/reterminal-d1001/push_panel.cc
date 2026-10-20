@@ -20,7 +20,8 @@ LV_FONT_DECLARE(font_noto_sans_basic_30_4);
 namespace {
 
 constexpr size_t kMaxBodyBytes = 32 * 1024;
-constexpr int kDefaultChoiceTimeoutS = 60;
+constexpr int kDefaultChoiceTimeoutS = 30;
+constexpr int kMaxChoiceTimeoutS = 60;
 constexpr int kHeaderHeight = 48;
 constexpr size_t kRemoteWakeMaxBody = 2048;
 constexpr size_t kRemoteWakeContextMax = 25;
@@ -584,7 +585,7 @@ esp_err_t PushPanel::HandleChoice(httpd_req_t* req) {
     int timeout_s = kDefaultChoiceTimeoutS;
     cJSON* timeout_item = cJSON_GetObjectItem(root, "timeout_s");
     if (cJSON_IsNumber(timeout_item) && timeout_item->valueint > 0) {
-        timeout_s = std::min(timeout_item->valueint, 600);
+        timeout_s = std::min(timeout_item->valueint, kMaxChoiceTimeoutS);
     }
     std::vector<std::string> options;
     cJSON* options_item = cJSON_GetObjectItem(root, "options");
