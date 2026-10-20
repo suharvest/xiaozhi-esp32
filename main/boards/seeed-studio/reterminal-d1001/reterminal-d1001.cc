@@ -1,6 +1,7 @@
 #include "wifi_board.h"
 
 #include "application.h"
+#include "assets.h"
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
@@ -523,6 +524,14 @@ private:
         display_->SetOpenSettingsCallback([this](SettingsPage page) { OpenSettings(page); });
         display_->ApplyRotation(rotation.degrees);
         ESP_LOGI(TAG, "Display initialized, rotation=%d", rotation.degrees);
+
+        // Mount and apply assets partition (3500+ common CJK fonts) immediately,
+        // ensuring complete Chinese typography on boot without waiting for Wi-Fi.
+        auto& assets = Assets::GetInstance();
+        if (assets.partition_valid()) {
+            assets.Apply();
+            ESP_LOGI(TAG, "Assets applied at boot (full CJK fonts loaded)");
+        }
     }
 
     void InitializeTouch(const RotationProfile& rotation) {
@@ -598,11 +607,9 @@ private:
             ESP_LOGE(TAG, "Failed to register the touch panel with LVGL");
             return;
         }
-        // The GSL3670 is polled and jitters a few pixels; a slightly raised
-        // scroll threshold keeps taps on list rows from turning into scrolls.
-        // 24 made scrolling feel laggy (a finger had to travel 24px before
-        // anything moved); 12 still absorbs the jitter.
-        lv_indev_set_scroll_limit(indev, 12);
+        // The GSL3670 is polled; a scroll threshold of 18 absorbs finger jitter
+        // on taps without turning them into unwanted scroll gestures.
+        lv_indev_set_scroll_limit(indev, 18);
         // Poll the touch controller more often than the 30ms default so drags
         // track the finger.
         lv_timer_t* read_timer = lv_indev_get_read_timer(indev);

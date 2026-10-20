@@ -183,6 +183,15 @@ static esp_err_t esp_lcd_touch_gsl3670_read_data(esp_lcd_touch_handle_t tp)
 
     Finger_num = (touch_data[0] > MAX_FINGER_NUM) ? MAX_FINGER_NUM : touch_data[0];
 
+    static uint16_t s_last_x[MAX_FINGER_NUM] = {0};
+    static uint16_t s_last_y[MAX_FINGER_NUM] = {0};
+    static bool s_active[MAX_FINGER_NUM] = {false};
+
+    if (Finger_num == 0) {
+        memset(s_active, 0, sizeof(s_active));
+        return ESP_OK;
+    }
+
     // Hardware electrode matrix configuration for GSL3670 on reTerminal D1001:
     // - drv (driving lines): 26 lines -> full-scale range = 26 * 64 = 1664 (maps to long edge / Y)
     // - sen (sensing lines): 14 lines -> full-scale range = 14 * 64 = 896  (maps to short edge / X)
@@ -190,22 +199,46 @@ static esp_err_t esp_lcd_touch_gsl3670_read_data(esp_lcd_touch_handle_t tp)
     const uint32_t y_scale = tp->config.y_max ? tp->config.y_max : 1280;
 
     for (int j = 0; j < Finger_num; j++) {
+        // Crucial: mask high 4 bits on both coordinate bytes; upper nibbles
+        // contain hardware contact tracking and status flags rather than ADC value.
         uint32_t raw_drv = ((touch_data[(j + 1) * 4 + 3] & 0x0f) << 8) | touch_data[(j + 1) * 4 + 2];
-        uint32_t raw_sen = (touch_data[(j + 1) * 4 + 1] << 8) | touch_data[(j + 1) * 4 + 0];
+        uint32_t raw_sen = ((touch_data[(j + 1) * 4 + 1] & 0x0f) << 8) | touch_data[(j + 1) * 4 + 0];
         uint8_t id = (touch_data[(j + 1) * 4 + 3] >> 4) & 0x0f;
 
-        uint32_t x = (raw_sen * x_scale + 448) / 896;
-        uint32_t y = (raw_drv * y_scale + 832) / 1664;
+        // Apply Silead calibration matrix scaling:
+        // match_x = 4113, match_y = 4119 (linear trim)
+        int32_t sen_cal = ((int32_t)(raw_sen - 2) * 4119 + 2048) / 4096;
+        int32_t drv_cal = ((int32_t)raw_drv * 4113 + 2048) / 4096;
+        if (sen_cal < 0) sen_cal = 0;
+        if (drv_cal < 0) drv_cal = 0;
 
-        if (x > x_scale) x = x_scale;
-        if (y > y_scale) y = y_scale;
+        uint32_t target_x = ((uint32_t)sen_cal * x_scale + 448) / 896;
+        uint32_t target_y = ((uint32_t)drv_cal * y_scale + 832) / 1664;
 
-        XY_Coordinate[j].x_position = (uint16_t)x;
-        XY_Coordinate[j].y_position = (uint16_t)y;
+        if (target_x > x_scale) target_x = x_scale;
+        if (target_y > y_scale) target_y = y_scale;
+
+        // Low-pass jitter filter: eliminates high-frequency noise while holding button
+        uint16_t final_x;
+        uint16_t final_y;
+        if (!s_active[j]) {
+            final_x = (uint16_t)target_x;
+            final_y = (uint16_t)target_y;
+            s_active[j] = true;
+        } else {
+            final_x = (uint16_t)((s_last_x[j] * 1 + target_x * 3 + 2) / 4);
+            final_y = (uint16_t)((s_last_y[j] * 1 + target_y * 3 + 2) / 4);
+        }
+        s_last_x[j] = final_x;
+        s_last_y[j] = final_y;
+
+        XY_Coordinate[j].x_position = final_x;
+        XY_Coordinate[j].y_position = final_y;
         XY_Coordinate[j].finger_id = id;
 
-        ESP_LOGI(TAG, "TOUCH [%d]: raw(sen=%lu, drv=%lu) -> mapped(x=%u, y=%u)",
-                 j, (unsigned long)raw_sen, (unsigned long)raw_drv, (unsigned int)x, (unsigned int)y);
+        ESP_LOGI(TAG, "TOUCH [%d]: raw(sen=%lu, drv=%lu) -> cal(%ld, %ld) -> mapped(x=%u, y=%u)",
+                 j, (unsigned long)raw_sen, (unsigned long)raw_drv,
+                 (long)sen_cal, (long)drv_cal, (unsigned int)final_x, (unsigned int)final_y);
     }
 
     return ESP_OK;
