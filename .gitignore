@@ -18,3 +18,13 @@ main/mmap_generate_emoji.h
 *.bin
 mmap_generate_*.h
 .clangd
+
+# local opencode install
+.opencode-install/
+.agents/
+.claude/
+references/
+d1001-dev/
+.tmp-boards.txt
+.tmp/
+tools/raspberry_pi_display/uploads/
