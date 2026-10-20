@@ -1343,7 +1343,6 @@ public:
         InitializeRemoteDisplay();
     }
 
-    virtual bool SuppressCommonDeviceTools() const override { return true; }
 
     virtual AudioCodec* GetAudioCodec() override {
         static SensecapAudioCodec audio_codec(
