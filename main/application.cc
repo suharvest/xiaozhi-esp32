@@ -70,6 +70,13 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
+
+    // Apply pre-flashed assets (fonts, themes) immediately so offline/config UI renders properly
+    auto& assets = Assets::GetInstance();
+    if (assets.partition_valid()) {
+        assets.Apply(true);
+    }
+
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
