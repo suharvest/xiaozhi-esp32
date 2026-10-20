@@ -957,7 +957,23 @@ void SettingsUi::StartWifiScan() {
             scan_config.scan_time.active.min = 100;
             scan_config.scan_time.active.max = 300;
 
-            esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+            // Ensure WiFi station mode is started before scanning
+            auto& wifi_manager = WifiManager::GetInstance();
+            wifi_manager.StartStation();
+
+            esp_err_t err = ESP_FAIL;
+            for (int retry = 0; retry < 5; retry++) {
+                err = esp_wifi_scan_start(&scan_config, true);
+                if (err == ESP_ERR_WIFI_NOT_STARTED) {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    continue;
+                }
+                if (err == ESP_ERR_WIFI_STATE) {
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    continue;
+                }
+                break;
+            }
             if (err == ESP_OK) {
                 uint16_t ap_count = 0;
                 err = esp_wifi_scan_get_ap_num(&ap_count);

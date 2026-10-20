@@ -107,6 +107,13 @@ void WifiBoard::TryWifiConnect() {
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
     } else {
+#ifdef CONFIG_WIFI_CONFIG_PROMPT_ONLY
+        // No SSID configured: start station so Wi-Fi driver is active for on-screen scan
+        WifiManager::GetInstance().StartStation();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        Application::GetInstance().Alert("未连接网络", "点击左上角网络图标，可在屏幕上直接配置 Wi-Fi",
+                                         "gear", Lang::Sounds::OGG_WIFICONFIG);
+#else
         // No SSID configured, enter config mode
         // Wait for the board version to be shown
         vTaskDelay(pdMS_TO_TICKS(1500));
