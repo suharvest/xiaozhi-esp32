@@ -1220,19 +1220,15 @@ private:
             "树莓派需手动输入本设备 IP，通过 HTTP 发起连接。\n"
             "不传参数则查询当前投屏状态。",
             PropertyList({
-                Property("enable", kPropertyTypeInteger, 0, 1)
+                Property("enable", kPropertyTypeInteger, -1, -1, 1)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                try {
-                    int en = properties["enable"].value<int>();
-                    ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
-                    if (en == 1) {
-                        return StartScreenCast();
-                    } else {
-                        return StopScreenCast();
-                    }
-                } catch (...) {
-                    return GetScreenCastStatus();
+                int en = properties["enable"].value<int>();
+                ESP_LOGI(TAG, "screen_cast tool called: enable=%d", en);
+                if (en == 1) {
+                    return StartScreenCast();
+                } else if (en == 0) {
+                    return StopScreenCast();
                 }
                 // 没传参数 → 查询状态
                 ESP_LOGI(TAG, "screen_cast tool: query status");
