@@ -19,6 +19,7 @@
 #include "power_save_timer.h"
 #include "settings.h"
 
+#include <atomic>
 #include <driver/i2c_master.h>
 #include <esp_lcd_jd9365.h>
 #include <esp_lcd_mipi_dsi.h>
@@ -431,7 +432,7 @@ private:
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     gsl3670_driver_config_t touch_driver_config_ = {};
     EspVideo* camera_ = nullptr;
-    bool powering_off_ = false;
+    std::atomic<bool> powering_off_{false};
     bool power_off_armed_ = false;
 
     void EnableDsiPhyPower() {
@@ -742,6 +743,9 @@ private:
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -753,7 +757,12 @@ private:
         // starts (seen on hardware: a phantom LONG_PRESS fired 3.6 s after
         // boot and powered the board off), so the power-off long press is
         // armed only after one real press/release cycle has been observed.
-        boot_button_.OnPressUp([this]() { power_off_armed_ = true; });
+        boot_button_.OnPressUp([this]() {
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
+            power_off_armed_ = true;
+        });
         boot_button_.OnLongPress([this]() {
             if (!power_off_armed_) {
                 ESP_LOGW(TAG, "Ignoring long press before the first release (boot-time phantom)");
@@ -767,10 +776,10 @@ private:
     // worker: the power amplifier has to be muted before the rail drops or the
     // speaker pops, and that needs a delay the button task must not sit in.
     void StartPowerOff() {
-        if (powering_off_) {
+        bool expected = false;
+        if (!powering_off_.compare_exchange_strong(expected, true)) {
             return;
         }
-        powering_off_ = true;
         ESP_LOGW(TAG, "Long press on GPIO3: powering off");
         if (display_ != nullptr) {
             display_->ShowNotification("正在关机 ...", 10000);
@@ -788,7 +797,9 @@ private:
                 // silent (the PA and power hold were just dropped).
                 ESP_LOGW(TAG, "Still running after PowerOff(); external power - restoring rails");
                 board->expander_.SetPowerHold(true);
-                board->expander_.SetPowerAmp(true);
+                if (board->audio_codec_ != nullptr && board->audio_codec_->output_enabled()) {
+                    board->expander_.SetPowerAmp(true);
+                }
                 if (board->display_ != nullptr) {
                     board->display_->ShowNotification("外部供电，无法关机", 3000);
                 }
@@ -908,7 +919,16 @@ public:
         power_save_timer_->OnExitSleepMode([this]() {
             GetBacklight()->RestoreBrightness();
         });
-        power_save_timer_->OnShutdownRequest([this]() { StartPowerOff(); });
+        power_save_timer_->OnShutdownRequest([this]() {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                StartPowerOff();
+            } else {
+                if (power_save_timer_ != nullptr) {
+                    power_save_timer_->WakeUp();
+                }
+            }
+        });
         power_save_timer_->SetEnabled(true);
     }
 
@@ -1016,6 +1036,15 @@ public:
             }
             push_panel_->Start();
         }
+    }
+
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER) {
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
+        }
+        WifiBoard::SetPowerSaveLevel(level);
     }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
