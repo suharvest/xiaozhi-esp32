@@ -525,13 +525,19 @@ private:
         display_->ApplyRotation(rotation.degrees);
         ESP_LOGI(TAG, "Display initialized, rotation=%d", rotation.degrees);
 
-        // Mount and apply assets partition (3500+ common CJK fonts) immediately,
-        // ensuring complete Chinese typography on boot without waiting for Wi-Fi.
-        auto& assets = Assets::GetInstance();
-        if (assets.partition_valid()) {
-            assets.Apply();
-            ESP_LOGI(TAG, "Assets applied at boot (full CJK fonts loaded)");
-        }
+        // Defer assets.Apply() to a background task so Board constructor does not
+        // block on Application::GetInstance() (which deadlocks during app_main initialization).
+        xTaskCreate(
+            [](void*) {
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                auto& assets = Assets::GetInstance();
+                if (assets.partition_valid()) {
+                    assets.Apply();
+                    ESP_LOGI(TAG, "Assets applied in background (full CJK fonts loaded)");
+                }
+                vTaskDelete(nullptr);
+            },
+            "d1001_assets", 4096, nullptr, 1, nullptr);
     }
 
     void InitializeTouch(const RotationProfile& rotation) {
