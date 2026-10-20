@@ -245,6 +245,10 @@ private:
     std::vector<std::unique_ptr<EventCtx>> event_ctx_;
     std::vector<std::pair<lv_obj_t*, bool>> icon_labels_;
     std::vector<std::unique_ptr<RetiredPage>> retired_pages_;
+    static void OnSwipeUpGesture(lv_event_t* event);
+    lv_point_t swipe_start_ = {};
+    bool swipe_tracking_ = false;
+
     std::vector<std::pair<Action, int>> pending_actions_;
     bool async_scheduled_ = false;
 };

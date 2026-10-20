@@ -494,6 +494,11 @@ lv_obj_t* SettingsUi::BuildPage(const char* title, Action back_action, bool with
     lv_obj_set_style_pad_row(body_, kGap, 0);
     lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(body_, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_add_flag(header_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(header_, OnSwipeUpGesture, LV_EVENT_ALL, this);
+    lv_obj_add_event_cb(body_, OnSwipeUpGesture, LV_EVENT_ALL, this);
+
     AnimatePageIn(header_, body_);
     return body_;
 }
@@ -768,6 +773,7 @@ void SettingsUi::Open(SettingsPage page) {
     lv_obj_set_style_text_color(root_, ThemeTextColor(), 0);
     lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scrollbar_mode(root_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_event_cb(root_, OnSwipeUpGesture, LV_EVENT_ALL, this);
     lv_obj_move_foreground(root_);
 
     wifi_state_ = WifiSettingsState::Idle;
@@ -848,6 +854,49 @@ void SettingsUi::AnimateClose() {
     });
     lv_anim_set_user_data(&anim, this);
     lv_anim_start(&anim);
+}
+
+void SettingsUi::OnSwipeUpGesture(lv_event_t* event) {
+    auto* self = static_cast<SettingsUi*>(lv_event_get_user_data(event));
+    if (self == nullptr || self->closing_) {
+        return;
+    }
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_indev_t* indev = lv_indev_active();
+
+    if (code == LV_EVENT_GESTURE) {
+        if (indev != nullptr && lv_indev_get_gesture_dir(indev) == LV_DIR_TOP) {
+            self->swipe_tracking_ = false;
+            lv_indev_wait_release(indev);
+            self->Close();
+        }
+        return;
+    }
+    if (code == LV_EVENT_PRESSED) {
+        if (indev != nullptr) {
+            lv_indev_get_point(indev, &self->swipe_start_);
+            self->swipe_tracking_ = true;
+        }
+        return;
+    }
+    if (code == LV_EVENT_PRESSING) {
+        if (!self->swipe_tracking_ || indev == nullptr) {
+            return;
+        }
+        lv_point_t p = {};
+        lv_indev_get_point(indev, &p);
+        int dy = p.y - self->swipe_start_.y;
+        // Dragging upwards by 60px closes the overlay smoothly
+        if (dy <= -60) {
+            self->swipe_tracking_ = false;
+            lv_indev_wait_release(indev);
+            self->Close();
+        }
+        return;
+    }
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        self->swipe_tracking_ = false;
+    }
 }
 
 void SettingsUi::FinishClose() {
