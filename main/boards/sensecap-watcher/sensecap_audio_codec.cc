@@ -160,6 +160,7 @@ void SensecapAudioCodec::Start() {
     AudioCodec::Start();
     if (saved_mute) {
         output_volume_ = 70;
+        ESP_LOGW(TAG, "Saved output volume is muted, using %d on this board", output_volume_);
     }
 }
 
