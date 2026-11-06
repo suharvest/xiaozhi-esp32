@@ -564,6 +564,15 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
         bool watchdog_abort_sent = false;
         const int64_t kVoiceBusyTimeoutUs = 60 * 1000000LL;  // 60s
         const int64_t kVoiceBusyForceIdleUs = 70 * 1000000LL;  // 70s: force idle if abort didn't help
+        // Listening-only silence timeout: no speech after a follow-up prompt → leave listening
+        const int64_t kListeningSilenceTimeoutUs = 8 * 1000000LL;  // 8s
+        int64_t listening_since = 0;
+        // Set while a main-task check is queued or the close was already requested;
+        // cleared on the next state change. Prevents a second toggle that would
+        // start a new chat once the device is back in idle.
+        std::atomic<bool> listening_check_pending{false};
+        // Set by the main-task check when it saw speech or pending playback
+        std::atomic<bool> listening_active{false};
 
         while (true)
         {
@@ -638,6 +647,34 @@ SscmaCamera::SscmaCamera(esp_io_expander_handle_t io_exp_handle) {
                 } else {
                     voice_busy_since = 0;
                     watchdog_abort_sent = false;
+                }
+                listening_since = (dev_state == kDeviceStateListening) ? esp_timer_get_time() : 0;
+                listening_check_pending = false;
+                listening_active = false;
+            }
+            // Listening silence timeout. The timer only runs while the playback queue
+            // is drained (capture not yet started otherwise); the speech state is read
+            // and the close decided in the main task, not from this task.
+            if (listening_since > 0 && !listening_check_pending) {
+                auto& app = Application::GetInstance();
+                int64_t now = esp_timer_get_time();
+                if (listening_active.exchange(false) || !app.GetAudioService().IsPlaybackIdle()) {
+                    listening_since = now;
+                } else if (now - listening_since > kListeningSilenceTimeoutUs) {
+                    listening_check_pending = true;
+                    app.Schedule([&app, &listening_check_pending, &listening_active]() {
+                        auto& audio = app.GetAudioService();
+                        if (app.GetDeviceState() != kDeviceStateListening) {
+                            listening_check_pending = false;
+                        } else if (audio.IsVoiceDetected() || !audio.IsPlaybackIdle()) {
+                            listening_active = true;
+                            listening_check_pending = false;
+                        } else {
+                            // Stays pending until the state changes: one close request per listening turn
+                            ESP_LOGW(TAG, "Listening silence timeout (>8s without speech), closing session");
+                            app.ToggleChatState();
+                        }
+                    });
                 }
             }
             if (voice_busy_since > 0) {

@@ -214,6 +214,12 @@ void SensecapAudioCodec::EnableOutput(bool enable) {
         if (pa_pin_ != GPIO_NUM_NC) {
             gpio_set_level(pa_pin_, 0);
         }
+        // TX is the I2S master and drives BCLK/WS for the ES7243E mic; closing the
+        // output disables it, so re-enable to keep the clocks running for capture.
+        esp_err_t ret = i2s_channel_enable(tx_handle_);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {  // INVALID_STATE: still enabled
+            ESP_LOGW(TAG, "Failed to keep TX clock running: %s", esp_err_to_name(ret));
+        }
     }
     AudioCodec::EnableOutput(enable);
 }
